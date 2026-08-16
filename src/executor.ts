@@ -268,8 +268,11 @@ async function runPlans(
     afterSegment();
 
     const decodePref = resolveNativePref();
-    let segOut = decodeOutput(Buffer.concat(outBufs), decodePref);
-    let segErr = normalizeStderr(decodeOutput(Buffer.concat(errBufs), decodePref));
+    // GNU line discipline: PowerShell's console layer terminates every line
+    // with CRLF; bash tools expect LF (redirect-written files and byte counts
+    // must match coreutils, e.g. `head -2 f > out.txt; wc -c out.txt`)
+    let segOut = decodeOutput(Buffer.concat(outBufs), decodePref).replace(/\r\n/g, '\n');
+    let segErr = normalizeStderr(decodeOutput(Buffer.concat(errBufs), decodePref)).replace(/\r\n/g, '\n');
 
     if (running.killed) {
       segErr += '\nbash: command timed out after ' + Math.round(timeoutMs / 1000) + 's';
