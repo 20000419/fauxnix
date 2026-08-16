@@ -84,3 +84,21 @@ Reading:
   2.5× slower with error storms) — for them fauxnix on Codex is a large win.
 - Practical note: the wall-time gap scales with call granularity; a model
   that batches commands closes most of it.
+
+### Kimi Code (kimi-for-coding)
+
+Built-in Bash = Git Bash, one bundled call per task (very efficient bash
+author). Same 5-task matrix, tool usage verified per condition
+(`mcp__fauxnix__bash` vs `Bash` only):
+
+| | built-in (Git Bash) | fauxnix |
+|---|---|---|
+| tool calls | 5 | 6 |
+| wall time | 90s | 107s (+19%) |
+| correctness | 5/5 | 5/5 |
+
+Reading: like Claude Code, no speed story (model already writes bash well and
+bundles), ~19% overhead. The functional gains matter more here because Kimi's
+built-in Bash **lacks cd persistence** (fresh shell per call — verified),
+while fauxnix keeps cwd/env across calls, plus GBK-file sniffing and the real
+Windows process table.
