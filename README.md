@@ -78,12 +78,15 @@ fauxnix ships an MCP stdio server exposing a `bash` tool (plus `fauxnix_translat
 claude mcp add fauxnix -- fauxnix mcp
 ```
 
-**Codex** (`~/.codex/config.toml`)
+**Codex** (`~/.codex/config.toml` or `codex mcp add fauxnix -- fauxnix mcp`)
 ```toml
 [mcp_servers.fauxnix]
 command = "fauxnix"
 args = ["mcp"]
 ```
+Note: in non-interactive `codex exec` mode, MCP tool calls are auto-denied by
+the approval layer; pass `--dangerously-bypass-approvals-and-sandbox` (or run
+interactively and approve once).
 
 **OpenCode** (`opencode.json`)
 ```json
