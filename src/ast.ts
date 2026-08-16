@@ -70,6 +70,16 @@ export function wordToString(w: Word): string {
   return w.map(partToString).join('');
 }
 
+/** True when every part is unquoted Text and the concatenation equals `tok`. */
+export function isUnquotedLiteral(w: Word, tok: string): boolean {
+  return w.length > 0 && w.every((p) => p.kind === 'Text') && wordToString(w) === tok;
+}
+
+/** True when no part is single- or double-quoted. */
+export function isFullyUnquoted(w: Word): boolean {
+  return w.every((p) => p.kind !== 'SingleQuoted' && p.kind !== 'DoubleQuoted');
+}
+
 function partToString(p: WordPart): string {
   switch (p.kind) {
     case 'Text':

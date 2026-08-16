@@ -9,6 +9,7 @@ import {
   SimpleCommand,
   Word,
   WordPart,
+  isUnquotedLiteral,
 } from './ast.js';
 
 /* ------------------------------------------------------------------ */
@@ -320,6 +321,31 @@ export function parseCommand(input: string): CommandList {
       if (t.type === 'EOF') break;
 
       // possible redirect operator
+      // Inside `[[ ... ]]`, && || < > and other redirect-shaped tokens are
+      // conditional operators (or just words), not shell redirects/lists.
+      // Stop this special case at the first *unquoted* ]].
+      if (
+        t.type === 'OP' &&
+        name !== null &&
+        isUnquotedLiteral(name, '[[') &&
+        !args.some((w) => isUnquotedLiteral(w, ']]')) &&
+        (t.op === '&&' ||
+          t.op === '||' ||
+          t.op === '>' ||
+          t.op === '<' ||
+          t.op === '>>' ||
+          t.op === '2>' ||
+          t.op === '2>>' ||
+          t.op === '&>' ||
+          t.op === '&>>' ||
+          t.op === '2>&1' ||
+          t.op === '1>&2')
+      ) {
+        next();
+        args.push([{ kind: 'Text', text: t.op! }]);
+        continue;
+      }
+
       if (t.type === 'OP' && isRedirectOp(t.op!)) {
         const op = t.op!;
         next();

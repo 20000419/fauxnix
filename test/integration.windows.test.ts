@@ -122,6 +122,32 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', () => {
     expect(silenced.stdout.trim()).toBe('OK');
   });
 
+  it('[[ ]] file and string tests, including =~', async () => {
+    expect((await run('[[ -f fruits.txt ]] && echo yes')).stdout.trim()).toBe('yes');
+    expect((await run('[[ -d fruits.txt ]] && echo yes; echo after')).stdout.trim()).toBe('after');
+    expect((await run('[[ abc =~ ^a ]] && echo match')).stdout.trim()).toBe('match');
+    expect((await run('[[ abc =~ ^z ]] || echo nomatch')).stdout.trim()).toBe('nomatch');
+    expect((await run('[[ 2 -gt 1 ]]')).exitCode).toBe(0);
+    expect((await run('[[ 2 -lt 1 ]]')).exitCode).toBe(1);
+    const missing = await run('[[ -f x');
+    expect(missing.exitCode).toBe(2);
+    expect(missing.stderr).toMatch(/missing/);
+    expect((await run('[[ -f fruits.txt && -d sub ]] && echo both')).stdout.trim()).toBe('both');
+    expect((await run('[[ -f nope || -f fruits.txt ]] && echo either')).stdout.trim()).toBe(
+      'either',
+    );
+    expect((await run('[[ foo == f* ]]')).exitCode).toBe(0);
+    expect((await run('[[ foo == "f*" ]]')).exitCode).toBe(1);
+    expect((await run('[[ abc =~ "^a" ]]')).exitCode).toBe(1);
+    writeFileSync(join(dir, 'important.txt'), 'keep\n', 'utf8');
+    const lex = await run('[[ z > important.txt ]]');
+    expect(lex.exitCode).toBe(0);
+    expect(readFileSync(join(dir, 'important.txt'), 'utf8')).toBe('keep\n');
+    const quotedClose = await run('[[ "]]"');
+    expect(quotedClose.exitCode).toBe(2);
+    expect(quotedClose.stderr).toMatch(/missing/);
+  }, 20000);
+
   it('&& and || short-circuit like bash', async () => {
     expect((await run('cat missing.txt || echo FELLBACK')).stdout).toContain('FELLBACK');
     const r = await run('cat missing.txt && echo NOPE ; echo END');
