@@ -122,6 +122,22 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', () => {
     expect(silenced.stdout.trim()).toBe('OK');
   });
 
+  it('[[ ]] file and string tests, including =~', async () => {
+    expect((await run('[[ -f fruits.txt ]] && echo yes')).stdout.trim()).toBe('yes');
+    expect((await run('[[ -d fruits.txt ]] && echo yes; echo after')).stdout.trim()).toBe('after');
+    expect((await run('[[ abc =~ ^a ]] && echo match')).stdout.trim()).toBe('match');
+    expect((await run('[[ abc =~ ^z ]] || echo nomatch')).stdout.trim()).toBe('nomatch');
+    expect((await run('[[ 2 -gt 1 ]]')).exitCode).toBe(0);
+    expect((await run('[[ 2 -lt 1 ]]')).exitCode).toBe(1);
+    const missing = await run('[[ -f x');
+    expect(missing.exitCode).toBe(2);
+    expect(missing.stderr).toMatch(/missing/);
+    expect((await run('[[ -f fruits.txt && -d sub ]] && echo both')).stdout.trim()).toBe('both');
+    expect((await run('[[ -f nope || -f fruits.txt ]] && echo either')).stdout.trim()).toBe(
+      'either',
+    );
+  });
+
   it('&& and || short-circuit like bash', async () => {
     expect((await run('cat missing.txt || echo FELLBACK')).stdout).toContain('FELLBACK');
     const r = await run('cat missing.txt && echo NOPE ; echo END');

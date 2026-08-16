@@ -9,6 +9,7 @@ import {
   SimpleCommand,
   Word,
   WordPart,
+  wordToString,
 } from './ast.js';
 
 /* ------------------------------------------------------------------ */
@@ -320,6 +321,20 @@ export function parseCommand(input: string): CommandList {
       if (t.type === 'EOF') break;
 
       // possible redirect operator
+      // `[[ a && b ]]` — && / || inside [[ ]] are operators of the
+      // conditional, not list separators. Keep them as words until ]].
+      if (
+        t.type === 'OP' &&
+        name !== null &&
+        wordToString(name) === '[[' &&
+        !args.some((w) => wordToString(w) === ']]') &&
+        (t.op === '&&' || t.op === '||')
+      ) {
+        next();
+        args.push([{ kind: 'Text', text: t.op! }]);
+        continue;
+      }
+
       if (t.type === 'OP' && isRedirectOp(t.op!)) {
         const op = t.op!;
         next();

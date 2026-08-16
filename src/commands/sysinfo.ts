@@ -803,6 +803,7 @@ const colon: Handler = () => '';
 
 const TEST_UNARY = new Set(['-e', '-f', '-d', '-r', '-w', '-x', '-s', '-z', '-n']);
 const TEST_BINARY = new Set(['=', '==', '!=', '-eq', '-ne', '-lt', '-le', '-gt', '-ge']);
+const TEST_BINARY_KSH = new Set([...TEST_BINARY, '=~']);
 
 const FX_TN_FN = [
   'function fx-tn($a, $b, $op) {',
@@ -857,52 +858,66 @@ function testUnaryExpr(op: string, w: Word): string {
   }
 }
 
+const FX_RE_FN = [
+  'function fx-re($a, $b) {',
+  '  try { return [regex]::IsMatch([string]$a, [string]$b) }',
+  "  catch { [Console]::Error.WriteLine('bash: [[: invalid regular expression'); $script:fx_exit = 2; return $false }",
+  '}',
+].join('\n');
+
 function testBinaryExpr(l: Word, op: string, r: Word): string {
   const le = '[string](' + exprOfWord(l) + ')';
   const re = '[string](' + exprOfWord(r) + ')';
   if (op === '=' || op === '==') return '(' + le + ' -ceq ' + re + ')';
   if (op === '!=') return '(' + le + ' -cne ' + re + ')';
+  if (op === '=~') return '(fx-re (' + le + ') (' + re + '))';
   return '(fx-tn (' + le + ') (' + re + ') ' + psStr(op) + ')';
 }
 
-function parseTestOr(ws: Word[], st: { i: number }): TestParse {
-  const r = parseTestAnd(ws, st);
+function parseTestOr(ws: Word[], st: { i: number }, allowRe: boolean): TestParse {
+  const r = parseTestAnd(ws, st, allowRe);
   if (r.error) return r;
   let expr = r.expr!;
-  while (st.i < ws.length && wordToString(ws[st.i]) === '-o') {
+  while (
+    st.i < ws.length &&
+    (wordToString(ws[st.i]) === '-o' || (allowRe && wordToString(ws[st.i]) === '||'))
+  ) {
     st.i++;
-    const rr = parseTestAnd(ws, st);
+    const rr = parseTestAnd(ws, st, allowRe);
     if (rr.error) return rr;
     expr = '(' + expr + ') -or (' + rr.expr + ')';
   }
   return { expr, error: null };
 }
 
-function parseTestAnd(ws: Word[], st: { i: number }): TestParse {
-  const r = parseTestNot(ws, st);
+function parseTestAnd(ws: Word[], st: { i: number }, allowRe: boolean): TestParse {
+  const r = parseTestNot(ws, st, allowRe);
   if (r.error) return r;
   let expr = r.expr!;
-  while (st.i < ws.length && wordToString(ws[st.i]) === '-a') {
+  while (
+    st.i < ws.length &&
+    (wordToString(ws[st.i]) === '-a' || (allowRe && wordToString(ws[st.i]) === '&&'))
+  ) {
     st.i++;
-    const rr = parseTestNot(ws, st);
+    const rr = parseTestNot(ws, st, allowRe);
     if (rr.error) return rr;
     expr = '(' + expr + ') -and (' + rr.expr + ')';
   }
   return { expr, error: null };
 }
 
-function parseTestNot(ws: Word[], st: { i: number }): TestParse {
+function parseTestNot(ws: Word[], st: { i: number }, allowRe: boolean): TestParse {
   const t = st.i < ws.length ? wordToString(ws[st.i]) : null;
   if (t === '!' && st.i + 1 < ws.length) {
     st.i++;
-    const r = parseTestNot(ws, st);
+    const r = parseTestNot(ws, st, allowRe);
     if (r.error) return r;
     return { expr: '(-not (' + r.expr + '))', error: null };
   }
-  return parseTestAtom(ws, st);
+  return parseTestAtom(ws, st, allowRe);
 }
 
-function parseTestAtom(ws: Word[], st: { i: number }): TestParse {
+function parseTestAtom(ws: Word[], st: { i: number }, allowRe: boolean): TestParse {
   if (st.i >= ws.length) return { expr: null, error: 'too many arguments' };
   const t = wordToString(ws[st.i]);
   if (st.i === ws.length - 1) {
@@ -917,7 +932,8 @@ function parseTestAtom(ws: Word[], st: { i: number }): TestParse {
     return { expr: testUnaryExpr(t, w), error: null };
   }
   const nt = wordToString(ws[st.i + 1]);
-  if (TEST_BINARY.has(nt)) {
+  const binaries = allowRe ? TEST_BINARY_KSH : TEST_BINARY;
+  if (binaries.has(nt)) {
     if (st.i + 2 < ws.length) {
       const expr = testBinaryExpr(ws[st.i], nt, ws[st.i + 2]);
       st.i += 3;
@@ -930,10 +946,10 @@ function parseTestAtom(ws: Word[], st: { i: number }): TestParse {
   return { expr: strNe(e), error: null };
 }
 
-function buildTest(ws: Word[], label: string): string {
+function buildTest(ws: Word[], label: string, allowRe = false): string {
   if (ws.length === 0) return '$script:fx_exit = 1';
   const st = { i: 0 };
-  const res = parseTestOr(ws, st);
+  const res = parseTestOr(ws, st, allowRe);
   let err: string | null = null;
   if (res.error) {
     err = res.error.startsWith('OP:')
@@ -945,8 +961,10 @@ function buildTest(ws: Word[], label: string): string {
   if (err !== null) {
     return '[Console]::Error.WriteLine(' + psStr(err) + '); $script:fx_exit = 2';
   }
+  const helpers = [FX_TN_FN];
+  if (allowRe && res.expr && res.expr.indexOf('fx-re') >= 0) helpers.push(FX_RE_FN);
   return [
-    FX_TN_FN,
+    ...helpers,
     '$fx_tr = ' + res.expr,
     'if ($script:fx_exit -eq 2) { }',
     'elseif (-not $fx_tr) { $script:fx_exit = 1 }',
@@ -960,6 +978,13 @@ const bracket: Handler = (args) => {
     return '[Console]::Error.WriteLine(' + psStr("bash: [: missing `]'") + '); $script:fx_exit = 2';
   }
   return buildTest(args.slice(0, -1), '[');
+};
+
+const dblBracket: Handler = (args) => {
+  if (args.length === 0 || wordToString(args[args.length - 1]) !== ']]') {
+    return '[Console]::Error.WriteLine(' + psStr("bash: [[: missing `]]'") + '); $script:fx_exit = 2';
+  }
+  return buildTest(args.slice(0, -1), '[[', true);
 };
 
 /* ------------------------------------------------------------------ */
@@ -1221,6 +1246,7 @@ export const handlers: Record<string, Handler> = {
   false: falseCmd,
   test,
   '[': bracket,
+  '[[': dblBracket,
   ':': colon,
   pushd,
   popd,
