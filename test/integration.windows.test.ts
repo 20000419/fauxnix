@@ -122,6 +122,96 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', () => {
     expect(silenced.stdout.trim()).toBe('OK');
   });
 
+  it('[[ ]] file and string tests, including =~', async () => {
+    expect((await run('[[ -f fruits.txt ]] && echo yes')).stdout.trim()).toBe('yes');
+    expect((await run('[[ -d fruits.txt ]] && echo yes; echo after')).stdout.trim()).toBe('after');
+    expect((await run('[[ abc =~ ^a ]] && echo match')).stdout.trim()).toBe('match');
+    expect((await run('[[ abc =~ ^z ]] || echo nomatch')).stdout.trim()).toBe('nomatch');
+    expect((await run('[[ 2 -gt 1 ]]')).exitCode).toBe(0);
+    expect((await run('[[ 2 -lt 1 ]]')).exitCode).toBe(1);
+    expect(() => parseCommand('[[ -f x')).toThrow(/missing/);
+    expect((await run('[[ -f fruits.txt && -d sub ]] && echo both')).stdout.trim()).toBe('both');
+    expect((await run('[[ -f nope || -f fruits.txt ]] && echo either')).stdout.trim()).toBe(
+      'either',
+    );
+    expect((await run('[[ foo == f* ]]')).exitCode).toBe(0);
+    expect((await run("export pat='f*'; [[ foo == $pat ]]")).exitCode).toBe(0);
+    expect((await run('[[ 1 == [[:digit:]] ]]')).exitCode).toBe(0);
+    expect((await run('[[ a == [!b] ]]')).exitCode).toBe(0);
+    expect((await run('[[ z =~ a|| ]]')).exitCode).toBe(0);
+    expect((await run('[[ foo == "f*" ]]')).exitCode).toBe(1);
+    expect((await run('[[ abc =~ "^a" ]]')).exitCode).toBe(1);
+    writeFileSync(join(dir, 'important.txt'), 'keep\n', 'utf8');
+    const lex = await run('[[ z > important.txt ]]');
+    expect(lex.exitCode).toBe(0);
+    expect(readFileSync(join(dir, 'important.txt'), 'utf8')).toBe('keep\n');
+    expect(() => parseCommand('[[ "]]"')).toThrow(/missing/);
+    expect((await run('[[ abc =~ ^a|z$ ]]')).exitCode).toBe(0);
+    expect((await run('[[ foo == f"o"* ]]')).exitCode).toBe(0);
+    expect((await run('[[ x =~ \\. ]]')).exitCode).toBe(1);
+    expect(() => translateCommandList(parseCommand('[[ x "==" x ]]'))).toThrow(/binary operator|too many/);
+    expect(() => translateCommandList(parseCommand('[[ -f ]]'))).toThrow(/unary operator/);
+    expect((await run('[[ 1 =~ [[:digit:]] ]]')).exitCode).toBe(0);
+    expect((await run("export re='[[:digit:]]'; [[ 1 =~ $re ]]")).exitCode).toBe(0);
+    expect((await run('[[ /tmp/foo == /tmp/* ]]')).exitCode).toBe(0);
+    expect(() => translateCommandList(parseCommand('[[ "-f" fruits.txt ]]'))).toThrow();
+    expect((await run('[[ ( -f fruits.txt || -f nope ) && -d sub ]] && echo grp')).stdout.trim()).toBe(
+      'grp',
+    );
+    expect(() => translateCommandList(parseCommand('[[ x -o y ]]'))).toThrow();
+    expect((await run('[[ x =~ |x ]]')).exitCode).toBe(0);
+    expect(() => translateCommandList(parseCommand('[[ "!" x ]]'))).toThrow();
+    expect(() => translateCommandList(parseCommand('[[ ! ]]'))).toThrow(/unary operator/);
+    expect((await run("[ -n x ']'")).exitCode).toBe(0);
+    expect((await run('test !')).exitCode).toBe(0);
+    expect((await run('[[ ~ == $HOME ]]')).exitCode).toBe(0);
+    expect((await run('test x "=" x')).exitCode).toBe(0);
+    expect((await run("[ \"-n\" x ]")).exitCode).toBe(0);
+    // POSIX ERE: \\d is the letter d, not a digit class (.NET would think otherwise)
+    expect((await run("export re='\\d'; [[ 1 =~ $re ]]; echo $?")).stdout.trim()).toBe('1');
+    expect((await run("export re='\\d'; [[ d =~ $re ]]")).exitCode).toBe(0);
+    // [:digit:] is a class of :dgit only when it is not [[:digit:]]
+    expect((await run('[[ xd =~ x[:digit:] ]]')).exitCode).toBe(0);
+    expect((await run('[[ x9 =~ x[:digit:] ]]')).exitCode).toBe(1);
+    // backslash in an expanded glob is a literal escape
+    expect((await run("export pat='f\\*'; [[ 'f*' == $pat ]]")).exitCode).toBe(0);
+    expect((await run("export pat='f\\*'; [[ foo == $pat ]]")).exitCode).toBe(1);
+    // [[ always has extglob on the == / != operand
+    expect((await run('[[ foo == @(foo|bar) ]]')).exitCode).toBe(0);
+    expect((await run('[[ baz == @(foo|bar) ]]')).exitCode).toBe(1);
+    expect((await run('[[ foo == +(foo|bar) ]]')).exitCode).toBe(0);
+    expect((await run('[[ foofoo == +(foo) ]]')).exitCode).toBe(0);
+    expect((await run('[[ xyz == !(foo|bar) ]]')).exitCode).toBe(0);
+    expect((await run('[[ foo == !(foo|bar) ]]')).exitCode).toBe(1);
+    expect((await run("export pat='@(foo|bar)'; [[ foo == $pat ]]")).exitCode).toBe(0);
+    // !(pat) must not steal a following suffix (`foobar` is not `!(foo)` + `bar`)
+    expect((await run('[[ foobar == !(foo)bar ]]')).exitCode).toBe(1);
+    expect((await run('[[ xbar == !(foo)bar ]]')).exitCode).toBe(0);
+    expect((await run('[[ foofoobar == !(foo)bar ]]')).exitCode).toBe(0);
+    // GNU regex word ops stay; .NET-only \\d does not become a digit class
+    expect((await run("export re='\\bword\\b'; [[ word =~ $re ]]")).exitCode).toBe(0);
+    expect((await run("export re='\\bword\\b'; [[ xwordx =~ $re ]]")).exitCode).toBe(1);
+    expect((await run('[[ -v HOME ]]')).exitCode).toBe(0);
+    expect((await run('[[ -v FAUXNIX_NO_SUCH_VAR ]]')).exitCode).toBe(1);
+    expect((await run('[[ -L fruits.txt ]]')).exitCode).toBe(1);
+    expect((await run('[[ -h fruits.txt ]]')).exitCode).toBe(1);
+    expect((await run('[[ -a fruits.txt ]]')).exitCode).toBe(0);
+    expect((await run('[[ ("" && "") || "" ]]')).exitCode).toBe(1);
+    expect((await run('V=SHELL [[ -v $V ]]')).exitCode).toBe(0);
+    expect((await run('V=FAUXNIX_NO_SUCH_VAR [[ -v $V ]]')).exitCode).toBe(1);
+    expect((await run('[[ ab =~ (ab) ]]')).exitCode).toBe(0);
+    expect((await run("[[ -v '' ]]")).exitCode).toBe(1);
+    expect((await run('name="" [[ -v $name ]]')).exitCode).toBe(1);
+    expect((await run('[[ aXXb =~ a&&b ]]')).exitCode).toBe(0);
+    expect((await run('[[ -f fruits.txt &&\n -r fruits.txt\n]]')).exitCode).toBe(0);
+    expect((await run('[[ - == [a\\-z] ]]')).exitCode).toBe(0);
+    expect((await run('[[ - == [a"-"z] ]]')).exitCode).toBe(0);
+    expect((await run('[[ b == [a\\-z] ]]')).exitCode).toBe(1);
+    expect((await run('[[ A == a ]]')).exitCode).toBe(1);
+    expect((await run('[[ foo == F* ]]')).exitCode).toBe(1);
+    expect((await run('[[ a-b == "a-b" ]]')).exitCode).toBe(0);
+  }, 30000);
+
   it('&& and || short-circuit like bash', async () => {
     expect((await run('cat missing.txt || echo FELLBACK')).stdout).toContain('FELLBACK');
     const r = await run('cat missing.txt && echo NOPE ; echo END');
