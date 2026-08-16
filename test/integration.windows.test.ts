@@ -4,7 +4,7 @@
  */
 import { beforeAll, afterAll, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseCommand } from '../src/parser.js';
@@ -175,6 +175,23 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', () => {
     await run('gunzip g.txt.gz');
     const back = await run('cat g.txt');
     expect(back.stdout).toContain('apple pie');
+  });
+
+  it('redirects write LF line endings (GNU parity)', async () => {
+    const r = await run('head -2 fruits.txt > out.txt; wc -c out.txt');
+    // fruits.txt first two lines: "apple\nBanana\n" = 13 bytes with LF endings
+    expect(r.stdout.trim()).toMatch(/13 .*out\.txt/);
+    // the redirect-written file itself must contain no CR bytes
+    const raw = readFileSync(join(dir, 'out.txt'), 'utf8');
+    expect(raw).not.toContain('\r');
+    expect(raw).toBe('apple\nBanana\n');
+  });
+
+  it('redirect byte counts match GNU (create → head → wc roundtrip)', async () => {
+    const r = await run(
+      "printf 'alpha\\nbeta\\n' > w.txt; head -2 w.txt > w2.txt; wc -c w2.txt; rm w.txt w2.txt",
+    );
+    expect(r.stdout.trim()).toMatch(/11 .*w2\.txt/);
   });
 
   it('ps table has header', async () => {
