@@ -4,7 +4,7 @@
  */
 import { beforeAll, afterAll, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseCommand } from '../src/parser.js';
@@ -175,6 +175,59 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', () => {
     await run('gunzip g.txt.gz');
     const back = await run('cat g.txt');
     expect(back.stdout).toContain('apple pie');
+  });
+
+  it('cd then redirect writes under the new cwd, not the entry cwd', async () => {
+    try {
+      const r = await run('cd sub && echo nested > nested.txt');
+      expect(r.exitCode).toBe(0);
+      expect(existsSync(join(dir, 'nested.txt'))).toBe(false);
+      const raw = readFileSync(join(dir, 'sub', 'nested.txt'), 'utf8');
+      expect(raw.replace(/\r/g, '')).toBe('nested\n');
+    } finally {
+      await run('cd "' + dir.replace(/\\/g, '/') + '"');
+    }
+  });
+
+  it('cd then stdin redirect reads from the new cwd', async () => {
+    try {
+      const r = await run('cd sub && wc -l < b.txt');
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout.trim()).toBe('1');
+    } finally {
+      await run('cd "' + dir.replace(/\\/g, '/') + '"');
+    }
+  });
+
+  it('failed redirect on cd does not move later relative redirects', async () => {
+    try {
+      const r = await run('cd sub > nosuchdir/out.txt; echo ok > after.txt');
+      expect(r.exitCode).toBe(0);
+      expect(r.stderr).toMatch(/nosuchdir\/out\.txt|No such file or directory/);
+      expect(existsSync(join(dir, 'sub', 'after.txt'))).toBe(false);
+      expect(readFileSync(join(dir, 'after.txt'), 'utf8').replace(/\r/g, '')).toBe('ok\n');
+    } finally {
+      await run('cd "' + dir.replace(/\\/g, '/') + '"');
+    }
+  });
+
+  it('earlier failed redirect does not truncate a later output file', async () => {
+    writeFileSync(join(dir, 'important.txt'), 'keep\n', 'utf8');
+    const r = await run('echo hi 2>nosuch/err >important.txt');
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr).toMatch(/No such file or directory/);
+    expect(readFileSync(join(dir, 'important.txt'), 'utf8')).toBe('keep\n');
+  });
+
+  it('redirect before cd still writes in the entry cwd', async () => {
+    try {
+      const r = await run('echo stay > stay.txt && cd sub');
+      expect(r.exitCode).toBe(0);
+      expect(existsSync(join(dir, 'stay.txt'))).toBe(true);
+      expect(existsSync(join(dir, 'sub', 'stay.txt'))).toBe(false);
+    } finally {
+      await run('cd "' + dir.replace(/\\/g, '/') + '"');
+    }
   });
 
   it('redirects write LF line endings (GNU parity)', async () => {
