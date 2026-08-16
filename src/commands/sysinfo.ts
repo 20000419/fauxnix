@@ -1,4 +1,4 @@
-import { Word, WordPart, wordToString } from '../ast.js';
+import { FauxnixParseError, Word, WordPart, isUnquotedLiteral, wordToString } from '../ast.js';
 import { Handler, lookup, parseWords, psStr, registeredNames } from '../registry.js';
 import { exprOfWord, operandExpr, translateSimple } from '../translator.js';
 import { handlers as textIoHandlers } from './text-io.js';
@@ -803,6 +803,7 @@ const colon: Handler = () => '';
 
 const TEST_UNARY = new Set(['-e', '-f', '-d', '-r', '-w', '-x', '-s', '-z', '-n']);
 const TEST_BINARY = new Set(['=', '==', '!=', '-eq', '-ne', '-lt', '-le', '-gt', '-ge']);
+const TEST_BINARY_KSH = new Set([...TEST_BINARY, '=~', '>', '<']);
 
 const FX_TN_FN = [
   'function fx-tn($a, $b, $op) {',
@@ -857,69 +858,510 @@ function testUnaryExpr(op: string, w: Word): string {
   }
 }
 
-function testBinaryExpr(l: Word, op: string, r: Word): string {
-  const le = '[string](' + exprOfWord(l) + ')';
-  const re = '[string](' + exprOfWord(r) + ')';
-  if (op === '=' || op === '==') return '(' + le + ' -ceq ' + re + ')';
-  if (op === '!=') return '(' + le + ' -cne ' + re + ')';
+const FX_RE_FN = [
+  'function fx-re($a, $b) {',
+  '  try { return [regex]::IsMatch([string]$a, (fx-posixre ([string]$b))) }',
+  "  catch { [Console]::Error.WriteLine('bash: [[: invalid regular expression'); $script:fx_exit = 2; return $false }",
+  '}',
+].join('\n');
+
+const POSIX_CLASS_INNER: [RegExp, string][] = [
+  [/\[:alnum:\]/g, 'A-Za-z0-9'],
+  [/\[:alpha:\]/g, 'A-Za-z'],
+  [/\[:blank:\]/g, ' \\t'],
+  [/\[:cntrl:\]/g, '\\x00-\\x1F\\x7F'],
+  [/\[:digit:\]/g, '0-9'],
+  [/\[:graph:\]/g, '\\x21-\\x7E'],
+  [/\[:lower:\]/g, 'a-z'],
+  [/\[:print:\]/g, '\\x20-\\x7E'],
+  [/\[:punct:\]/g, '!-/:-@\\[-`{-~'],
+  [/\[:space:\]/g, '\\s'],
+  [/\[:upper:\]/g, 'A-Z'],
+  [/\[:word:\]/g, 'A-Za-z0-9_'],
+  [/\[:xdigit:\]/g, '0-9A-Fa-f'],
+];
+
+/** Replace `[:name:]` only inside an already-extracted bracket expression. */
+function replacePosixClassesInBracketInner(s: string): string {
+  let t = s;
+  for (const [re, rep] of POSIX_CLASS_INNER) t = t.replace(re, rep);
+  return t;
+}
+
+/** Index of the `]` that closes the `[` at `i`, skipping `[:name:]`. */
+function findBracketClose(s: string, i: number): number {
+  let j = i + 1;
+  if (j < s.length && (s[j] === '!' || s[j] === '^')) j++;
+  if (j < s.length && s[j] === ']') j++;
+  while (j < s.length) {
+    if (s.startsWith('[:', j)) {
+      const end = s.indexOf(':]', j + 2);
+      if (end >= 0) {
+        j = end + 2;
+        continue;
+      }
+    }
+    if (s[j] === ']') return j;
+    j++;
+  }
+  return -1;
+}
+
+/** POSIX ERE specials that keep their backslash; anything else is the char. */
+const ERE_KEEP_ESC = new Set([
+  '.',
+  '[',
+  ']',
+  '\\',
+  '(',
+  ')',
+  '*',
+  '+',
+  '?',
+  '{',
+  '}',
+  '|',
+  '^',
+  '$',
+  '1',
+  '2',
+  '3',
+  '4',
+  '5',
+  '6',
+  '7',
+  '8',
+  '9',
+]);
+
+/**
+ * Map a POSIX ERE to a .NET pattern: POSIX classes only inside `[…]`,
+ * and drop .NET-only escapes (`\\d` → `d`) so `[[ 1 =~ $re ]]` with
+ * `re='\\d'` stays false.
+ */
+function rewriteEre(s: string): string {
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '\\') {
+      if (i + 1 >= s.length) {
+        out += '\\\\';
+        break;
+      }
+      const n = s[i + 1];
+      out += ERE_KEEP_ESC.has(n) ? '\\' + n : n;
+      i++;
+      continue;
+    }
+    if (s[i] === '[') {
+      const j = findBracketClose(s, i);
+      if (j < 0) {
+        out += '[';
+        continue;
+      }
+      out += '[' + replacePosixClassesInBracketInner(s.slice(i + 1, j)) + ']';
+      i = j;
+      continue;
+    }
+    out += s[i];
+  }
+  return out;
+}
+
+function likeEscapeLit(s: string): string {
+  return s.replace(/[\\^$.|?*+()\[\]{}]/g, '\\$&');
+}
+
+const EXT_GLOB_PREF = new Set(['@', '*', '?', '+', '!']);
+
+/** Bash glob → .NET regex, including extglob and `\\*`-style escapes. */
+function bashGlobToReFrom(s: string, from: number, end: number, stopOnBar: boolean): { re: string; i: number } {
+  let out = '';
+  let i = from;
+  while (i < end) {
+    const c = s[i];
+    if (stopOnBar && (c === '|' || c === ')')) break;
+    if (c === '\\') {
+      if (i + 1 < end) {
+        const n = s[i + 1];
+        // Only glob metacharacters are escaped. A Windows path like
+        // C:\Users must keep the backslash; `f\*` is a literal star.
+        if (n === '*' || n === '?' || n === '[' || n === ']' || n === '\\') {
+          out += likeEscapeLit(n);
+          i += 2;
+          continue;
+        }
+      }
+      out += '\\\\';
+      i++;
+      continue;
+    }
+    if (EXT_GLOB_PREF.has(c) && s[i + 1] === '(') {
+      i += 2;
+      const alts: string[] = [];
+      while (i < end && s[i] !== ')') {
+        const sub = bashGlobToReFrom(s, i, end, true);
+        alts.push(sub.re);
+        i = sub.i;
+        if (i < end && s[i] === '|') {
+          i++;
+          continue;
+        }
+        break;
+      }
+      if (i < end && s[i] === ')') i++;
+      const joined = '(?:' + alts.join('|') + ')';
+      if (c === '@') out += joined;
+      else if (c === '+') out += joined + '+';
+      else if (c === '*') out += joined + '*';
+      else if (c === '?') out += joined + '?';
+      else out += '(?:(?!' + joined + '$).*)';
+      continue;
+    }
+    if (c === '*') {
+      out += '.*';
+      i++;
+      continue;
+    }
+    if (c === '?') {
+      out += '.';
+      i++;
+      continue;
+    }
+    if (c === '[') {
+      const j = findBracketClose(s, i);
+      if (j < 0 || j >= end) {
+        out += '\\[';
+        i++;
+        continue;
+      }
+      let inner = replacePosixClassesInBracketInner(s.slice(i + 1, j));
+      if (inner.startsWith('!') || inner.startsWith('^')) inner = '^' + inner.slice(1);
+      out += '[' + inner + ']';
+      i = j + 1;
+      continue;
+    }
+    out += likeEscapeLit(c);
+    i++;
+  }
+  return { re: out, i };
+}
+
+function bashGlobToRe(s: string): string {
+  return bashGlobToReFrom(s, 0, s.length, false).re;
+}
+
+const FX_LIKEESC_FN = [
+  'function fx-likeesc($s) {',
+  '  $fx_o = New-Object System.Text.StringBuilder',
+  '  foreach ($fx_ch in ([string]$s).ToCharArray()) {',
+  "    if (@('*','?','[',']','`') -contains [string]$fx_ch) { [void]$fx_o.Append('`' + $fx_ch) }",
+  '    else { [void]$fx_o.Append($fx_ch) }',
+  '  }',
+  '  $fx_o.ToString()',
+  '}',
+].join('\n');
+
+/** Build a regex pattern, escaping quoted/backslash-escaped portions. */
+function mergeUnescapedText(w: Word): Word {
+  const merged: Word = [];
+  for (const p of w) {
+    const last = merged[merged.length - 1];
+    if (
+      p.kind === 'Text' &&
+      !p.escaped &&
+      last &&
+      last.kind === 'Text' &&
+      !last.escaped
+    ) {
+      last.text += p.text;
+    } else {
+      merged.push(p.kind === 'Text' ? { ...p } : p);
+    }
+  }
+  return merged;
+}
+
+function regexOperandExpr(w: Word): string {
+  if (w.length === 0) return "''";
+  const bits: string[] = [];
+  for (const p of mergeUnescapedText(w)) {
+    if (p.kind === 'SingleQuoted') {
+      bits.push('[regex]::Escape(' + psStr(p.text) + ')');
+    } else if (p.kind === 'DoubleQuoted') {
+      bits.push('[regex]::Escape([string](' + exprOfWord([p]) + '))');
+    } else if (p.kind === 'Text') {
+      bits.push(
+        p.escaped
+          ? '[regex]::Escape(' + psStr(p.text) + ')'
+          : psStr(rewriteEre(p.text)),
+      );
+    } else {
+      bits.push('(fx-posixre ([string](' + exprOfWord([p]) + ')))');
+    }
+  }
+  return bits.length === 1 ? bits[0] : '(' + bits.join(' + ') + ')';
+}
+
+/** Build a -clike pattern: unquoted * ? stay wildcards; quoted/escaped parts are literal. */
+function likeOperandExpr(w: Word): string {
+  if (w.length === 0) return "''";
+  const bits: string[] = [];
+  for (const p of mergeUnescapedText(w)) {
+    if (p.kind === 'SingleQuoted') {
+      bits.push('[regex]::Escape(' + psStr(p.text) + ')');
+    } else if (p.kind === 'DoubleQuoted') {
+      bits.push('[regex]::Escape([string](' + exprOfWord([p]) + '))');
+    } else if (p.kind === 'Text') {
+      bits.push(psStr(p.escaped ? likeEscapeLit(p.text) : bashGlobToRe(p.text)));
+    } else {
+      bits.push('(fx-globre ([string](' + exprOfWord([p]) + ')))');
+    }
+  }
+  return bits.length === 1 ? bits[0] : '(' + bits.join(' + ') + ')';
+}
+
+/** String operand for [[ compares — do not POSIX-normalize paths. */
+function stringOperandExpr(w: Word): string {
+  if (w.length > 0 && w[0].kind === 'Text' && !w[0].escaped && w[0].text.startsWith('~')) {
+    return '[string](' + exprOfWord(w) + ')';
+  }
+  const lit = w.every((p) => p.kind === 'Text' || p.kind === 'SingleQuoted')
+    ? w.map((p) => (p as { text: string }).text).join('')
+    : null;
+  if (lit !== null) return psStr(lit);
+  return '[string](' + exprOfWord(w) + ')';
+}
+
+const FX_POSIX_INNER_PS = [
+  "      $inner = $inner.Replace('[:alnum:]', 'A-Za-z0-9')",
+  "      $inner = $inner.Replace('[:alpha:]', 'A-Za-z')",
+  "      $inner = $inner.Replace('[:blank:]', ' \\t')",
+  "      $inner = $inner.Replace('[:cntrl:]', '\\x00-\\x1F\\x7F')",
+  "      $inner = $inner.Replace('[:digit:]', '0-9')",
+  "      $inner = $inner.Replace('[:graph:]', '\\x21-\\x7E')",
+  "      $inner = $inner.Replace('[:lower:]', 'a-z')",
+  "      $inner = $inner.Replace('[:print:]', '\\x20-\\x7E')",
+  "      $inner = $inner.Replace('[:punct:]', '!-/:-@\\[-`{-~')",
+  "      $inner = $inner.Replace('[:space:]', '\\s')",
+  "      $inner = $inner.Replace('[:upper:]', 'A-Z')",
+  "      $inner = $inner.Replace('[:word:]', 'A-Za-z0-9_')",
+  "      $inner = $inner.Replace('[:xdigit:]', '0-9A-Fa-f')",
+].join('\n');
+
+const FX_GLOBRE_FN = [
+  'function fx-globat([string]$s, [int]$i, [int]$end, [bool]$stop) {',
+  '  $sb = New-Object System.Text.StringBuilder',
+  '  $ext = @("*","?","@","+","!")',
+  '  while ($i -lt $end) {',
+  '    $c = $s[$i]',
+  "    if ($stop -and ($c -eq '|' -or $c -eq ')')) { break }",
+  "    if ($c -eq '\\') {",
+  '      if (($i + 1) -lt $end) {',
+  '        $n = $s[$i + 1]',
+  "        if (@('*','?','[',']','\\') -contains [string]$n) { [void]$sb.Append([regex]::Escape([string]$n)); $i += 2; continue }",
+  '      }',
+  "      [void]$sb.Append('\\\\'); $i++; continue",
+  '    }',
+  "    if (($i + 1) -lt $end -and $s[$i + 1] -eq '(' -and $ext -contains [string]$c) {",
+  '      $pref = [string]$c',
+  '      $i += 2',
+  '      $alts = @()',
+  "      while ($i -lt $end -and $s[$i] -ne ')') {",
+  '        $sub = fx-globat $s $i $end $true',
+  '        $alts += $sub.p',
+  '        $i = $sub.i',
+  "        if ($i -lt $end -and $s[$i] -eq '|') { $i++; continue }",
+  '        break',
+  '      }',
+  "      if ($i -lt $end -and $s[$i] -eq ')') { $i++ }",
+  "      $joined = '(?:' + ($alts -join '|') + ')'",
+  "      if ($pref -eq '@') { [void]$sb.Append($joined) }",
+  "      elseif ($pref -eq '+') { [void]$sb.Append($joined + '+') }",
+  "      elseif ($pref -eq '*') { [void]$sb.Append($joined + '*') }",
+  "      elseif ($pref -eq '?') { [void]$sb.Append($joined + '?') }",
+  "      else { [void]$sb.Append('(?:(?!' + $joined + '$).*)') }",
+  '      continue',
+  '    }',
+  "    if ($c -eq '*') { [void]$sb.Append('.*'); $i++; continue }",
+  "    if ($c -eq '?') { [void]$sb.Append('.'); $i++; continue }",
+  "    if ($c -eq '[') {",
+  '      $j = $i + 1',
+  "      if ($j -lt $end -and ($s[$j] -eq '!' -or $s[$j] -eq '^')) { $j++ }",
+  "      if ($j -lt $end -and $s[$j] -eq ']') { $j++ }",
+  '      while ($j -lt $end) {',
+  "        if (($j + 1) -lt $end -and $s[$j] -eq '[' -and $s[$j + 1] -eq ':') {",
+  "          $k = $s.IndexOf(':]', $j + 2)",
+  '          if ($k -ge 0 -and $k -lt $end) { $j = $k + 2; continue }',
+  '        }',
+  "        if ($s[$j] -eq ']') { break }",
+  '        $j++',
+  '      }',
+  "      if ($j -ge $end) { [void]$sb.Append('\\['); $i++; continue }",
+  '      $inner = $s.Substring($i + 1, $j - $i - 1)',
+  FX_POSIX_INNER_PS,
+  "      if ($inner.StartsWith('!') -or $inner.StartsWith('^')) { $inner = '^' + $inner.Substring(1) }",
+  "      [void]$sb.Append('[' + $inner + ']')",
+  '      $i = $j + 1',
+  '      continue',
+  '    }',
+  '    [void]$sb.Append([regex]::Escape([string]$c))',
+  '    $i++',
+  '  }',
+  '  return @{ p = $sb.ToString(); i = $i }',
+  '}',
+  'function fx-globre($s) {',
+  '  $t = [string]$s',
+  '  return (fx-globat $t 0 $t.Length $false).p',
+  '}',
+].join('\n');
+
+const FX_POSIXRE_FN = [
+  'function fx-posixre($s) {',
+  '  $t = [string]$s',
+  '  $sb = New-Object System.Text.StringBuilder',
+  '  $i = 0',
+  "  $keep = @('.','[',']','\\','(',')','*','+','?','{','}','|','^','$','1','2','3','4','5','6','7','8','9')",
+  '  while ($i -lt $t.Length) {',
+  '    $c = $t[$i]',
+  "    if ($c -eq '\\') {",
+  "      if (($i + 1) -ge $t.Length) { [void]$sb.Append('\\\\'); break }",
+  '      $n = $t[$i + 1]',
+  "      if ($keep -contains [string]$n) { [void]$sb.Append('\\' + [string]$n) }",
+  '      else { [void]$sb.Append([string]$n) }',
+  '      $i += 2',
+  '      continue',
+  '    }',
+  "    if ($c -eq '(' -and ($i + 1) -lt $t.Length -and $t[$i + 1] -eq '?') {",
+  "      throw 'invalid regular expression'",
+  '    }',
+  "    if ($c -eq '[') {",
+  '      $j = $i + 1',
+  "      if ($j -lt $t.Length -and ($t[$j] -eq '!' -or $t[$j] -eq '^')) { $j++ }",
+  "      if ($j -lt $t.Length -and $t[$j] -eq ']') { $j++ }",
+  '      while ($j -lt $t.Length) {',
+  "        if (($j + 1) -lt $t.Length -and $t[$j] -eq '[' -and $t[$j + 1] -eq ':') {",
+  "          $k = $t.IndexOf(':]', $j + 2)",
+  '          if ($k -ge 0) { $j = $k + 2; continue }',
+  '        }',
+  "        if ($t[$j] -eq ']') { break }",
+  '        $j++',
+  '      }',
+  "      if ($j -ge $t.Length) { [void]$sb.Append('['); $i++; continue }",
+  '      $inner = $t.Substring($i + 1, $j - $i - 1)',
+  FX_POSIX_INNER_PS,
+  "      [void]$sb.Append('[' + $inner + ']')",
+  '      $i = $j + 1',
+  '      continue',
+  '    }',
+  '    [void]$sb.Append($c)',
+  '    $i++',
+  '  }',
+  '  return $sb.ToString()',
+  '}',
+].join('\n');
+
+function testBinaryExpr(l: Word, op: string, r: Word, allowKsh: boolean): string {
+  const le = allowKsh ? stringOperandExpr(l) : '[string](' + exprOfWord(l) + ')';
+  const re = allowKsh ? stringOperandExpr(r) : '[string](' + exprOfWord(r) + ')';
+  if (op === '=~') return '(fx-re (' + le + ') (' + regexOperandExpr(r) + '))';
+  if (op === '>' || op === '<') {
+    const cmp =
+      '[string]::Compare(' + le + ', ' + re + ', [System.StringComparison]::Ordinal)';
+    return '((' + cmp + ') ' + (op === '>' ? '-gt' : '-lt') + ' 0)';
+  }
+  if (op === '=' || op === '==') {
+    if (allowKsh)
+      return '([regex]::IsMatch(' + le + ', \'^\' + (' + likeOperandExpr(r) + ') + \'$\'))';
+    return '(' + le + ' -ceq ' + re + ')';
+  }
+  if (op === '!=') {
+    if (allowKsh)
+      return '(-not [regex]::IsMatch(' + le + ', \'^\' + (' + likeOperandExpr(r) + ') + \'$\'))';
+    return '(' + le + ' -cne ' + re + ')';
+  }
   return '(fx-tn (' + le + ') (' + re + ') ' + psStr(op) + ')';
 }
 
-function parseTestOr(ws: Word[], st: { i: number }): TestParse {
-  const r = parseTestAnd(ws, st);
+function parseTestOr(ws: Word[], st: { i: number }, allowRe: boolean): TestParse {
+  const r = parseTestAnd(ws, st, allowRe);
   if (r.error) return r;
   let expr = r.expr!;
-  while (st.i < ws.length && wordToString(ws[st.i]) === '-o') {
+  while (
+    st.i < ws.length &&
+    (allowRe ? isUnquotedLiteral(ws[st.i], '||') : wordToString(ws[st.i]) === '-o')
+  ) {
     st.i++;
-    const rr = parseTestAnd(ws, st);
+    const rr = parseTestAnd(ws, st, allowRe);
     if (rr.error) return rr;
     expr = '(' + expr + ') -or (' + rr.expr + ')';
   }
   return { expr, error: null };
 }
 
-function parseTestAnd(ws: Word[], st: { i: number }): TestParse {
-  const r = parseTestNot(ws, st);
+function parseTestAnd(ws: Word[], st: { i: number }, allowRe: boolean): TestParse {
+  const r = parseTestNot(ws, st, allowRe);
   if (r.error) return r;
   let expr = r.expr!;
-  while (st.i < ws.length && wordToString(ws[st.i]) === '-a') {
+  while (
+    st.i < ws.length &&
+    (allowRe ? isUnquotedLiteral(ws[st.i], '&&') : wordToString(ws[st.i]) === '-a')
+  ) {
     st.i++;
-    const rr = parseTestNot(ws, st);
+    const rr = parseTestNot(ws, st, allowRe);
     if (rr.error) return rr;
     expr = '(' + expr + ') -and (' + rr.expr + ')';
   }
   return { expr, error: null };
 }
 
-function parseTestNot(ws: Word[], st: { i: number }): TestParse {
+function parseTestNot(ws: Word[], st: { i: number }, allowRe: boolean): TestParse {
   const t = st.i < ws.length ? wordToString(ws[st.i]) : null;
-  if (t === '!' && st.i + 1 < ws.length) {
+  if (t === '!' && (!allowRe || isUnquotedLiteral(ws[st.i], '!'))) {
+    if (st.i + 1 >= ws.length) {
+      if (allowRe) return { expr: null, error: "`!': unary operator expected" };
+      return parseTestAtom(ws, st, allowRe);
+    }
     st.i++;
-    const r = parseTestNot(ws, st);
+    const r = parseTestNot(ws, st, allowRe);
     if (r.error) return r;
     return { expr: '(-not (' + r.expr + '))', error: null };
   }
-  return parseTestAtom(ws, st);
+  return parseTestAtom(ws, st, allowRe);
 }
 
-function parseTestAtom(ws: Word[], st: { i: number }): TestParse {
+function parseTestAtom(ws: Word[], st: { i: number }, allowRe: boolean): TestParse {
   if (st.i >= ws.length) return { expr: null, error: 'too many arguments' };
+  if (allowRe && isUnquotedLiteral(ws[st.i], '(')) {
+    st.i++;
+    const inner = parseTestOr(ws, st, allowRe);
+    if (inner.error) return inner;
+    if (st.i >= ws.length || !isUnquotedLiteral(ws[st.i], ')')) {
+      return { expr: null, error: "`)' expected" };
+    }
+    st.i++;
+    return inner;
+  }
   const t = wordToString(ws[st.i]);
   if (st.i === ws.length - 1) {
+    if (allowRe && TEST_UNARY.has(t) && isUnquotedLiteral(ws[st.i], t)) {
+      return { expr: null, error: t + ': unary operator expected' };
+    }
     // single remaining word: bash test treats any non-null string as true
     const e = exprOfWord(ws[st.i]);
     st.i++;
     return { expr: strNe(e), error: null };
   }
-  if (TEST_UNARY.has(t)) {
+  if (TEST_UNARY.has(t) && (!allowRe || isUnquotedLiteral(ws[st.i], t))) {
     const w = ws[st.i + 1];
     st.i += 2;
     return { expr: testUnaryExpr(t, w), error: null };
   }
-  const nt = wordToString(ws[st.i + 1]);
-  if (TEST_BINARY.has(nt)) {
+  const opWord = ws[st.i + 1];
+  const nt = wordToString(opWord);
+  const binaries = allowRe ? TEST_BINARY_KSH : TEST_BINARY;
+  if ((!allowRe || isUnquotedLiteral(opWord, nt)) && binaries.has(nt)) {
     if (st.i + 2 < ws.length) {
-      const expr = testBinaryExpr(ws[st.i], nt, ws[st.i + 2]);
+      const expr = testBinaryExpr(ws[st.i], nt, ws[st.i + 2], allowRe);
       st.i += 3;
       return { expr, error: null };
     }
@@ -930,10 +1372,10 @@ function parseTestAtom(ws: Word[], st: { i: number }): TestParse {
   return { expr: strNe(e), error: null };
 }
 
-function buildTest(ws: Word[], label: string): string {
+function buildTest(ws: Word[], label: string, allowRe = false): string {
   if (ws.length === 0) return '$script:fx_exit = 1';
   const st = { i: 0 };
-  const res = parseTestOr(ws, st);
+  const res = parseTestOr(ws, st, allowRe);
   let err: string | null = null;
   if (res.error) {
     err = res.error.startsWith('OP:')
@@ -943,10 +1385,26 @@ function buildTest(ws: Word[], label: string): string {
     err = 'bash: ' + label + ': too many arguments';
   }
   if (err !== null) {
+    // [[ syntax errors must abort translation so later ; / && segments
+    // cannot run (bash rejects the whole list).
+    if (label === '[[') throw new FauxnixParseError(err);
     return '[Console]::Error.WriteLine(' + psStr(err) + '); $script:fx_exit = 2';
   }
+  const helpers = [FX_TN_FN];
+  if (allowRe && res.expr && res.expr.indexOf('fx-re') >= 0) {
+    helpers.push(FX_POSIXRE_FN, FX_RE_FN);
+  }
+  if (
+    allowRe &&
+    res.expr &&
+    res.expr.indexOf('fx-posixre') >= 0 &&
+    helpers.indexOf(FX_POSIXRE_FN) < 0
+  )
+    helpers.push(FX_POSIXRE_FN);
+  if (allowRe && res.expr && res.expr.indexOf('fx-globre') >= 0) helpers.push(FX_GLOBRE_FN);
+  if (allowRe && res.expr && res.expr.indexOf('fx-likeesc') >= 0) helpers.push(FX_LIKEESC_FN);
   return [
-    FX_TN_FN,
+    ...helpers,
     '$fx_tr = ' + res.expr,
     'if ($script:fx_exit -eq 2) { }',
     'elseif (-not $fx_tr) { $script:fx_exit = 1 }',
@@ -960,6 +1418,13 @@ const bracket: Handler = (args) => {
     return '[Console]::Error.WriteLine(' + psStr("bash: [: missing `]'") + '); $script:fx_exit = 2';
   }
   return buildTest(args.slice(0, -1), '[');
+};
+
+const dblBracket: Handler = (args) => {
+  if (args.length === 0 || !isUnquotedLiteral(args[args.length - 1], ']]')) {
+    return '[Console]::Error.WriteLine(' + psStr("bash: [[: missing `]]'") + '); $script:fx_exit = 2';
+  }
+  return buildTest(args.slice(0, -1), '[[', true);
 };
 
 /* ------------------------------------------------------------------ */
@@ -1221,6 +1686,7 @@ export const handlers: Record<string, Handler> = {
   false: falseCmd,
   test,
   '[': bracket,
+  '[[': dblBracket,
   ':': colon,
   pushd,
   popd,
