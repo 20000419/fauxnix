@@ -23,7 +23,7 @@ Exit codes follow bash conventions (0 ok, 1 fail, 2 usage/serious, 127 command n
 
 export async function startMcpServer(): Promise<void> {
   const server = new McpServer(
-    { name: 'fauxnix', version: '0.1.0' },
+    { name: 'fauxnix', version: '0.2.0' },
     { capabilities: { tools: {} } },
   );
   const session = new FauxnixSession();

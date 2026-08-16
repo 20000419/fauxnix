@@ -30,7 +30,7 @@ export async function runCli(argv: string[]): Promise<void> {
   const [verb, ...rest] = argv;
 
   if (verb === '--version' || verb === '-v') {
-    console.log('fauxnix 0.1.0');
+    console.log('fauxnix 0.2.0');
     return;
   }
 
