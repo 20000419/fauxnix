@@ -177,6 +177,13 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', () => {
     expect(back.stdout).toContain('apple pie');
   });
 
+  it('printf CRLF without a trailing LF is preserved on redirect', async () => {
+    const r = await run("printf 'a\\r\\nb' > cr.txt; wc -c cr.txt");
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.trim()).toMatch(/4 .*cr\.txt/);
+    expect(readFileSync(join(dir, 'cr.txt'))).toEqual(Buffer.from('a\r\nb'));
+  });
+
   it('redirects write LF line endings (GNU parity)', async () => {
     const r = await run('head -2 fruits.txt > out.txt; wc -c out.txt');
     // fruits.txt first two lines: "apple\nBanana\n" = 13 bytes with LF endings
