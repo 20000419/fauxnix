@@ -5,6 +5,7 @@ import {
   SimpleCommand,
   Word,
   WordPart,
+  isUnquotedLiteral,
 } from './ast.js';
 import { parseCommand } from './parser.js';
 import { PipelineCtx, lookup, psStr } from './registry.js';
@@ -187,7 +188,7 @@ export function translateSimple(
   let body: string;
   if (nameLit !== null) {
     const handler = lookup(nameLit);
-    if (handler) {
+    if (handler && !(nameLit === '[[' && !isUnquotedLiteral(cmd.name, '[['))) {
       body = handler(cmd.args, { position, hasStdin });
     } else {
       // passthrough: native command (git, node, npm, python, cargo, ...)
@@ -218,8 +219,19 @@ export function translateSimple(
   // `VAR=value cmd ...` prefix — set process env for the invocation.
   if (cmd.assignments.length > 0) {
     const sets = cmd.assignments
-      .map((a) => '$env:' + a.name + ' = ' + exprOfWord(a.value))
-      .join('; ');
+      .map(
+        (a) =>
+          '$env:' +
+          a.name +
+          ' = ' +
+          exprOfWord(a.value) +
+          "; $env:FAUXNIX_SETVARS = ((@($env:FAUXNIX_SETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne '" +
+          a.name.replace(/'/g, "''") +
+          "' }) + '" +
+          a.name.replace(/'/g, "''") +
+          "') -join ';')",
+      )
+      .join('\n');
     body = sets + '\n' + body;
   }
   return body;
