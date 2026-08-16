@@ -163,6 +163,13 @@ fauxnix optimizes for the commands agents actually run. Documented deviations:
   "not supported" errors at translate time.
 - `curl`/`wget` refuse loopback/private/reserved addresses (localhost, 127.x, ::1, 10.x,
   172.16–31.x, 192.168.x, 169.254.x) as a safety default for agent-driven HTTP.
+- **Native-tool pipelines vs encoding**: PS 5.1 has a single console-encoding knob, so
+  piping localized admin tools (ipconfig, tasklist — GBK on zh-CN) and UTF-8-native dev
+  tools (node, curl) cannot both decode cleanly mid-pipeline. Default favors UTF-8 dev
+  tools; set `FAUXNIX_NATIVE_ENCODING=ansi` when your agents grep Chinese output of
+  native Windows admin tools. **File reads are always sniffed per file** (UTF-8 strict →
+  GBK fallback), so grep/sed/awk over GBK *files* works in either mode — unlike Git Bash,
+  which only matches the encoding its locale assumes.
 
 ## Development
 

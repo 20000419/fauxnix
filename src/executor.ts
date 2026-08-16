@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Redirect } from './ast.js';
 import { SegmentPlan, normalizeLiteralPath } from './translator.js';
-import { decodeOutput, encodeCommand } from './encoding.js';
+import { decodeOutput, encodeCommand, resolveNativePref } from './encoding.js';
 import { normalizeStderr } from './errors.js';
 
 export interface ExecResult {
@@ -267,8 +267,9 @@ async function runPlans(
 
     afterSegment();
 
-    let segOut = decodeOutput(Buffer.concat(outBufs));
-    let segErr = normalizeStderr(decodeOutput(Buffer.concat(errBufs)));
+    const decodePref = resolveNativePref();
+    let segOut = decodeOutput(Buffer.concat(outBufs), decodePref);
+    let segErr = normalizeStderr(decodeOutput(Buffer.concat(errBufs), decodePref));
 
     if (running.killed) {
       segErr += '\nbash: command timed out after ' + Math.round(timeoutMs / 1000) + 's';

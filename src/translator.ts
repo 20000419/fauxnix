@@ -315,9 +315,16 @@ export function wrapScript(body: string): string {
     '$fx_exit = 0',
     '$fx_prev = 0',
     'if ($env:FAUXNIX_PREV_EXIT) { try { $fx_prev = [int]$env:FAUXNIX_PREV_EXIT } catch { $fx_prev = 0 } }',
-    'try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}',
+    // single console-encoding knob in PS 5.1: ansi mode decodes GBK-native
+    // admin tools correctly, utf8 mode decodes UTF-8-native dev tools
+    // (see encoding.ts — file reads sniff per file and are always right)
+    "if ($env:FAUXNIX_NATIVE_ENCODING -eq 'ansi') {",
+    "  try { [Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding(936) } catch {}",
+    '} else {',
+    '  try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}',
+    '  try { chcp 65001 > $null } catch {}',
+    '}',
     '$OutputEncoding = [System.Text.Encoding]::UTF8',
-    'try { chcp 65001 > $null } catch {}',
     'if ($env:FAUXNIX_CWD) { try { Set-Location -LiteralPath $env:FAUXNIX_CWD } catch {} }',
     // capture AFTER the session cwd is applied — OLDPWD must refer to the
     // shell's previous directory, not the host process' startup directory
