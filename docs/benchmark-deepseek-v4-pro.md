@@ -55,3 +55,32 @@ model that recovers. What collapsed in PowerShell mode was *efficiency and stabi
   encoding/quoting/pipe-semantics surprises.
 
 Raw logs: `scratch/ds-test/logs/` (development machine only, not published).
+
+## Addendum: does adding fauxnix to Claude Code / Codex improve performance?
+
+Same 5-task matrix, each harness's own model, built-in tool vs fauxnix MCP
+(logs: `scratch/ds-test/logs-gains/`). All 20 runs answered correctly —
+fauxnix never broke a harness.
+
+| Harness (model) | Built-in is | Calls | Errors | Wall/model time |
+|---|---|---|---|---|
+| Claude Code (default) | Git Bash | 11 | 0 | 163.9s api |
+| Claude Code + fauxnix | bash via fauxnix | 10 | 0 | **142.7s api** |
+| Codex (gpt-5.6-luna) | PowerShell 5.1 | 5 (bundled one-shots) | T5: 4-line localized dump | **159s** |
+| Codex + fauxnix | bash via fauxnix | 11 (granular) | T5: 1 clean line | 213s (+34%) |
+
+Reading:
+
+- **Claude Code**: parity — its built-in Bash is already Git Bash with cwd
+  persistence, and Claude models write bash natively. fauxnix's value there is
+  the semantic set (GBK file sniffing, real process table, error
+  normalization), not speed. Measured slightly faster but within n=1 noise.
+- **Codex**: *model-dependent*. gpt-5.6-luna authors efficient bundled
+  PowerShell one-shots, so fauxnix costs ~34% wall time on these micro-tasks
+  (granular calls + MCP + PowerShell spawn per call) while improving error
+  readability (1 line vs a 4-line localized CategoryInfo dump) and adding
+  cd persistence / POSIX-path safety. Cross-trained models like
+  DeepSeek-V4-Pro show the opposite (see main benchmark: PowerShell mode
+  2.5× slower with error storms) — for them fauxnix on Codex is a large win.
+- Practical note: the wall-time gap scales with call granularity; a model
+  that batches commands closes most of it.
