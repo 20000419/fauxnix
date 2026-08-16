@@ -77,6 +77,38 @@ describe('parser', () => {
     expect(() => parse('echo `date`')).toThrow(/backtick/);
   });
 
+  it('parses [[ ]] as a command with a closing word', () => {
+    const cmd = parse('[[ -f x ]]').segments[0].pipeline.commands[0];
+    expect(cmd.name.map((p) => ('text' in p ? p.text : '')).join('')).toBe('[[');
+    const last = cmd.args[cmd.args.length - 1];
+    expect(last.map((p) => ('text' in p ? p.text : '')).join('')).toBe(']]');
+  });
+
+  it('glues | inside [[ ]] so =~ alternation stays one operand', () => {
+    const cmd = parse('[[ abc =~ ^a|z$ ]]').segments[0].pipeline.commands[0];
+    expect(cmd.redirects).toHaveLength(0);
+    const args = cmd.args.map((w) => w.map((p) => ('text' in p ? p.text : '')).join(''));
+    expect(args).toEqual(['abc', '=~', '^a|z$', ']]']);
+  });
+
+  it('keeps > and < inside [[ ]] as comparison operators, not redirects', () => {
+    const cmd = parse('[[ z > important.txt ]]').segments[0].pipeline.commands[0];
+    expect(cmd.redirects).toHaveLength(0);
+    expect(
+      cmd.args.map((w) => w.map((p) => ('text' in p ? p.text : '')).join('')),
+    ).toEqual(['z', '>', 'important.txt', ']]']);
+  });
+
+  it('keeps && and || inside [[ ]] as arguments, not list operators', () => {
+    const list = parse('[[ -f a && -f b || -f c ]] && echo ok');
+    expect(list.segments).toHaveLength(2);
+    const inner = list.segments[0].pipeline.commands[0].args.map((w) =>
+      w.map((p) => ('text' in p ? p.text : '')).join(''),
+    );
+    expect(inner).toEqual(['-f', 'a', '&&', '-f', 'b', '||', '-f', 'c', ']]']);
+    expect(list.segments[1].op).toBe('&&');
+  });
+
   it('treats newlines as ;', () => {
     const list = parse('a\nb');
     expect(list.segments).toHaveLength(2);

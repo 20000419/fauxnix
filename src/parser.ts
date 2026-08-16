@@ -9,6 +9,7 @@ import {
   SimpleCommand,
   Word,
   WordPart,
+  isUnquotedLiteral,
 } from './ast.js';
 
 /* ------------------------------------------------------------------ */
@@ -175,9 +176,10 @@ export function tokenize(input: string): Token[] {
       );
     }
 
-    // escape outside quotes
+    // escape outside quotes — keep the escape so [[ =~ ]] / == can
+    // treat `\*` as a literal rather than a metacharacter
     if (ch === '\\' && i + 1 < n) {
-      cur.push({ kind: 'Text', text: input[i + 1] });
+      cur.push({ kind: 'Text', text: input[i + 1], escaped: true });
       i += 2;
       continue;
     }
@@ -320,6 +322,44 @@ export function parseCommand(input: string): CommandList {
       if (t.type === 'EOF') break;
 
       // possible redirect operator
+      // Inside `[[ ... ]]`, && || < > and other redirect-shaped tokens are
+      // conditional operators (or just words), not shell redirects/lists.
+      // Stop this special case at the first *unquoted* ]].
+      if (
+        t.type === 'OP' &&
+        name !== null &&
+        isUnquotedLiteral(name, '[[') &&
+        !args.some((w) => isUnquotedLiteral(w, ']]')) &&
+        (t.op === '&&' ||
+          t.op === '||' ||
+          t.op === '|' ||
+          t.op === '>' ||
+          t.op === '<' ||
+          t.op === '>>' ||
+          t.op === '2>' ||
+          t.op === '2>>' ||
+          t.op === '&>' ||
+          t.op === '&>>' ||
+          t.op === '2>&1' ||
+          t.op === '1>&2')
+      ) {
+        next();
+        // Glue `|` onto the surrounding words so `=~ ^a|z$` stays one operand.
+        if (t.op === '|') {
+          const pipe: WordPart = { kind: 'Text', text: '|' };
+          if (args.length > 0) args[args.length - 1] = [...args[args.length - 1], pipe];
+          else args.push([pipe]);
+          const n = peek();
+          if (n.type === 'WORD' && n.parts) {
+            next();
+            args[args.length - 1] = [...args[args.length - 1], ...n.parts];
+          }
+        } else {
+          args.push([{ kind: 'Text', text: t.op! }]);
+        }
+        continue;
+      }
+
       if (t.type === 'OP' && isRedirectOp(t.op!)) {
         const op = t.op!;
         next();
