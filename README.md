@@ -33,8 +33,17 @@ and helpfully* on what it can't translate, so the agent never gets silently-wron
 ## Install
 
 ```bash
-npm install -g fauxnix
+npm install -g fauxnix-cli
 ```
+
+Or from source:
+
+```bash
+git clone https://github.com/20000419/fauxnix && cd fauxnix && npm install -g .
+```
+
+> npm package name is `fauxnix-cli` (the `fauxnix` name on npm belongs to an
+> unrelated 2015 websocket library); the installed command is still `fauxnix`.
 
 Requires: Windows with PowerShell 5.1+ (built-in) and Node.js ≥ 18.
 

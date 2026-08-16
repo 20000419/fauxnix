@@ -180,15 +180,6 @@ interface RunningChild {
   killed: boolean;
 }
 
-function killTree(pid: number | undefined): void {
-  if (!pid) return;
-  try {
-    spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
-  } catch {
-    /* best effort */
-  }
-}
-
 async function runPlans(
   plans: SegmentPlan[],
   session: FauxnixSession,
@@ -255,7 +246,14 @@ async function runPlans(
 
     const timer = setTimeout(() => {
       running.killed = true;
-      killTree(child.pid);
+      // Node-native termination — no external kill process, nothing injectable.
+      // Grandchildren of a timed-out script may survive; the `kill -9`/`pkill`
+      // builtins remain available for explicit Windows tree kills.
+      try {
+        child.kill();
+      } catch {
+        /* best effort */
+      }
     }, timeoutMs);
 
     const code = await new Promise<number | null>((resolve) => {
