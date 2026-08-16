@@ -97,6 +97,16 @@ interactively and approve once).
 }
 ```
 
+**Kimi Code** — unlike the others, MCP servers live in a JSON file, not the
+TOML config: `~/.kimi-code/mcp.json`
+```json
+{
+  "mcpServers": {
+    "fauxnix": { "command": "fauxnix", "args": ["mcp"] }
+  }
+}
+```
+
 **Any MCP client** — stdio server: `fauxnix mcp`. The tool name is `bash` (override with
 `FAUXNIX_TOOL_NAME`). Tool description already teaches the model the supported subset, so no
 system-prompt changes are required.
