@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FauxnixParseError } from '../src/ast.js';
+import { FauxnixParseError, isUnquotedLiteral, wordToString } from '../src/ast.js';
 import { parseCommand as parse, tokenize } from '../src/parser.js';
 import {
   exprOfWord,
@@ -75,6 +75,178 @@ describe('parser', () => {
 
   it('rejects backticks', () => {
     expect(() => parse('echo `date`')).toThrow(/backtick/);
+  });
+
+  it('rejects tokens after the closing ]]', () => {
+    expect(() => parse('[[ x ]] junk ; echo BAD')).toThrow(/unexpected token/);
+  });
+
+  it('rejects an unclosed [[ at parse time so later ; segments cannot run', () => {
+    expect(() => parse('[[ -f guard ; echo BAD')).toThrow(/missing/);
+    expect(() => parse('[[ -f x')).toThrow(/missing/);
+  });
+
+  it('rejects a spaced | inside [[ ]] as a syntax error', () => {
+    expect(() => parse('[[ abc =~ ^a | z$ ]]')).toThrow(/unexpected token/);
+  });
+
+  it('parses [[ ]] as a command with a closing word', () => {
+    const cmd = parse('[[ -f x ]]').segments[0].pipeline.commands[0];
+    expect(cmd.name.map((p) => ('text' in p ? p.text : '')).join('')).toBe('[[');
+    const last = cmd.args[cmd.args.length - 1];
+    expect(last.map((p) => ('text' in p ? p.text : '')).join('')).toBe(']]');
+  });
+
+  it('does not fold | after == into a glob pattern', () => {
+    expect(() => parse('[[ a == a|b ]]')).toThrow(/unexpected token/);
+  });
+
+  it('folds | inside an extglob on the == operand', () => {
+    const cmd = parse('[[ foo == @(foo|bar) ]]').segments[0].pipeline.commands[0];
+    const args = cmd.args.map((w) => w.map((p) => ('text' in p ? p.text : '')).join(''));
+    expect(args).toEqual(['foo', '==', '@(foo|bar)', ']]']);
+  });
+
+  it('keeps regex grouping parentheses on the =~ operand', () => {
+    const cmd = parse('[[ ab =~ (ab) ]]').segments[0].pipeline.commands[0];
+    expect(
+      cmd.args.map((w) => w.map((p) => ('text' in p ? p.text : '')).join('')),
+    ).toEqual(['ab', '=~', '(ab)', ']]']);
+  });
+
+  it('splits attached grouping parens but keeps extglob parens', () => {
+    const grouped = parse('[[ ("" && "") || "" ]]').segments[0].pipeline.commands[0];
+    expect(isUnquotedLiteral(grouped.args[0], '(')).toBe(true);
+    expect(grouped.args[1][0].kind).toBe('DoubleQuoted');
+    expect(isUnquotedLiteral(grouped.args[2], '&&')).toBe(true);
+    expect(grouped.args[3][0].kind).toBe('DoubleQuoted');
+    expect(isUnquotedLiteral(grouped.args[4], ')')).toBe(true);
+    expect(isUnquotedLiteral(grouped.args[5], '||')).toBe(true);
+    expect(grouped.args[6][0].kind).toBe('DoubleQuoted');
+    const ext = parse('[[ foo == @(foo|bar) ]]').segments[0].pipeline.commands[0];
+    expect(
+      ext.args.map((w) => w.map((p) => ('text' in p ? p.text : '')).join('')),
+    ).toEqual(['foo', '==', '@(foo|bar)', ']]']);
+  });
+
+  it('folds | inside +( ) and !( ) extglobs', () => {
+    const plus = parse('[[ foo == +(foo|bar) ]]').segments[0].pipeline.commands[0];
+    expect(
+      plus.args.map((w) => w.map((p) => ('text' in p ? p.text : '')).join('')),
+    ).toEqual(['foo', '==', '+(foo|bar)', ']]']);
+    const bang = parse('[[ xyz == !(foo|bar) ]]').segments[0].pipeline.commands[0];
+    expect(
+      bang.args.map((w) => w.map((p) => ('text' in p ? p.text : '')).join('')),
+    ).toEqual(['xyz', '==', '!(foo|bar)', ']]']);
+  });
+
+  it('keeps tight || after =~ as regex, not a boolean or', () => {
+    const cmd = parse('[[ z =~ a|| ]]').segments[0].pipeline.commands[0];
+    const args = cmd.args.map((w) => w.map((p) => ('text' in p ? p.text : '')).join(''));
+    expect(args).toEqual(['z', '=~', 'a||', ']]']);
+  });
+
+  it('accepts a leading | on the =~ operand', () => {
+    const cmd = parse('[[ x =~ |x ]]').segments[0].pipeline.commands[0];
+    const args = cmd.args.map((w) => w.map((p) => ('text' in p ? p.text : '')).join(''));
+    expect(args).toEqual(['x', '=~', '|x', ']]']);
+  });
+
+  it('glues | inside [[ ]] so =~ alternation stays one operand', () => {
+    const cmd = parse('[[ abc =~ ^a|z$ ]]').segments[0].pipeline.commands[0];
+    expect(cmd.redirects).toHaveLength(0);
+    const args = cmd.args.map((w) => w.map((p) => ('text' in p ? p.text : '')).join(''));
+    expect(args).toEqual(['abc', '=~', '^a|z$', ']]']);
+  });
+
+  it('keeps > and < inside [[ ]] as comparison operators, not redirects', () => {
+    const cmd = parse('[[ z > important.txt ]]').segments[0].pipeline.commands[0];
+    expect(cmd.redirects).toHaveLength(0);
+    expect(
+      cmd.args.map((w) => w.map((p) => ('text' in p ? p.text : '')).join('')),
+    ).toEqual(['z', '>', 'important.txt', ']]']);
+  });
+
+  it('does not fold tight && after =~ into the regex', () => {
+    const cmd = parse('[[ aXXb =~ a&&b ]]').segments[0].pipeline.commands[0];
+    expect(
+      cmd.args.map((w) => w.map((p) => ('text' in p ? p.text : '')).join('')),
+    ).toEqual(['aXXb', '=~', 'a', '&&', 'b', ']]']);
+  });
+
+  it('rejects an unterminated extglob so later segments cannot run', () => {
+    expect(() => parse('[[ foo == @(foo ]]; echo BAD')).toThrow(/syntax error/);
+  });
+
+  it('does not treat quoted @( as an extglob', () => {
+    const cmd = parse("[[ '@(' == '@(' ]]").segments[0].pipeline.commands[0];
+    expect(cmd.args).toHaveLength(4);
+  });
+
+  it('rejects a semicolon after && inside [[ ]]', () => {
+    expect(() => parse('[[ x &&; y ]]')).toThrow(/missing/);
+  });
+
+  it('accepts a newline after && inside [[ ]] but not after a bare operand', () => {
+    const list = parse('[[ -f file &&\n -r file ]]');
+    expect(list.segments).toHaveLength(1);
+    const inner = list.segments[0].pipeline.commands[0].args.map((w) =>
+      w.map((p) => ('text' in p ? p.text : '')).join(''),
+    );
+    expect(inner).toEqual(['-f', 'file', '&&', '-r', 'file', ']]']);
+    expect(parse('[[ x == x\n ]]').segments).toHaveLength(1);
+    expect(parse('[[ -n x\n ]]').segments).toHaveLength(1);
+    expect(() => parse('[[ x\n ]]; echo BAD')).toThrow(/missing/);
+    expect(parse('[[\n -f file ]]').segments).toHaveLength(1);
+    expect(parse('[[ !\n -f missing ]]').segments).toHaveLength(1);
+    expect(parse('[[ (\n x == x ) ]]').segments).toHaveLength(1);
+    expect(() => parse("[[ 'foo(bar)' == foo(bar) ]]")).toThrow(/unexpected token/);
+    expect(() => parse('[[ 2>&1 ]]; echo BAD')).toThrow(/unexpected token/);
+    expect(() => parse('[[ x =~ x) ]]; echo BAD')).toThrow(/unexpected token/);
+  });
+
+  it('keeps spaces inside a grouped =~ / extglob operand', () => {
+    const re = parse("[[ ' x ' =~ ( x ) ]]").segments[0].pipeline.commands[0];
+    expect(re.args.map(wordToString)).toEqual([' x ', '=~', '( x )', ']]']);
+    const ext = parse("[[ 'bar baz' == @(foo|bar baz) ]]").segments[0].pipeline.commands[0];
+    expect(ext.args.map(wordToString)).toEqual(['bar baz', '==', '@(foo|bar baz)', ']]']);
+    const grouped = parse('[[ ( x =~ ( x ) ) ]]').segments[0].pipeline.commands[0];
+    expect(grouped.args.map(wordToString)).toEqual(['(', 'x', '=~', '( x )', ')', ']]']);
+    const tight = parse('[[ ( x =~ ( x)) ]]').segments[0].pipeline.commands[0];
+    expect(tight.args.map(wordToString)).toEqual(['(', 'x', '=~', '( x)', ')', ']]']);
+  });
+
+  it('keeps regex-balanced parens inside a grouped =~', () => {
+    const cmd = parse('[[ ( x =~ (x) ) ]]').segments[0].pipeline.commands[0];
+    expect(
+      cmd.args.map((w) => w.map((p) => ('text' in p ? p.text : '')).join('')),
+    ).toEqual(['(', 'x', '=~', '(x)', ')', ']]']);
+  });
+
+  it('peels a grouping close attached to a =~ operand', () => {
+    const cmd = parse('[[ ( x =~ x) ]]').segments[0].pipeline.commands[0];
+    expect(
+      cmd.args.map((w) => w.map((p) => ('text' in p ? p.text : '')).join('')),
+    ).toEqual(['(', 'x', '=~', 'x', ')', ']]']);
+  });
+
+  it('treats newline after && inside [[ ]] as whitespace', () => {
+    const list = parse('[[ -f a &&\n -f b ]]');
+    expect(list.segments).toHaveLength(1);
+    const inner = list.segments[0].pipeline.commands[0].args.map((w) =>
+      w.map((p) => ('text' in p ? p.text : '')).join(''),
+    );
+    expect(inner).toEqual(['-f', 'a', '&&', '-f', 'b', ']]']);
+  });
+
+  it('keeps && and || inside [[ ]] as arguments, not list operators', () => {
+    const list = parse('[[ -f a && -f b || -f c ]] && echo ok');
+    expect(list.segments).toHaveLength(2);
+    const inner = list.segments[0].pipeline.commands[0].args.map((w) =>
+      w.map((p) => ('text' in p ? p.text : '')).join(''),
+    );
+    expect(inner).toEqual(['-f', 'a', '&&', '-f', 'b', '||', '-f', 'c', ']]']);
+    expect(list.segments[1].op).toBe('&&');
   });
 
   it('treats newlines as ;', () => {
