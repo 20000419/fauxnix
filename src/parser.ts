@@ -9,6 +9,7 @@ import {
   SimpleCommand,
   Word,
   WordPart,
+  isUnquotedLiteral,
 } from './ast.js';
 
 /* ------------------------------------------------------------------ */
@@ -21,6 +22,8 @@ interface Token {
   /** For WORD: the parsed parts. For OP: the operator text. */
   op?: string;
   parts?: WordPart[];
+  /** True when this token was not preceded by whitespace. */
+  tightLeft?: boolean;
 }
 
 const OPERATORS = [
@@ -32,17 +35,24 @@ export function tokenize(input: string): Token[] {
   let i = 0;
   const n = input.length;
 
-  const pushWord = (parts: WordPart[]) => {
-    if (parts.length > 0) tokens.push({ type: 'WORD', parts });
+  const pushWord = (parts: WordPart[], tightLeft: boolean) => {
+    if (parts.length > 0) tokens.push({ type: 'WORD', parts, tightLeft });
   };
 
   let cur: WordPart[] = [];
   let fdDigits = '';
+  let lastWasWs = true;
+  let wordTightLeft = false;
 
   const flush = () => {
-    pushWord(cur);
+    pushWord(cur, wordTightLeft);
     cur = [];
     fdDigits = '';
+  };
+
+  const beginWordPart = () => {
+    if (cur.length === 0) wordTightLeft = !lastWasWs;
+    lastWasWs = false;
   };
 
   while (i < n) {
@@ -51,12 +61,14 @@ export function tokenize(input: string): Token[] {
     // whitespace separates words; newline acts as ';'
     if (ch === ' ' || ch === '\t' || ch === '\r') {
       flush();
+      lastWasWs = true;
       i++;
       continue;
     }
     if (ch === '\n') {
       flush();
-      tokens.push({ type: 'OP', op: ';' });
+      tokens.push({ type: 'OP', op: ';', tightLeft: false });
+      lastWasWs = true;
       i++;
       continue;
     }
@@ -107,8 +119,10 @@ export function tokenize(input: string): Token[] {
           'fauxnix: heredocs (<<) are not supported yet. Pass the text via echo pipe or a temp file instead.',
         );
       }
+      const tightLeft = !lastWasWs;
       flush();
-      tokens.push({ type: 'OP', op: matched });
+      tokens.push({ type: 'OP', op: matched, tightLeft });
+      lastWasWs = false;
       i += advance;
       continue;
     }
@@ -117,6 +131,7 @@ export function tokenize(input: string): Token[] {
     if (ch === "'") {
       const end = input.indexOf("'", i + 1);
       if (end === -1) throw new FauxnixParseError('fauxnix: unclosed single quote');
+      beginWordPart();
       cur.push({ kind: 'SingleQuoted', text: input.slice(i + 1, end) });
       i = end + 1;
       continue;
@@ -124,6 +139,7 @@ export function tokenize(input: string): Token[] {
 
     // double quotes — interpolated
     if (ch === '"') {
+      beginWordPart();
       i++;
       const parts: WordPart[] = [];
       let buf = '';
@@ -160,10 +176,12 @@ export function tokenize(input: string): Token[] {
     if (ch === '$') {
       const v = readDollar(input, i);
       if (v) {
+        beginWordPart();
         cur.push(v.part);
         i = v.next;
         continue;
       }
+      beginWordPart();
       cur.push({ kind: 'Text', text: '$' });
       i++;
       continue;
@@ -175,15 +193,18 @@ export function tokenize(input: string): Token[] {
       );
     }
 
-    // escape outside quotes
+    // escape outside quotes — keep the escape so [[ =~ ]] / == can
+    // treat `\*` as a literal rather than a metacharacter
     if (ch === '\\' && i + 1 < n) {
-      cur.push({ kind: 'Text', text: input[i + 1] });
+      beginWordPart();
+      cur.push({ kind: 'Text', text: input[i + 1], escaped: true });
       i += 2;
       continue;
     }
 
     // track leading digits (potential fd number for redirects)
     if (/[0-9]/.test(ch) && cur.length === 0 && fdDigits.length < 2) {
+      beginWordPart();
       fdDigits += ch;
       cur.push({ kind: 'Text', text: ch });
       i++;
@@ -191,6 +212,7 @@ export function tokenize(input: string): Token[] {
     }
     fdDigits = '';
 
+    beginWordPart();
     cur.push({ kind: 'Text', text: ch });
     i++;
   }
@@ -320,6 +342,47 @@ export function parseCommand(input: string): CommandList {
       if (t.type === 'EOF') break;
 
       // possible redirect operator
+      // Inside `[[ ... ]]`, && || < > and other redirect-shaped tokens are
+      // conditional operators (or just words), not shell redirects/lists.
+      // Stop this special case at the first *unquoted* ]].
+      if (
+        t.type === 'OP' &&
+        name !== null &&
+        isUnquotedLiteral(name, '[[') &&
+        !args.some((w) => isUnquotedLiteral(w, ']]')) &&
+        (t.op === '&&' ||
+          t.op === '||' ||
+          t.op === '|' ||
+          t.op === '>' ||
+          t.op === '<' ||
+          t.op === '>>' ||
+          t.op === '2>' ||
+          t.op === '2>>' ||
+          t.op === '&>' ||
+          t.op === '&>>' ||
+          t.op === '2>&1' ||
+          t.op === '1>&2')
+      ) {
+        next();
+        // Glue a *tight* `|` onto the surrounding words so `=~ ^a|z$`
+        // stays one operand. A spaced `|` is a syntax error (bash).
+        if (t.op === '|') {
+          if (!t.tightLeft || args.length === 0) {
+            throw new FauxnixParseError("fauxnix: [[: syntax error near unexpected token `|'");
+          }
+          const pipe: WordPart = { kind: 'Text', text: '|' };
+          args[args.length - 1] = [...args[args.length - 1], pipe];
+          const n = peek();
+          if (n.type === 'WORD' && n.tightLeft && n.parts) {
+            next();
+            args[args.length - 1] = [...args[args.length - 1], ...n.parts];
+          }
+        } else {
+          args.push([{ kind: 'Text', text: t.op! }]);
+        }
+        continue;
+      }
+
       if (t.type === 'OP' && isRedirectOp(t.op!)) {
         const op = t.op!;
         next();
@@ -353,6 +416,9 @@ export function parseCommand(input: string): CommandList {
     }
 
     if (!name) throw new FauxnixParseError('fauxnix: expected a command');
+    if (isUnquotedLiteral(name, '[[') && !args.some((w) => isUnquotedLiteral(w, ']]'))) {
+      throw new FauxnixParseError("fauxnix: [[: missing `]]'");
+    }
     return { kind: 'SimpleCommand', assignments, name, args, redirects };
   };
 
