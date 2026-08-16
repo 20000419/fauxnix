@@ -1,6 +1,6 @@
 import { spawn, ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { promises as fs, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { promises as fs, readFileSync, writeFileSync, existsSync, openSync, closeSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Redirect } from './ast.js';
@@ -39,6 +39,25 @@ interface SegmentRedirects {
   appendStderr: boolean;
   mergeStderr: boolean;
   devNull: boolean;
+}
+
+/**
+ * Open a redirect target the way bash does: before the command runs.
+ * `>` truncates; `>>` appends. Failure means the command must not run
+ * (so a redirected `cd` cannot change the session cwd).
+ */
+function prepareRedirectFile(file: string, append: boolean): string | null {
+  try {
+    const fd = openSync(file, append ? 'a' : 'w');
+    closeSync(fd);
+    return null;
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    if (err.code === 'ENOENT') return file + ': No such file or directory';
+    if (err.code === 'EACCES' || err.code === 'EPERM') return file + ': Permission denied';
+    if (err.code === 'EISDIR') return file + ': Is a directory';
+    return file + ': cannot create: ' + err.message;
+  }
 }
 
 function planRedirects(redirects: Redirect[]): SegmentRedirects {
@@ -195,10 +214,13 @@ async function runPlans(
   // skips b AND c when a fails. chainOk models the value of the current
   // &&/|| chain; `;` segments always run and restart the chain.
   let chainOk = true;
-  // redirect targets are relative to the session cwd, not this node process
-  const baseDir = opts.cwd ?? session.cwd ?? process.cwd();
+  // Redirect targets are relative to the *current* session cwd, not this
+  // Node process. Re-read after every segment so `cd src && echo x > out.txt`
+  // writes under src (same as two separate session calls). A one-shot
+  // capture of the entry cwd would land the file in the old directory.
+  let currentDir = opts.cwd ?? session.cwd ?? process.cwd();
   const resolveTarget = (t: string): string =>
-    path.isAbsolute(t) || /^[A-Za-z]:[\\/]/.test(t) ? t : path.resolve(baseDir, t);
+    path.isAbsolute(t) || /^[A-Za-z]:[\\/]/.test(t) ? t : path.resolve(currentDir, t);
 
   for (const plan of plans) {
     if (plan.op === '&&' && !chainOk) continue;
@@ -216,6 +238,28 @@ async function runPlans(
       session.prevExit = exitCode;
       chainOk = false;
       continue;
+    }
+
+    // bash sets up output redirects before executing the command. If the
+    // target cannot be created, the command (including `cd`) must not run,
+    // or later segments would inherit a cwd the redirected cd never reached.
+    const outPrep = red.stdoutFile ? prepareRedirectFile(red.stdoutFile, red.appendStdout) : null;
+    if (outPrep) {
+      stderr += 'bash: ' + outPrep + '\n';
+      exitCode = 1;
+      session.prevExit = exitCode;
+      chainOk = false;
+      continue;
+    }
+    if (red.stderrFile && red.stderrFile !== red.stdoutFile) {
+      const errPrep = prepareRedirectFile(red.stderrFile, red.appendStderr);
+      if (errPrep) {
+        stderr += 'bash: ' + errPrep + '\n';
+        exitCode = 1;
+        session.prevExit = exitCode;
+        chainOk = false;
+        continue;
+      }
     }
 
     const encoded = encodeCommand(plan.script);
@@ -291,6 +335,7 @@ async function runPlans(
     if (swallowStderr) segErr = '';
 
     // redirect stdout to file instead of the result stream
+    let redirectOk = true;
     if (red.stdoutFile) {
       try {
         if (red.appendStdout) {
@@ -303,6 +348,7 @@ async function runPlans(
       } catch (e) {
         segErr += 'bash: ' + red.stdoutFile + ': cannot create: ' + (e as Error).message + '\n';
         exitCode = 1;
+        redirectOk = false;
       }
     }
     if (red.stderrFile) {
@@ -328,6 +374,10 @@ async function runPlans(
     exitCode = code ?? 0;
     session.prevExit = exitCode;
     chainOk = exitCode === 0;
+    // Only inherit cwd from a segment that actually ran and whose
+    // output redirects succeeded. A failed `cd dir > missing/out` must
+    // not move later relative redirects.
+    if (redirectOk && session.cwd) currentDir = session.cwd;
   }
 
   return { stdout, stderr, exitCode };
