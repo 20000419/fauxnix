@@ -1,0 +1,361 @@
+import {
+  CommandList,
+  FauxnixParseError,
+  Redirect,
+  SimpleCommand,
+  Word,
+  WordPart,
+} from './ast.js';
+import { parseCommand } from './parser.js';
+import { PipelineCtx, lookup, psStr } from './registry.js';
+
+/* ------------------------------------------------------------------ */
+/* Variable mapping                                                    */
+/* ------------------------------------------------------------------ */
+
+/** Map a bash $VAR name to a PowerShell expression (usable inside $(...)). */
+export function varExpr(name: string): string {
+  switch (name) {
+    case 'HOME':
+      return '$HOME';
+    case 'PWD':
+      return '$PWD.Path';
+    case 'USER':
+    case 'LOGNAME':
+      return '$env:USERNAME';
+    case 'PATH':
+      return '$env:PATH';
+    case 'SHELL':
+      return "'powershell'";
+    case 'TERM':
+      return "'xterm-256color'";
+    case 'OLDPWD':
+      return '$env:FAUXNIX_OLDPWD';
+    case '?':
+      return '[string]$fx_prev';
+    case '$':
+      return '[string]$PID';
+    case 'HOSTNAME':
+      return '$env:COMPUTERNAME';
+    default:
+      return '$env:' + name;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Word → PowerShell expression                                        */
+/* ------------------------------------------------------------------ */
+
+/** Escape text destined for the inside of a PS double-quoted string. */
+function escDq(s: string): string {
+  return s.replace(/`/g, '``').replace(/"/g, '\\"').replace(/\$/g, '`$');
+}
+
+/** Normalize a literal POSIX-ish path to its Windows equivalent. */
+export function normalizeLiteralPath(s: string): string {
+  if (s === '/dev/null') return 'NUL';
+  if (s === '/tmp') return '$env:TEMP';
+  if (s.startsWith('/tmp/')) {
+    const rest = s.slice(5).split('/').join('\\');
+    return '$env:TEMP' + '\\' + rest;
+  }
+  // Git-Bash drive mounts: /d/foo → d:\foo
+  const m = s.match(/^\/([a-zA-Z])\/(.*)$/);
+  if (m) {
+    const drive = m[1].toUpperCase();
+    const tail = m[2].split('/').join('\\');
+    return drive + ':\\' + tail;
+  }
+  const onlyDrive = s.match(/^\/([a-zA-Z])\/?$/);
+  if (onlyDrive) return onlyDrive[1].toUpperCase() + ':\\';
+  return s;
+}
+
+/**
+ * Convert a normalized literal path (see normalizeLiteralPath) into a valid
+ * PowerShell string *expression*. Paths that normalize to `$env:TEMP...`
+ * must NOT go through single-quoting — the variable has to stay expandable.
+ */
+export function pathExpr(s: string): string {
+  const prefix = '$env:TEMP';
+  if (s === prefix) return prefix;
+  if (s.startsWith(prefix + '\\')) {
+    return '(' + prefix + ' + ' + psStr(s.slice(prefix.length)) + ')';
+  }
+  return psStr(s);
+}
+
+/**
+ * Convert a Word to a PowerShell string expression.
+ * Literal words become single-quoted strings; dynamic ones become
+ * double-quoted strings with $(...) interpolation.
+ */
+export function exprOfWord(w: Word): string {
+  // tilde expansion (unquoted leading ~)
+  const expanded: WordPart[] = [];
+  if (w.length > 0 && w[0].kind === 'Text' && w[0].text.startsWith('~')) {
+    expanded.push({ kind: 'Var', name: 'HOME' });
+    const rest = w[0].text.slice(1);
+    if (rest) expanded.push({ kind: 'Text', text: rest });
+    expanded.push(...w.slice(1));
+  } else {
+    expanded.push(...w);
+  }
+
+  // single bare variable → bare expression
+  if (expanded.length === 1 && expanded[0].kind === 'Var') {
+    return varExpr(expanded[0].name);
+  }
+
+  const literal = expanded.every((p) => p.kind === 'Text' || p.kind === 'SingleQuoted');
+  if (literal) {
+    const text = expanded.map((p) => (p as { text: string }).text).join('');
+    return pathExpr(normalizeLiteralPath(text));
+  }
+
+  // dynamic — build a PS double-quoted string with interpolation
+  let out = '"';
+  const emitPart = (p: WordPart) => {
+    switch (p.kind) {
+      case 'Text':
+        out += escDq(p.text);
+        break;
+      case 'SingleQuoted':
+        out += escDq(p.text);
+        break;
+      case 'DoubleQuoted':
+        for (const q of p.parts) emitPart(q);
+        break;
+      case 'Var':
+        out += '$(' + varExpr(p.name) + ')';
+        break;
+      case 'CmdSub':
+        out += '$(' + translateCmdSub(p.cmd) + ')';
+        break;
+    }
+  };
+  for (const p of expanded) emitPart(p);
+  out += '"';
+  return out;
+}
+
+/** Literal text of a word when it contains no interpolation, else null. */
+export function literalOfWord(w: Word): string | null {
+  if (!w.every((p) => p.kind === 'Text' || p.kind === 'SingleQuoted')) return null;
+  const text = w.map((p) => (p as { text: string }).text).join('');
+  if (w.length > 0 && w[0].kind === 'Text' && w[0].text.startsWith('~')) return null; // needs $HOME
+  return text;
+}
+
+/**
+ * Argument expression for an operand (file path-ish).
+ * Literal paths get POSIX-ish normalization (/dev/null, /tmp, /d/...).
+ */
+export function operandExpr(w: Word): string {
+  const lit = literalOfWord(w);
+  if (lit !== null) return pathExpr(normalizeLiteralPath(lit));
+  return exprOfWord(w);
+}
+
+/* ------------------------------------------------------------------ */
+/* Command substitution                                                */
+/* ------------------------------------------------------------------ */
+
+/** Translate the inside of $(...) — pipelines only, no wrappers. */
+export function translateCmdSub(cmdText: string): string {
+  const list = parseCommand(cmdText);
+  if (list.segments.length !== 1) {
+    throw new FauxnixParseError(
+      'fauxnix: command substitution with ; && || is not supported yet',
+    );
+  }
+  const { defs, call } = translatePipelineBody(list.segments[0].pipeline);
+  return defs ? defs + '\n' + call : call;
+}
+
+/* ------------------------------------------------------------------ */
+/* Simple command translation                                          */
+/* ------------------------------------------------------------------ */
+
+export function translateSimple(
+  cmd: SimpleCommand,
+  position: PipelineCtx['position'],
+  hasStdin: boolean,
+): string {
+  const nameLit = literalOfWord(cmd.name);
+
+  let body: string;
+  if (nameLit !== null) {
+    const handler = lookup(nameLit);
+    if (handler) {
+      body = handler(cmd.args, { position, hasStdin });
+    } else {
+      // passthrough: native command (git, node, npm, python, cargo, ...)
+      // invoked with the call operator and an argv-style argument array —
+      // no string re-parsing of user text.
+      const nameExpr = psStr(nameLit);
+      const argExprs = cmd.args.map((a) => exprOfWord(a));
+      const args = argExprs.length ? ' @(' + argExprs.join(', ') + ')' : '';
+      const call = '& ' + nameExpr + args;
+      body = [
+        // feed pipeline stdin into the native process when we are a non-first stage
+        (hasStdin ? '($input | ' + call + ')' : call) + ' | ForEach-Object { [string]$_ }',
+        'if ($LASTEXITCODE -gt 0) { $script:fx_exit = $LASTEXITCODE } elseif ($LASTEXITCODE -lt 0) { $script:fx_exit = 1 }',
+      ].join('\n');
+    }
+  } else {
+    // dynamic command name — evaluate it
+    const nameExpr = exprOfWord(cmd.name);
+    const argExprs = cmd.args.map((a) => exprOfWord(a));
+    const args = argExprs.length ? ' @(' + argExprs.join(', ') + ')' : '';
+    const call = '& (' + nameExpr + ')' + args;
+    body = [
+      (hasStdin ? '($input | ' + call + ')' : call) + ' | ForEach-Object { [string]$_ }',
+      'if ($LASTEXITCODE -gt 0) { $script:fx_exit = $LASTEXITCODE } elseif ($LASTEXITCODE -lt 0) { $script:fx_exit = 1 }',
+    ].join('\n');
+  }
+
+  // `VAR=value cmd ...` prefix — set process env for the invocation.
+  if (cmd.assignments.length > 0) {
+    const sets = cmd.assignments
+      .map((a) => '$env:' + a.name + ' = ' + exprOfWord(a.value))
+      .join('; ');
+    body = sets + '\n' + body;
+  }
+  return body;
+}
+
+/** Unique suffix for generated stage functions (nested pipelines included). */
+let stageSeq = 0;
+
+export interface PipelineParts {
+  /** Generated function definitions (empty for single commands). */
+  defs: string;
+  /** The pipeline invocation itself. */
+  call: string;
+}
+
+/**
+ * Pipeline body. A lone command runs as a plain script-block expression;
+ * multi-command pipelines become generated functions chained with `|`
+ * (PS 5.1 forbids parenthesized expressions as non-first pipeline elements).
+ */
+export function translatePipelineBody(p: { commands: SimpleCommand[] }): PipelineParts {
+  const bodies: string[] = [];
+  for (let i = 0; i < p.commands.length; i++) {
+    const hasStdin = i > 0 || p.commands[i].redirects.some((r) => r.op === '<');
+    const position: PipelineCtx['position'] =
+      i === 0 ? 'first' : i === p.commands.length - 1 ? 'last' : 'middle';
+    bodies.push(translateSimple(p.commands[i], position, hasStdin));
+  }
+
+  if (bodies.length === 1) {
+    return { defs: '', call: '(& {\n' + bodies[0] + '\n})' };
+  }
+
+  const names: string[] = [];
+  const defs: string[] = [];
+  for (let i = 0; i < bodies.length; i++) {
+    const name = '__fx_s' + stageSeq++;
+    names.push(name);
+    const indented = bodies[i]
+      .split('\n')
+      .map((l) => (l ? '  ' + l : l))
+      .join('\n');
+    defs.push('function ' + name + ' {\n' + indented + '\n}');
+  }
+  return { defs: defs.join('\n'), call: names.join(' | ') };
+}
+
+/* ------------------------------------------------------------------ */
+/* Full translation with executor wrapper                              */
+/* ------------------------------------------------------------------ */
+
+export interface SegmentPlan {
+  op: ';' | '&&' | '||';
+  /** Complete PowerShell script for one powershell.exe invocation. */
+  script: string;
+  /** All redirects collected from this segment (executor handles them). */
+  redirects: Redirect[];
+}
+
+export function translateCommandList(list: CommandList): SegmentPlan[] {
+  const plans: SegmentPlan[] = [];
+  for (const seg of list.segments) {
+    const redirects: Redirect[] = [];
+    for (const c of seg.pipeline.commands) redirects.push(...c.redirects);
+    const { defs, call } = translatePipelineBody(seg.pipeline);
+    let body = defs ? defs + '\n' + call : call;
+    // `< file` redirects feed the pipeline via the FAUXNIX_STDIN_FILE channel
+    if (redirects.some((r) => r.op === '<')) {
+      // `& { ... }` (no parens) so the scriptblock can be a non-first
+      // pipeline element receiving the fed lines.
+      const pipeCall = call.startsWith('(& {') ? call.slice(1, -1) : call;
+      body =
+        (defs ? defs + '\n' : '') +
+        'if ($env:FAUXNIX_STDIN_FILE) { fx-readlines $env:FAUXNIX_STDIN_FILE | ' +
+        pipeCall +
+        ' } else { ' +
+        call +
+        ' }';
+    }
+    plans.push({ op: seg.op, script: wrapScript(body), redirects });
+  }
+  return plans;
+}
+
+/**
+ * Wrap a pipeline body with the Fauxnix executor contract:
+ * UTF-8 everywhere, bash-style exit codes, cwd/env persistence channels.
+ */
+export function wrapScript(body: string): string {
+  const lines = [
+    '$ErrorActionPreference = "Continue"',
+    "$ProgressPreference = 'SilentlyContinue'",
+    '$fx_exit = 0',
+    '$fx_prev = 0',
+    'if ($env:FAUXNIX_PREV_EXIT) { try { $fx_prev = [int]$env:FAUXNIX_PREV_EXIT } catch { $fx_prev = 0 } }',
+    'try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}',
+    '$OutputEncoding = [System.Text.Encoding]::UTF8',
+    'try { chcp 65001 > $null } catch {}',
+    'if ($env:FAUXNIX_CWD) { try { Set-Location -LiteralPath $env:FAUXNIX_CWD } catch {} }',
+    // capture AFTER the session cwd is applied — OLDPWD must refer to the
+    // shell's previous directory, not the host process' startup directory
+    '$fx_oldcwd = (Get-Location).ProviderPath',
+    // .NET APIs (ReadAllBytes & friends) resolve relative paths against the
+    // process working directory, NOT the PS location — keep them in sync.
+    'try { [Environment]::CurrentDirectory = (Get-Location).ProviderPath } catch {}',
+    // byte-sniffing line reader for `< file` stdin redirects (UTF-8 → GBK)
+    'function fx-readlines($p) {',
+    '  $b = [IO.File]::ReadAllBytes($p)',
+    '  $t = $null',
+    '  try { $t = (New-Object System.Text.UTF8Encoding($false, $true)).GetString($b) } catch {}',
+    "  if ($null -eq $t) { try { $t = [System.Text.Encoding]::GetEncoding(936).GetString($b) } catch { $t = [System.Text.Encoding]::ASCII.GetString($b) } }",
+    '  $t = $t -replace "`r`n", "`n"',
+    '  $t = $t -replace "`r", "`n"',
+    '  $parts = @($t.Split("`n"))',
+    "  if ($parts.Count -eq 1 -and $parts[0] -eq '') { return @() }",
+    "  if ($parts[$parts.Count - 1] -eq '') { $parts = $parts[0..($parts.Count - 2)] }",
+    '  return $parts',
+    '}',
+    'try {',
+    ...body.split('\n').map((l) => '  ' + l),
+    '} catch [System.Management.Automation.CommandNotFoundException] {',
+    "  [Console]::Error.WriteLine('bash: ' + $_.Exception.TargetName + ': command not found')",
+    '  $script:fx_exit = 127',
+    '} catch {',
+    '  [Console]::Error.WriteLine(($_.Exception.Message).Split("`n")[0])',
+    '  $script:fx_exit = 1',
+    '}',
+    '# persist session cwd and environment for the next segment',
+    'try { [IO.File]::WriteAllText($env:FAUXNIX_CWD_FILE, (Get-Location).Path) } catch {}',
+    'if ((Get-Location).Path -ne $fx_oldcwd) { $env:FAUXNIX_OLDPWD = $fx_oldcwd }',
+    'try {',
+    '  $envObj = @{}',
+    '  Get-ChildItem Env: | ForEach-Object { $envObj[$_.Name] = $_.Value }',
+    '  [IO.File]::WriteAllText($env:FAUXNIX_ENV_FILE, (ConvertTo-Json $envObj -Compress))',
+    '} catch {}',
+    'exit $script:fx_exit',
+  ];
+  return lines.join('\n');
+}

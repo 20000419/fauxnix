@@ -1,0 +1,170 @@
+# fauxnix
+
+**Run Linux-style commands on Windows — natively, deterministically, with no VM and no WSL.**
+
+fauxnix is a bash→PowerShell translation layer built for AI agents. Your agent keeps writing the
+bash it already knows (`ls -la | grep foo`, `find . -name '*.ts' | wc -l`, `kill -9 1234`), and
+fauxnix deterministically translates each command into PowerShell, executes it natively, and hands
+back output that looks like GNU/Linux: `ls -l` columns, bash-style error messages, coreutils exit
+codes, UTF-8/GBK handled automatically.
+
+```
+$ fauxnix "ls -la src | head -2"
+-rw-r--r-- 1 me me 1204 Aug 16 09:12 ast.ts
+-rw-r--r-- 1 me me  8192 Aug 16 09:12 cli.ts
+
+$ fauxnix "cat nope.txt"
+cat: nope.txt: No such file or directory        # not a PowerShell stack trace
+```
+
+## Why
+
+LLM agents are dramatically better at bash than at PowerShell — bash dominates training data, so
+models on Windows often produce "looks right, doesn't run" commands (wrong quoting, `curl` that
+isn't curl, mojibake from codepage mismatches, inscrutable `CategoryInfo` error dumps). Existing
+solutions are either a full VM (WSL — heavy, wrong filesystem, separate environment) or plain
+shell wrappers (still PowerShell underneath).
+
+fauxnix takes the third road: **translate, don't emulate**. A large, high-value subset of the
+Linux command line — file ops, text processing, process management, archives, networking basics —
+maps cleanly onto PowerShell + .NET. fauxnix implements that subset faithfully and *fails loudly
+and helpfully* on what it can't translate, so the agent never gets silently-wrong results.
+
+## Install
+
+```bash
+npm install -g fauxnix
+```
+
+Requires: Windows with PowerShell 5.1+ (built-in) and Node.js ≥ 18.
+
+## Quick start
+
+```bash
+# one-off commands
+fauxnix "ls -la"
+fauxnix "grep -rn TODO src | wc -l"
+fauxnix "cat log.txt | grep -i error | sort | uniq -c"
+
+# see what a command becomes (great for debugging / learning PS)
+fauxnix translate "find . -name '*.log' -mtime +7 -delete"
+
+# check your environment
+fauxnix check
+
+# run the MCP stdio server (what agent harnesses connect to)
+fauxnix mcp
+```
+
+Unknown commands (git, node, npm, python, cargo, gh, docker, ...) are **passed through natively**
+with argv-style quoting — no string re-parsing, no quoting bugs.
+
+## Use with your agent harness
+
+fauxnix ships an MCP stdio server exposing a `bash` tool (plus `fauxnix_translate` and
+`fauxnix_session`). Point any MCP-capable harness at it:
+
+**Claude Code**
+```bash
+claude mcp add fauxnix -- fauxnix mcp
+```
+
+**Codex** (`~/.codex/config.toml`)
+```toml
+[mcp_servers.fauxnix]
+command = "fauxnix"
+args = ["mcp"]
+```
+
+**OpenCode** (`opencode.json`)
+```json
+{
+  "mcp": {
+    "fauxnix": { "type": "local", "command": ["fauxnix", "mcp"] }
+  }
+}
+```
+
+**Any MCP client** — stdio server: `fauxnix mcp`. The tool name is `bash` (override with
+`FAUXNIX_TOOL_NAME`). Tool description already teaches the model the supported subset, so no
+system-prompt changes are required.
+
+The MCP session persists `cwd`, environment variables, `export`/`unset` and `cd -`/OLDPWD across
+tool calls — it behaves like a logged-in shell, not a stateless `exec`.
+
+## What's translated
+
+~105 commands, all output-matched against real GNU coreutils on Windows (Git Bash) during
+development:
+
+- **files**: `ls cp mv rm mkdir rmdir touch mktemp ln readlink realpath basename dirname stat file du df find chmod chown diff`
+- **text filters**: `grep egrep sed awk sort uniq cut tr` — sed/awk scripts are parsed at
+  translate time (unsupported constructs throw named errors, never silently misbehave)
+- **text I/O**: `echo printf cat head tail wc tee nl tac md5sum sha1sum sha256sum base64 seq yes xargs`
+- **shell/system**: `cd pwd export unset env printenv ps kill pkill pgrep sleep which type whoami
+  id groups date uname hostname uptime free nproc clear true false test [ : pushd popd dirs sudo
+  timeout man history less more source . eval exit alias set`
+- **network**: `curl wget ping netstat ss ip ifconfig nslookup dig host`
+- **archives**: `tar gzip gunzip zcat zip unzip`
+
+Plus shell syntax: pipes, `&&` / `||` / `;`, redirections (`> >> 2> 2>&1 < &>`, `/dev/null`),
+quoting, `$VAR` `$(...)` command substitution, `VAR=x cmd` prefixes, `~` expansion, and
+POSIX-style path normalization (`/tmp`, `/d/foo` → `D:\foo`).
+
+Exit codes follow bash conventions: 0 ok, 1 fail, 2 usage/serious, 127 command not found,
+124 timeout.
+
+## How it works
+
+```
+bash command ──parser──▶ AST ──translator──▶ PowerShell script ──executor──▶ powershell.exe
+                                                                              │
+agent ◀── GNU-style output, bash-style errors ◀── decoder (UTF-8 → GBK fallback) ◀┘
+```
+
+- **Deterministic translation, zero LLM calls** at runtime.
+- Each command maps to a generator that emits a self-contained PowerShell block honoring the
+  "Fauxnix contract": string-per-line stdout, `[Console]::Error.WriteLine` for bash-style
+  stderr, `$script:fx_exit` for exit codes, `$input` for stdin.
+- The executor wraps every script with UTF-8 enforcement (`[Console]::OutputEncoding`,
+  `$OutputEncoding`, `chcp 65001`), decodes output as strict-UTF-8 with a GBK(936) fallback for
+  legacy native tools, strips CLIXML serialization and PowerShell noise from stderr, and rewrites
+  common PowerShell errors (including zh-CN locale messages) into bash phrasing.
+- Scripts run via `-EncodedCommand` (UTF-16LE) and transparently fall back to a temp `.ps1` file
+  when the 32 KB command-line limit would be exceeded.
+
+## Known deviations (honest list)
+
+fauxnix optimizes for the commands agents actually run. Documented deviations:
+
+- `yes` is capped at 65,536 lines — PS 5.1 pipelines cannot signal upstream producers to stop, so
+  an unbounded `yes | head` would hang.
+- `tail -f`, `source`, `eval`, `alias`, heredocs, backticks, shell control flow (`if`/`for`/`while`)
+  and background `&` are rejected with actionable error messages instead of misbehaving.
+- `chmod` maps only the read-only bit; exec bits are no-ops on Windows. `chown` is a silent no-op
+  (as in Git Bash).
+- `ps aux` columns are approximations (no per-process CPU% accounting, USER shows `?`).
+- `gzip -c`/pipeline stdin is text-faithful, not byte-faithful; file-mode `gzip f` is byte-exact.
+- A pipeline producing exactly one line, piped into `wc -l`, counts that line (bash would count 0
+  if the producer omitted the trailing newline). `printf 'x' | md5sum` stays byte-exact.
+- `sed`/`awk` support the common subset; hold-space, labels, arrays, loops throw named
+  "not supported" errors at translate time.
+- `curl`/`wget` refuse loopback/private/reserved addresses (localhost, 127.x, ::1, 10.x,
+  172.16–31.x, 192.168.x, 169.254.x) as a safety default for agent-driven HTTP.
+
+## Development
+
+```bash
+npm install
+npm test          # unit + real-PowerShell integration suite (Windows only, auto-skipped elsewhere)
+npm run build
+npx tsx scratch/run.mjs "any bash command"   # quick live check
+```
+
+Architecture map: `src/parser.ts` (bash subset → AST) · `src/translator.ts` (AST → PowerShell +
+executor wrapper) · `src/executor.ts` (spawn, redirects, session persistence) ·
+`src/commands/*.ts` (per-command generators) · `src/mcp.ts` (MCP server) · `src/cli.ts`.
+
+## License
+
+MIT © 20000419
