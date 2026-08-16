@@ -1,4 +1,4 @@
-import { Word, WordPart, wordToString } from '../ast.js';
+import { FauxnixParseError, Word, WordPart, isUnquotedLiteral, wordToString } from '../ast.js';
 import { Handler, lookup, parseWords, psStr, registeredNames } from '../registry.js';
 import { exprOfWord, operandExpr, translateSimple } from '../translator.js';
 import { handlers as textIoHandlers } from './text-io.js';
@@ -803,6 +803,7 @@ const colon: Handler = () => '';
 
 const TEST_UNARY = new Set(['-e', '-f', '-d', '-r', '-w', '-x', '-s', '-z', '-n']);
 const TEST_BINARY = new Set(['=', '==', '!=', '-eq', '-ne', '-lt', '-le', '-gt', '-ge']);
+const TEST_BINARY_KSH = new Set([...TEST_BINARY, '=~', '>', '<']);
 
 const FX_TN_FN = [
   'function fx-tn($a, $b, $op) {',
@@ -857,69 +858,230 @@ function testUnaryExpr(op: string, w: Word): string {
   }
 }
 
-function testBinaryExpr(l: Word, op: string, r: Word): string {
-  const le = '[string](' + exprOfWord(l) + ')';
-  const re = '[string](' + exprOfWord(r) + ')';
-  if (op === '=' || op === '==') return '(' + le + ' -ceq ' + re + ')';
-  if (op === '!=') return '(' + le + ' -cne ' + re + ')';
+const FX_RE_FN = [
+  'function fx-re($a, $b) {',
+  '  try { return [regex]::IsMatch([string]$a, [string]$b) }',
+  "  catch { [Console]::Error.WriteLine('bash: [[: invalid regular expression'); $script:fx_exit = 2; return $false }",
+  '}',
+].join('\n');
+
+function posixClassToDotNet(s: string): string {
+  return s
+    .replace(/\[:alnum:\]/g, 'A-Za-z0-9')
+    .replace(/\[:alpha:\]/g, 'A-Za-z')
+    .replace(/\[:blank:\]/g, ' \\t')
+    .replace(/\[:cntrl:\]/g, '\\x00-\\x1F\\x7F')
+    .replace(/\[:digit:\]/g, '0-9')
+    .replace(/\[:graph:\]/g, '\\x21-\\x7E')
+    .replace(/\[:lower:\]/g, 'a-z')
+    .replace(/\[:print:\]/g, '\\x20-\\x7E')
+    .replace(/\[:punct:\]/g, '!-/:-@\\[-`{-~')
+    .replace(/\[:space:\]/g, '\\s')
+    .replace(/\[:upper:\]/g, 'A-Z')
+    .replace(/\[:word:\]/g, 'A-Za-z0-9_')
+    .replace(/\[:xdigit:\]/g, '0-9A-Fa-f');
+}
+
+function likeEscapeLit(s: string): string {
+  return s.replace(/[`*?[\]]/g, '`$&');
+}
+
+const FX_LIKEESC_FN = [
+  'function fx-likeesc($s) {',
+  '  $fx_o = New-Object System.Text.StringBuilder',
+  '  foreach ($fx_ch in ([string]$s).ToCharArray()) {',
+  "    if (@('*','?','[',']','`') -contains [string]$fx_ch) { [void]$fx_o.Append('`' + $fx_ch) }",
+  '    else { [void]$fx_o.Append($fx_ch) }',
+  '  }',
+  '  $fx_o.ToString()',
+  '}',
+].join('\n');
+
+/** Build a regex pattern, escaping quoted/backslash-escaped portions. */
+function mergeUnescapedText(w: Word): Word {
+  const merged: Word = [];
+  for (const p of w) {
+    const last = merged[merged.length - 1];
+    if (
+      p.kind === 'Text' &&
+      !p.escaped &&
+      last &&
+      last.kind === 'Text' &&
+      !last.escaped
+    ) {
+      last.text += p.text;
+    } else {
+      merged.push(p.kind === 'Text' ? { ...p } : p);
+    }
+  }
+  return merged;
+}
+
+function regexOperandExpr(w: Word): string {
+  if (w.length === 0) return "''";
+  const bits: string[] = [];
+  for (const p of mergeUnescapedText(w)) {
+    if (p.kind === 'SingleQuoted') {
+      bits.push('[regex]::Escape(' + psStr(p.text) + ')');
+    } else if (p.kind === 'DoubleQuoted') {
+      bits.push('[regex]::Escape([string](' + exprOfWord([p]) + '))');
+    } else if (p.kind === 'Text') {
+      bits.push(
+        p.escaped
+          ? '[regex]::Escape(' + psStr(p.text) + ')'
+          : psStr(posixClassToDotNet(p.text)),
+      );
+    } else {
+      bits.push('(fx-posixre ([string](' + exprOfWord([p]) + ')))');
+    }
+  }
+  return bits.length === 1 ? bits[0] : '(' + bits.join(' + ') + ')';
+}
+
+/** Build a -clike pattern: unquoted * ? stay wildcards; quoted/escaped parts are literal. */
+function likeOperandExpr(w: Word): string {
+  if (w.length === 0) return "''";
+  const bits: string[] = [];
+  for (const p of w) {
+    if (p.kind === 'SingleQuoted') {
+      bits.push(psStr(likeEscapeLit(p.text)));
+    } else if (p.kind === 'DoubleQuoted') {
+      bits.push('(fx-likeesc ([string](' + exprOfWord([p]) + ')))');
+    } else if (p.kind === 'Text') {
+      bits.push(psStr(p.escaped ? likeEscapeLit(p.text) : p.text));
+    } else {
+      bits.push('[string](' + exprOfWord([p]) + ')');
+    }
+  }
+  return bits.length === 1 ? bits[0] : '(' + bits.join(' + ') + ')';
+}
+
+/** String operand for [[ compares — do not POSIX-normalize paths. */
+function stringOperandExpr(w: Word): string {
+  const lit = w.every((p) => p.kind === 'Text' || p.kind === 'SingleQuoted')
+    ? w.map((p) => (p as { text: string }).text).join('')
+    : null;
+  if (lit !== null) return psStr(lit);
+  return '[string](' + exprOfWord(w) + ')';
+}
+
+const FX_POSIXRE_FN = [
+  'function fx-posixre($s) {',
+  '  $t = [string]$s',
+  "  $t = $t.Replace('[:alnum:]', 'A-Za-z0-9')",
+  "  $t = $t.Replace('[:alpha:]', 'A-Za-z')",
+  "  $t = $t.Replace('[:blank:]', ' \\t')",
+  "  $t = $t.Replace('[:cntrl:]', '\\x00-\\x1F\\x7F')",
+  "  $t = $t.Replace('[:digit:]', '0-9')",
+  "  $t = $t.Replace('[:graph:]', '\\x21-\\x7E')",
+  "  $t = $t.Replace('[:lower:]', 'a-z')",
+  "  $t = $t.Replace('[:print:]', '\\x20-\\x7E')",
+  "  $t = $t.Replace('[:punct:]', '!-/:-@\\[-`{-~')",
+  "  $t = $t.Replace('[:space:]', '\\s')",
+  "  $t = $t.Replace('[:upper:]', 'A-Z')",
+  "  $t = $t.Replace('[:word:]', 'A-Za-z0-9_')",
+  "  $t = $t.Replace('[:xdigit:]', '0-9A-Fa-f')",
+  '  return $t',
+  '}',
+].join('\n');
+
+function testBinaryExpr(l: Word, op: string, r: Word, allowKsh: boolean): string {
+  const le = allowKsh ? stringOperandExpr(l) : '[string](' + exprOfWord(l) + ')';
+  const re = allowKsh ? stringOperandExpr(r) : '[string](' + exprOfWord(r) + ')';
+  if (op === '=~') return '(fx-re (' + le + ') (' + regexOperandExpr(r) + '))';
+  if (op === '>' || op === '<') {
+    const cmp =
+      '[string]::Compare(' + le + ', ' + re + ', [System.StringComparison]::Ordinal)';
+    return '((' + cmp + ') ' + (op === '>' ? '-gt' : '-lt') + ' 0)';
+  }
+  if (op === '=' || op === '==') {
+    if (allowKsh) return '((' + le + ') -clike (' + likeOperandExpr(r) + '))';
+    return '(' + le + ' -ceq ' + re + ')';
+  }
+  if (op === '!=') {
+    if (allowKsh) return '((' + le + ') -cnotlike (' + likeOperandExpr(r) + '))';
+    return '(' + le + ' -cne ' + re + ')';
+  }
   return '(fx-tn (' + le + ') (' + re + ') ' + psStr(op) + ')';
 }
 
-function parseTestOr(ws: Word[], st: { i: number }): TestParse {
-  const r = parseTestAnd(ws, st);
+function parseTestOr(ws: Word[], st: { i: number }, allowRe: boolean): TestParse {
+  const r = parseTestAnd(ws, st, allowRe);
   if (r.error) return r;
   let expr = r.expr!;
-  while (st.i < ws.length && wordToString(ws[st.i]) === '-o') {
+  while (
+    st.i < ws.length &&
+    (allowRe ? isUnquotedLiteral(ws[st.i], '||') : wordToString(ws[st.i]) === '-o')
+  ) {
     st.i++;
-    const rr = parseTestAnd(ws, st);
+    const rr = parseTestAnd(ws, st, allowRe);
     if (rr.error) return rr;
     expr = '(' + expr + ') -or (' + rr.expr + ')';
   }
   return { expr, error: null };
 }
 
-function parseTestAnd(ws: Word[], st: { i: number }): TestParse {
-  const r = parseTestNot(ws, st);
+function parseTestAnd(ws: Word[], st: { i: number }, allowRe: boolean): TestParse {
+  const r = parseTestNot(ws, st, allowRe);
   if (r.error) return r;
   let expr = r.expr!;
-  while (st.i < ws.length && wordToString(ws[st.i]) === '-a') {
+  while (
+    st.i < ws.length &&
+    (allowRe ? isUnquotedLiteral(ws[st.i], '&&') : wordToString(ws[st.i]) === '-a')
+  ) {
     st.i++;
-    const rr = parseTestNot(ws, st);
+    const rr = parseTestNot(ws, st, allowRe);
     if (rr.error) return rr;
     expr = '(' + expr + ') -and (' + rr.expr + ')';
   }
   return { expr, error: null };
 }
 
-function parseTestNot(ws: Word[], st: { i: number }): TestParse {
+function parseTestNot(ws: Word[], st: { i: number }, allowRe: boolean): TestParse {
   const t = st.i < ws.length ? wordToString(ws[st.i]) : null;
-  if (t === '!' && st.i + 1 < ws.length) {
+  if (t === '!' && isUnquotedLiteral(ws[st.i], '!')) {
+    if (st.i + 1 >= ws.length) return { expr: null, error: "`!': unary operator expected" };
     st.i++;
-    const r = parseTestNot(ws, st);
+    const r = parseTestNot(ws, st, allowRe);
     if (r.error) return r;
     return { expr: '(-not (' + r.expr + '))', error: null };
   }
-  return parseTestAtom(ws, st);
+  return parseTestAtom(ws, st, allowRe);
 }
 
-function parseTestAtom(ws: Word[], st: { i: number }): TestParse {
+function parseTestAtom(ws: Word[], st: { i: number }, allowRe: boolean): TestParse {
   if (st.i >= ws.length) return { expr: null, error: 'too many arguments' };
+  if (allowRe && isUnquotedLiteral(ws[st.i], '(')) {
+    st.i++;
+    const inner = parseTestOr(ws, st, allowRe);
+    if (inner.error) return inner;
+    if (st.i >= ws.length || !isUnquotedLiteral(ws[st.i], ')')) {
+      return { expr: null, error: "`)' expected" };
+    }
+    st.i++;
+    return inner;
+  }
   const t = wordToString(ws[st.i]);
   if (st.i === ws.length - 1) {
+    if (allowRe && TEST_UNARY.has(t) && isUnquotedLiteral(ws[st.i], t)) {
+      return { expr: null, error: t + ': unary operator expected' };
+    }
     // single remaining word: bash test treats any non-null string as true
     const e = exprOfWord(ws[st.i]);
     st.i++;
     return { expr: strNe(e), error: null };
   }
-  if (TEST_UNARY.has(t)) {
+  if (TEST_UNARY.has(t) && isUnquotedLiteral(ws[st.i], t)) {
     const w = ws[st.i + 1];
     st.i += 2;
     return { expr: testUnaryExpr(t, w), error: null };
   }
-  const nt = wordToString(ws[st.i + 1]);
-  if (TEST_BINARY.has(nt)) {
+  const opWord = ws[st.i + 1];
+  const nt = wordToString(opWord);
+  const binaries = allowRe ? TEST_BINARY_KSH : TEST_BINARY;
+  if (isUnquotedLiteral(opWord, nt) && binaries.has(nt)) {
     if (st.i + 2 < ws.length) {
-      const expr = testBinaryExpr(ws[st.i], nt, ws[st.i + 2]);
+      const expr = testBinaryExpr(ws[st.i], nt, ws[st.i + 2], allowRe);
       st.i += 3;
       return { expr, error: null };
     }
@@ -930,10 +1092,10 @@ function parseTestAtom(ws: Word[], st: { i: number }): TestParse {
   return { expr: strNe(e), error: null };
 }
 
-function buildTest(ws: Word[], label: string): string {
+function buildTest(ws: Word[], label: string, allowRe = false): string {
   if (ws.length === 0) return '$script:fx_exit = 1';
   const st = { i: 0 };
-  const res = parseTestOr(ws, st);
+  const res = parseTestOr(ws, st, allowRe);
   let err: string | null = null;
   if (res.error) {
     err = res.error.startsWith('OP:')
@@ -943,10 +1105,17 @@ function buildTest(ws: Word[], label: string): string {
     err = 'bash: ' + label + ': too many arguments';
   }
   if (err !== null) {
+    // [[ syntax errors must abort translation so later ; / && segments
+    // cannot run (bash rejects the whole list).
+    if (label === '[[') throw new FauxnixParseError(err);
     return '[Console]::Error.WriteLine(' + psStr(err) + '); $script:fx_exit = 2';
   }
+  const helpers = [FX_TN_FN];
+  if (allowRe && res.expr && res.expr.indexOf('fx-re') >= 0) helpers.push(FX_RE_FN);
+  if (allowRe && res.expr && res.expr.indexOf('fx-posixre') >= 0) helpers.push(FX_POSIXRE_FN);
+  if (allowRe && res.expr && res.expr.indexOf('fx-likeesc') >= 0) helpers.push(FX_LIKEESC_FN);
   return [
-    FX_TN_FN,
+    ...helpers,
     '$fx_tr = ' + res.expr,
     'if ($script:fx_exit -eq 2) { }',
     'elseif (-not $fx_tr) { $script:fx_exit = 1 }',
@@ -960,6 +1129,13 @@ const bracket: Handler = (args) => {
     return '[Console]::Error.WriteLine(' + psStr("bash: [: missing `]'") + '); $script:fx_exit = 2';
   }
   return buildTest(args.slice(0, -1), '[');
+};
+
+const dblBracket: Handler = (args) => {
+  if (args.length === 0 || !isUnquotedLiteral(args[args.length - 1], ']]')) {
+    return '[Console]::Error.WriteLine(' + psStr("bash: [[: missing `]]'") + '); $script:fx_exit = 2';
+  }
+  return buildTest(args.slice(0, -1), '[[', true);
 };
 
 /* ------------------------------------------------------------------ */
@@ -1221,6 +1397,7 @@ export const handlers: Record<string, Handler> = {
   false: falseCmd,
   test,
   '[': bracket,
+  '[[': dblBracket,
   ':': colon,
   pushd,
   popd,
