@@ -195,10 +195,13 @@ async function runPlans(
   // skips b AND c when a fails. chainOk models the value of the current
   // &&/|| chain; `;` segments always run and restart the chain.
   let chainOk = true;
-  // redirect targets are relative to the session cwd, not this node process
-  const baseDir = opts.cwd ?? session.cwd ?? process.cwd();
+  // Redirect targets are relative to the *current* session cwd, not this
+  // Node process. Re-read after every segment so `cd src && echo x > out.txt`
+  // writes under src (same as two separate session calls). A one-shot
+  // capture of the entry cwd would land the file in the old directory.
+  let currentDir = opts.cwd ?? session.cwd ?? process.cwd();
   const resolveTarget = (t: string): string =>
-    path.isAbsolute(t) || /^[A-Za-z]:[\\/]/.test(t) ? t : path.resolve(baseDir, t);
+    path.isAbsolute(t) || /^[A-Za-z]:[\\/]/.test(t) ? t : path.resolve(currentDir, t);
 
   for (const plan of plans) {
     if (plan.op === '&&' && !chainOk) continue;
@@ -266,6 +269,7 @@ async function runPlans(
     clearTimeout(timer);
 
     afterSegment();
+    if (session.cwd) currentDir = session.cwd;
 
     const decodePref = resolveNativePref();
     // GNU line discipline: PowerShell's console layer terminates every line
