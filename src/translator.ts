@@ -5,6 +5,7 @@ import {
   SimpleCommand,
   Word,
   WordPart,
+  isUnquotedLiteral,
 } from './ast.js';
 import { parseCommand } from './parser.js';
 import { PipelineCtx, lookup, psStr } from './registry.js';
@@ -187,7 +188,7 @@ export function translateSimple(
   let body: string;
   if (nameLit !== null) {
     const handler = lookup(nameLit);
-    if (handler) {
+    if (handler && !(nameLit === '[[' && !isUnquotedLiteral(cmd.name, '[['))) {
       body = handler(cmd.args, { position, hasStdin });
     } else {
       // passthrough: native command (git, node, npm, python, cargo, ...)

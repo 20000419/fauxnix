@@ -60,7 +60,7 @@ export interface Redirect {
 export type Word = WordPart[];
 
 export type WordPart =
-  | { kind: 'Text'; text: string }
+  | { kind: 'Text'; text: string; escaped?: boolean }
   | { kind: 'SingleQuoted'; text: string }
   | { kind: 'DoubleQuoted'; parts: WordPart[] }
   | { kind: 'Var'; name: string }
@@ -68,6 +68,20 @@ export type WordPart =
 
 export function wordToString(w: Word): string {
   return w.map(partToString).join('');
+}
+
+/** True when every part is unquoted Text and the concatenation equals `tok`. */
+export function isUnquotedLiteral(w: Word, tok: string): boolean {
+  return (
+    w.length > 0 &&
+    w.every((p) => p.kind === 'Text' && !p.escaped) &&
+    wordToString(w) === tok
+  );
+}
+
+/** True when no part is single- or double-quoted. */
+export function isFullyUnquoted(w: Word): boolean {
+  return w.every((p) => p.kind !== 'SingleQuoted' && p.kind !== 'DoubleQuoted');
 }
 
 function partToString(p: WordPart): string {
