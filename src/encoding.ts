@@ -42,6 +42,23 @@ export function decodeOutput(buf: Buffer, prefer: NativeEncodingPref = 'utf8'): 
   }
 }
 
+/**
+ * Convert PowerShell-host CRLF line endings to LF without destroying
+ * intentional CR/CRLF from exact writers (`fx-write`, `printf`, `echo -n`).
+ *
+ * The console host terminates each Write-Output object with CRLF and a
+ * final newline. Exact writers do not. So we only rewrite when every LF
+ * is part of a CRLF pair *and* the buffer ends with a newline.
+ */
+export function normalizeHostNewlines(s: string): string {
+  if (s.length === 0 || !s.includes('\n')) return s;
+  if (!s.endsWith('\n')) return s;
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '\n' && (i === 0 || s[i - 1] !== '\r')) return s;
+  }
+  return s.replace(/\r\n/g, '\n');
+}
+
 /** Encode a PowerShell script for -EncodedCommand (UTF-16LE base64). */
 export function encodeCommand(script: string): string {
   return Buffer.from(script, 'utf16le').toString('base64');

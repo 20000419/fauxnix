@@ -10,7 +10,7 @@ import {
   wrapScript,
 } from '../src/translator.js';
 import { parseWords, psStr } from '../src/registry.js';
-import { decodeOutput, encodeCommand } from '../src/encoding.js';
+import { decodeOutput, encodeCommand, normalizeHostNewlines } from '../src/encoding.js';
 import { normalizeStderr } from '../src/errors.js';
 
 /* ---------------------------- parser ---------------------------- */
@@ -195,6 +195,13 @@ describe('encoding', () => {
   it('falls back to GBK for non-UTF-8 bytes', () => {
     // "中文" in GBK
     expect(decodeOutput(Buffer.from([0xd6, 0xd0, 0xce, 0xc4]))).toBe('中文');
+  });
+
+  it('normalizeHostNewlines strips PS-host CRLF but keeps exact payloads', () => {
+    expect(normalizeHostNewlines('apple\r\nBanana\r\n')).toBe('apple\nBanana\n');
+    expect(normalizeHostNewlines('a\r\nb')).toBe('a\r\nb');
+    expect(normalizeHostNewlines('a\r\nb\n')).toBe('a\r\nb\n');
+    expect(normalizeHostNewlines('abc')).toBe('abc');
   });
 
   it('encodes -EncodedCommand as UTF-16LE base64', () => {

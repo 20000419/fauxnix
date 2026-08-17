@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Redirect } from './ast.js';
 import { SegmentPlan, normalizeLiteralPath } from './translator.js';
-import { decodeOutput, encodeCommand, resolveNativePref } from './encoding.js';
+import { decodeOutput, encodeCommand, normalizeHostNewlines, resolveNativePref } from './encoding.js';
 import { normalizeStderr } from './errors.js';
 
 export interface ExecResult {
@@ -268,11 +268,13 @@ async function runPlans(
     afterSegment();
 
     const decodePref = resolveNativePref();
-    // GNU line discipline: PowerShell's console layer terminates every line
-    // with CRLF; bash tools expect LF (redirect-written files and byte counts
-    // must match coreutils, e.g. `head -2 f > out.txt; wc -c out.txt`)
-    let segOut = decodeOutput(Buffer.concat(outBufs), decodePref).replace(/\r\n/g, '\n');
-    let segErr = normalizeStderr(decodeOutput(Buffer.concat(errBufs), decodePref)).replace(/\r\n/g, '\n');
+    // GNU line discipline: the PS host terminates Write-Output lines with
+    // CRLF. Exact writers (fx-write / printf / echo -n) must keep embedded
+    // CR so `printf 'a\r\nb' > out` stays 4 bytes.
+    let segOut = normalizeHostNewlines(decodeOutput(Buffer.concat(outBufs), decodePref));
+    let segErr = normalizeHostNewlines(
+      normalizeStderr(decodeOutput(Buffer.concat(errBufs), decodePref)),
+    );
 
     if (running.killed) {
       segErr += '\nbash: command timed out after ' + Math.round(timeoutMs / 1000) + 's';
