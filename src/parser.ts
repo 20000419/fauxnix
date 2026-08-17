@@ -9,6 +9,8 @@ import {
   SimpleCommand,
   Word,
   WordPart,
+  isUnquotedLiteral,
+  wordToString,
 } from './ast.js';
 
 /* ------------------------------------------------------------------ */
@@ -21,6 +23,8 @@ interface Token {
   /** For WORD: the parsed parts. For OP: the operator text. */
   op?: string;
   parts?: WordPart[];
+  /** True when this token was not preceded by whitespace. */
+  tightLeft?: boolean;
 }
 
 const OPERATORS = [
@@ -32,17 +36,24 @@ export function tokenize(input: string): Token[] {
   let i = 0;
   const n = input.length;
 
-  const pushWord = (parts: WordPart[]) => {
-    if (parts.length > 0) tokens.push({ type: 'WORD', parts });
+  const pushWord = (parts: WordPart[], tightLeft: boolean) => {
+    if (parts.length > 0) tokens.push({ type: 'WORD', parts, tightLeft });
   };
 
   let cur: WordPart[] = [];
   let fdDigits = '';
+  let lastWasWs = true;
+  let wordTightLeft = false;
 
   const flush = () => {
-    pushWord(cur);
+    pushWord(cur, wordTightLeft);
     cur = [];
     fdDigits = '';
+  };
+
+  const beginWordPart = () => {
+    if (cur.length === 0) wordTightLeft = !lastWasWs;
+    lastWasWs = false;
   };
 
   while (i < n) {
@@ -51,12 +62,14 @@ export function tokenize(input: string): Token[] {
     // whitespace separates words; newline acts as ';'
     if (ch === ' ' || ch === '\t' || ch === '\r') {
       flush();
+      lastWasWs = true;
       i++;
       continue;
     }
     if (ch === '\n') {
       flush();
-      tokens.push({ type: 'OP', op: ';' });
+      tokens.push({ type: 'OP', op: '\n', tightLeft: false });
+      lastWasWs = true;
       i++;
       continue;
     }
@@ -107,8 +120,10 @@ export function tokenize(input: string): Token[] {
           'fauxnix: heredocs (<<) are not supported yet. Pass the text via echo pipe or a temp file instead.',
         );
       }
+      const tightLeft = !lastWasWs;
       flush();
-      tokens.push({ type: 'OP', op: matched });
+      tokens.push({ type: 'OP', op: matched, tightLeft });
+      lastWasWs = false;
       i += advance;
       continue;
     }
@@ -117,6 +132,7 @@ export function tokenize(input: string): Token[] {
     if (ch === "'") {
       const end = input.indexOf("'", i + 1);
       if (end === -1) throw new FauxnixParseError('fauxnix: unclosed single quote');
+      beginWordPart();
       cur.push({ kind: 'SingleQuoted', text: input.slice(i + 1, end) });
       i = end + 1;
       continue;
@@ -124,6 +140,7 @@ export function tokenize(input: string): Token[] {
 
     // double quotes — interpolated
     if (ch === '"') {
+      beginWordPart();
       i++;
       const parts: WordPart[] = [];
       let buf = '';
@@ -160,10 +177,12 @@ export function tokenize(input: string): Token[] {
     if (ch === '$') {
       const v = readDollar(input, i);
       if (v) {
+        beginWordPart();
         cur.push(v.part);
         i = v.next;
         continue;
       }
+      beginWordPart();
       cur.push({ kind: 'Text', text: '$' });
       i++;
       continue;
@@ -175,15 +194,18 @@ export function tokenize(input: string): Token[] {
       );
     }
 
-    // escape outside quotes
+    // escape outside quotes — keep the escape so [[ =~ ]] / == can
+    // treat `\*` as a literal rather than a metacharacter
     if (ch === '\\' && i + 1 < n) {
-      cur.push({ kind: 'Text', text: input[i + 1] });
+      beginWordPart();
+      cur.push({ kind: 'Text', text: input[i + 1], escaped: true });
       i += 2;
       continue;
     }
 
     // track leading digits (potential fd number for redirects)
     if (/[0-9]/.test(ch) && cur.length === 0 && fdDigits.length < 2) {
+      beginWordPart();
       fdDigits += ch;
       cur.push({ kind: 'Text', text: ch });
       i++;
@@ -191,6 +213,7 @@ export function tokenize(input: string): Token[] {
     }
     fdDigits = '';
 
+    beginWordPart();
     cur.push({ kind: 'Text', text: ch });
     i++;
   }
@@ -262,6 +285,222 @@ function readDollar(input: string, i: number): { part: WordPart; next: number } 
   return null;
 }
 
+function hasBareAmp(w: Word): boolean {
+  let depth = 0;
+  for (const p of w) {
+    if (p.kind !== 'Text' || p.escaped) continue;
+    for (const c of p.text) {
+      if (c === '(') depth++;
+      else if (c === ')' && depth > 0) depth--;
+      else if (c === '&' && depth === 0) return true;
+    }
+  }
+  return false;
+}
+
+function looksLikeArithWord(w: Word): boolean {
+  const s = wordToString(w);
+  return (
+    /^[0-9a-fA-FxX#+\-*/%()<>&=!~|^?,: \t]+$/.test(s) && /[+\-*/%<>&=!~|^?]/.test(s)
+  );
+}
+
+function hasBareNonExtglobParen(w: Word): boolean {
+  const chars: string[] = [];
+  for (const p of w) {
+    if (p.kind === 'Text' && !p.escaped) {
+      for (const c of p.text) chars.push(c);
+    } else {
+      chars.push('\0');
+    }
+  }
+  for (let i = 0; i < chars.length; i++) {
+    if (chars[i] !== '(') continue;
+    const prev = i > 0 ? chars[i - 1] : '';
+    if (prev !== '@' && prev !== '*' && prev !== '?' && prev !== '+' && prev !== '!') return true;
+  }
+  return false;
+}
+
+function regexHasExtraClose(w: Word): boolean {
+  let depth = 0;
+  for (const p of w) {
+    if (p.kind !== 'Text' || p.escaped) continue;
+    for (const c of p.text) {
+      if (c === '(') depth++;
+      else if (c === ')') {
+        if (depth === 0) return true;
+        depth--;
+      }
+    }
+  }
+  return false;
+}
+
+function unmatchedOpenParen(w: Word): boolean {
+  let depth = 0;
+  for (const p of w) {
+    if (p.kind !== 'Text' || p.escaped) continue;
+    for (const c of p.text) {
+      if (c === '(') depth++;
+      else if (c === ')' && depth > 0) depth--;
+    }
+  }
+  return depth > 0;
+}
+
+/** True when `w` has an unclosed unquoted `@(…)`, `+(…)`, `*(…)`, `?(…)`, or `!(…)`. */
+function unmatchedExtglob(w: Word): boolean {
+  const chars: string[] = [];
+  for (const p of w) {
+    if (p.kind === 'Text' && !p.escaped) {
+      for (const c of p.text) chars.push(c);
+    } else {
+      chars.push('\0');
+    }
+  }
+  let depth = 0;
+  for (let i = 0; i < chars.length; i++) {
+    const c = chars[i];
+    if (
+      (c === '@' || c === '*' || c === '?' || c === '+' || c === '!') &&
+      chars[i + 1] === '('
+    ) {
+      depth++;
+      i++;
+      continue;
+    }
+    if (c === ')' && depth > 0) depth--;
+  }
+  return depth > 0;
+}
+
+/**
+ * Peel grouping `(` / `)` that bash tokenizes even without spaces,
+ * but leave extglob `@(…)` / `!(foo)bar` intact.
+ */
+function splitCondParens(w: Word): Word[] {
+  const leading: Word[] = [];
+  const trailing: Word[] = [];
+  let rest: Word = w.map((p) => (p.kind === 'Text' ? { ...p } : p));
+
+  for (;;) {
+    if (rest.length === 0) break;
+    const p = rest[0];
+    if (p.kind !== 'Text' || p.escaped || !p.text.startsWith('(')) break;
+    leading.push([{ kind: 'Text', text: '(' }]);
+    rest =
+      p.text.length === 1
+        ? rest.slice(1)
+        : [{ kind: 'Text', text: p.text.slice(1), escaped: p.escaped }, ...rest.slice(1)];
+  }
+
+  for (;;) {
+    if (rest.length === 0) break;
+    const last = rest[rest.length - 1];
+    if (last.kind !== 'Text' || last.escaped || !last.text.endsWith(')')) break;
+    const without: Word =
+      last.text.length === 1
+        ? rest.slice(0, -1)
+        : [
+            ...rest.slice(0, -1),
+            { kind: 'Text', text: last.text.slice(0, -1), escaped: last.escaped },
+          ];
+    if (unmatchedExtglob(without) || unmatchedOpenParen(without)) break;
+    trailing.unshift([{ kind: 'Text', text: ')' }]);
+    rest = without;
+  }
+
+  const mid = rest.length > 0 ? [rest] : [];
+  return [...leading, ...mid, ...trailing];
+}
+
+function groupingDepth(args: Word[]): number {
+  let d = 0;
+  for (const w of args) {
+    if (isUnquotedLiteral(w, '(')) d++;
+    else if (isUnquotedLiteral(w, ')')) d--;
+  }
+  return d;
+}
+
+/** Peel trailing grouping `)` off a `=~` operand when a `(` is still open. */
+function peelTrailingGroupCloses(w: Word, max: number): Word[] {
+  if (max <= 0) return w.length ? [w] : [];
+  const { rest, trailing } = (() => {
+    const trailing: Word[] = [];
+    let rest: Word = w.map((p) => (p.kind === 'Text' ? { ...p } : p));
+    while (trailing.length < max) {
+      if (rest.length === 0) break;
+      const last = rest[rest.length - 1];
+      if (last.kind !== 'Text' || last.escaped || !last.text.endsWith(')')) break;
+      const without: Word =
+        last.text.length === 1
+          ? rest.slice(0, -1)
+          : [
+              ...rest.slice(0, -1),
+              { kind: 'Text', text: last.text.slice(0, -1), escaped: last.escaped },
+            ];
+      if (unmatchedOpenParen(without)) break;
+      rest = without;
+      trailing.unshift([{ kind: 'Text', text: ')' }]);
+    }
+    return { rest, trailing };
+  })();
+  const mid = rest.length > 0 ? [rest] : [];
+  return [...mid, ...trailing];
+}
+
+function canNlInsideDblBracket(args: Word[]): boolean {
+  if (args.length === 0) return true;
+  const last = args[args.length - 1];
+  if (
+    isUnquotedLiteral(last, '&&') ||
+    isUnquotedLiteral(last, '||') ||
+    isUnquotedLiteral(last, '!') ||
+    isUnquotedLiteral(last, '(')
+  )
+    return true;
+  if (
+    isUnquotedLiteral(last, '=~') ||
+    isUnquotedLiteral(last, '==') ||
+    isUnquotedLiteral(last, '=') ||
+    isUnquotedLiteral(last, '!=') ||
+    isUnquotedLiteral(last, '-e') ||
+    isUnquotedLiteral(last, '-a') ||
+    isUnquotedLiteral(last, '-f') ||
+    isUnquotedLiteral(last, '-d') ||
+    isUnquotedLiteral(last, '-r') ||
+    isUnquotedLiteral(last, '-w') ||
+    isUnquotedLiteral(last, '-x') ||
+    isUnquotedLiteral(last, '-s') ||
+    isUnquotedLiteral(last, '-z') ||
+    isUnquotedLiteral(last, '-n') ||
+    isUnquotedLiteral(last, '-L') ||
+    isUnquotedLiteral(last, '-h') ||
+    isUnquotedLiteral(last, '-v')
+  )
+    return false;
+  if (args.length === 1) return false;
+  return true;
+}
+
+/** Most recent unquoted `=~` / `==` / `=` / `!=` still open in this `[[`. */
+function pendingPatternOp(args: Word[]): '=~' | '==' | null {
+  for (let i = args.length - 1; i >= 0; i--) {
+    const w = args[i];
+    if (isUnquotedLiteral(w, '=~')) return '=~';
+    if (
+      isUnquotedLiteral(w, '==') ||
+      isUnquotedLiteral(w, '=') ||
+      isUnquotedLiteral(w, '!=')
+    )
+      return '==';
+    if (isUnquotedLiteral(w, '&&') || isUnquotedLiteral(w, '||')) return null;
+  }
+  return null;
+}
+
 /* ------------------------------------------------------------------ */
 /* Parser                                                              */
 /* ------------------------------------------------------------------ */
@@ -276,15 +515,16 @@ export function parseCommand(input: string): CommandList {
   const parseList = (): CommandList => {
     const segments: ListSegment[] = [];
     let op: ';' | '&&' | '||' = ';';
-    while (peek().type === 'OP' && peek().op === ';') next();
+    const isListSep = (o?: string) => o === ';' || o === '\n';
+    while (peek().type === 'OP' && isListSep(peek().op)) next();
     while (peek().type !== 'EOF') {
       const pipeline = parsePipeline();
       segments.push({ pipeline, op });
       const t = peek();
-      if (t.type === 'OP' && (t.op === '&&' || t.op === '||' || t.op === ';')) {
-        op = t.op as '&&' | '||' | ';';
+      if (t.type === 'OP' && (t.op === '&&' || t.op === '||' || isListSep(t.op))) {
+        op = t.op === '\n' ? ';' : (t.op as '&&' | '||' | ';');
         next();
-        while (peek().type === 'OP' && peek().op === ';') next(); // trailing / duplicate ;
+        while (peek().type === 'OP' && isListSep(peek().op)) next();
       } else if (t.type === 'EOF') {
         break;
       } else {
@@ -320,6 +560,103 @@ export function parseCommand(input: string): CommandList {
       if (t.type === 'EOF') break;
 
       // possible redirect operator
+      // Inside `[[ ... ]]`, && || < > and other redirect-shaped tokens are
+      // conditional operators (or just words), not shell redirects/lists.
+      // Stop this special case at the first *unquoted* ]].
+      if (
+        t.type === 'OP' &&
+        name !== null &&
+        isUnquotedLiteral(name, '[[') &&
+        !args.some((w) => isUnquotedLiteral(w, ']]')) &&
+        (t.op === '&&' ||
+          t.op === '||' ||
+          t.op === '|' ||
+          t.op === '>' ||
+          t.op === '<' ||
+          t.op === '>>' ||
+          t.op === '2>' ||
+          t.op === '2>>' ||
+          t.op === '&>' ||
+          t.op === '&>>' ||
+          t.op === '2>&1' ||
+          t.op === '1>&2')
+      ) {
+        next();
+        // Glue `|` onto the surrounding words so `=~ ^a|z$`,
+        // `=~ (a | b)c`, and `== @(x | y)` stay one operand. A
+        // spaced `|` outside an open regex / extglob group is a
+        // syntax error (bash).
+        const last = args.length ? args[args.length - 1] : null;
+        const lastIsEqTilde = last !== null && isUnquotedLiteral(last, '=~');
+        const prevIsEqTilde =
+          args.length >= 2 && isUnquotedLiteral(args[args.length - 2], '=~');
+        const openRe =
+          last !== null &&
+          pendingPatternOp(args) === '=~' &&
+          unmatchedOpenParen(last);
+        const openExt =
+          last !== null &&
+          pendingPatternOp(args) === '==' &&
+          unmatchedExtglob(last);
+        const inRe = lastIsEqTilde || prevIsEqTilde || openRe;
+        if (t.op === '|' || ((inRe || openExt) && t.tightLeft && t.op === '||')) {
+          if (
+            t.op === '|' &&
+            !lastIsEqTilde &&
+            !(prevIsEqTilde && t.tightLeft) &&
+            !openRe &&
+            !openExt
+          ) {
+            throw new FauxnixParseError("fauxnix: [[: syntax error near unexpected token `|'");
+          }
+          const piece: WordPart[] =
+            t.tightLeft || lastIsEqTilde
+              ? [{ kind: 'Text', text: t.op! }]
+              : [{ kind: 'Text', text: ' ' }, { kind: 'Text', text: t.op! }];
+          if (lastIsEqTilde) args.push(piece);
+          else args[args.length - 1] = [...args[args.length - 1], ...piece];
+          const n = peek();
+          if (n.type === 'WORD' && n.tightLeft && n.parts) {
+            next();
+            args[args.length - 1] = [...args[args.length - 1], ...n.parts];
+          }
+        } else if (t.op === '&&' || t.op === '||' || t.op === '>' || t.op === '<') {
+          if (openRe && last) {
+            const piece: WordPart[] = t.tightLeft
+              ? [{ kind: 'Text', text: t.op! }]
+              : [{ kind: 'Text', text: ' ' }, { kind: 'Text', text: t.op! }];
+            args[args.length - 1] = [...last, ...piece];
+            const n = peek();
+            if (n.type === 'WORD' && n.tightLeft && n.parts) {
+              next();
+              args[args.length - 1] = [...args[args.length - 1], ...n.parts];
+            }
+          } else {
+            args.push([{ kind: 'Text', text: t.op! }]);
+            if (t.op === '&&' || t.op === '||') {
+              while (peek().type === 'OP' && peek().op === '\n') next();
+            }
+          }
+        } else {
+          throw new FauxnixParseError(
+            "fauxnix: [[: syntax error near unexpected token `" + t.op + "'",
+          );
+        }
+        continue;
+      }
+
+      if (
+        t.type === 'OP' &&
+        t.op === '\n' &&
+        name !== null &&
+        isUnquotedLiteral(name, '[[') &&
+        !args.some((w) => isUnquotedLiteral(w, ']]')) &&
+        canNlInsideDblBracket(args)
+      ) {
+        next();
+        continue;
+      }
+
       if (t.type === 'OP' && isRedirectOp(t.op!)) {
         const op = t.op!;
         next();
@@ -347,12 +684,84 @@ export function parseCommand(input: string): CommandList {
         name = word;
         next();
       } else {
-        args.push(word);
+        if (isUnquotedLiteral(name, '[[') && !args.some((a) => isUnquotedLiteral(a, ']]'))) {
+          const pending = pendingPatternOp(args);
+          const last = args.length ? args[args.length - 1] : null;
+          // bash keeps `( x )` / `@(foo|bar baz)` as one =~ / extglob operand
+          if (
+            last &&
+            !isUnquotedLiteral(word, ']]') &&
+            !isUnquotedLiteral(word, '&&') &&
+            !isUnquotedLiteral(word, '||') &&
+            ((pending === '=~' && unmatchedOpenParen(last)) ||
+              (pending === '==' && unmatchedExtglob(last)))
+          ) {
+            const glued: Word = [...last, { kind: 'Text', text: ' ' }, ...word];
+            const pieces =
+              pending === '=~'
+                ? peelTrailingGroupCloses(glued, groupingDepth(args.slice(0, -1)))
+                : splitCondParens(glued);
+            args.pop();
+            for (const sw of pieces) {
+              if (sw.length > 0) args.push(sw);
+            }
+            next();
+            continue;
+          }
+          if (hasBareAmp(word) && !(pending === '=~' && last && unmatchedOpenParen(last))) {
+            throw new FauxnixParseError("fauxnix: [[: syntax error near unexpected token `&'");
+          }
+          if (pending === '==' && hasBareNonExtglobParen(word)) {
+            throw new FauxnixParseError("fauxnix: [[: syntax error near unexpected token `('");
+          }
+          const pieces =
+            pending === '=~'
+              ? peelTrailingGroupCloses(word, groupingDepth(args))
+              : splitCondParens(word);
+          if (pending !== '=~') {
+            for (const sw of pieces) {
+              if (
+                !isUnquotedLiteral(sw, '(') &&
+                !isUnquotedLiteral(sw, ')') &&
+                hasBareNonExtglobParen(sw) &&
+                !looksLikeArithWord(sw)
+              ) {
+                throw new FauxnixParseError("fauxnix: [[: syntax error near unexpected token `('");
+              }
+            }
+          }
+          for (const sw of pieces) {
+            if (sw.length > 0) args.push(sw);
+          }
+        } else {
+          args.push(word);
+        }
         next();
       }
     }
 
     if (!name) throw new FauxnixParseError('fauxnix: expected a command');
+    if (isUnquotedLiteral(name, '[[')) {
+      const close = args.findIndex((w) => isUnquotedLiteral(w, ']]'));
+      if (close < 0) throw new FauxnixParseError("fauxnix: [[: missing `]]'");
+      if (close !== args.length - 1) {
+        throw new FauxnixParseError("fauxnix: [[: syntax error near unexpected token after `]]'");
+      }
+      if (args.slice(0, close).some((w) => unmatchedExtglob(w))) {
+        throw new FauxnixParseError('fauxnix: [[: syntax error in conditional expression');
+      }
+      for (let i = 0; i < close; i++) {
+        if (!isUnquotedLiteral(args[i], '=~') || i + 1 >= close) continue;
+        if (regexHasExtraClose(args[i + 1])) {
+          throw new FauxnixParseError("fauxnix: [[: syntax error near unexpected token `)'");
+        }
+        if (unmatchedOpenParen(args[i + 1])) {
+          throw new FauxnixParseError(
+            'fauxnix: [[: syntax error in conditional expression: unexpected end of file',
+          );
+        }
+      }
+    }
     return { kind: 'SimpleCommand', assignments, name, args, redirects };
   };
 

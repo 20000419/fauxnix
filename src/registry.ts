@@ -62,6 +62,18 @@ export function registeredNames(): string[] {
 
 /** Escape a JS string into a single-quoted PowerShell string literal. */
 export function psStr(s: string): string {
+  if (/[\r\n]/.test(s)) {
+    return (
+      '"' +
+      s
+        .replace(/`/g, '``')
+        .replace(/"/g, '`"')
+        .replace(/\$/g, '`$')
+        .replace(/\r/g, '`r')
+        .replace(/\n/g, '`n') +
+      '"'
+    );
+  }
   return "'" + s.replace(/'/g, "''") + "'";
 }
 
