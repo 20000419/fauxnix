@@ -1,6 +1,6 @@
 import { Word, wordToString } from '../ast.js';
 import { Handler, parseWords, psStr } from '../registry.js';
-import { exprOfWord, operandExpr } from '../translator.js';
+import { argListExpr, exprOfWord, operandExpr } from '../translator.js';
 
 /* ------------------------------------------------------------------ */
 /* Shared PS snippets                                                  */
@@ -51,8 +51,7 @@ const PS_HSIZE_FN = [
 
 /** Operand Words → PS array expression of string exprs. */
 function psArray(words: Word[], fn: (w: Word) => string = operandExpr): string {
-  if (words.length === 0) return '@()';
-  return '@(' + words.map(fn).join(', ') + ')';
+  return argListExpr(words, fn);
 }
 
 /* ------------------------------------------------------------------ */
@@ -70,7 +69,7 @@ const ls: Handler = (args) => {
   const sortByTime = flags.has('t');
   const sortBySize = flags.has('S');
   const reverse = flags.has('r');
-  const targets = operandWords.length ? operandWords.map((w) => operandExpr(w)) : ["'.'"];
+  const targets = operandWords.length ? argListExpr(operandWords) : "@('.')";
 
   return [
     PS_GLOB_FN,
@@ -92,7 +91,7 @@ const ls: Handler = (args) => {
     '  }',
     '  return $n',
     '}',
-    '$fx_targets = @(' + targets.join(', ') + ')',
+    '$fx_targets = ' + targets,
     '$fx_all = @()',
     'foreach ($fx_t in $fx_targets) {',
     '  foreach ($fx_g in (fx-glob $fx_t)) {',
@@ -136,12 +135,10 @@ const cp: Handler = (args) => {
   const { flags, longs, operandWords } = parseWords(args);
   const recurse = flags.has('r') || flags.has('R') || longs.has('--recursive');
   const verbose = flags.has('v') || longs.has('--verbose');
-  const srcs = psArray(operandWords.slice(0, -1));
-  const dst = operandWords.length >= 2 ? operandExpr(operandWords[operandWords.length - 1]) : "''";
   return [
     PS_GLOB_FN,
-    '$fx_srcs = ' + srcs,
-    '$fx_dst = ' + dst,
+    '$fx_all = ' + argListExpr(operandWords),
+    "if ($fx_all.Count -lt 2) { $fx_srcs = @(); $fx_dst = '' } else { $fx_dst = [string]$fx_all[$fx_all.Count - 1]; $fx_srcs = @($fx_all[0..($fx_all.Count - 2)]) }",
     "if ($fx_srcs.Count -eq 0) { [Console]::Error.WriteLine('cp: missing file operand'); $script:fx_exit = 1 }",
     "elseif ($fx_dst -eq '') { [Console]::Error.WriteLine('cp: missing destination file operand'); $script:fx_exit = 1 }",
     'else {',
@@ -165,12 +162,10 @@ const cp: Handler = (args) => {
 const mv: Handler = (args) => {
   const { flags, longs, operandWords } = parseWords(args);
   const verbose = flags.has('v') || longs.has('--verbose');
-  const srcs = psArray(operandWords.slice(0, -1));
-  const dst = operandWords.length >= 2 ? operandExpr(operandWords[operandWords.length - 1]) : "''";
   return [
     PS_GLOB_FN,
-    '$fx_srcs = ' + srcs,
-    '$fx_dst = ' + dst,
+    '$fx_all = ' + argListExpr(operandWords),
+    "if ($fx_all.Count -lt 2) { $fx_srcs = @(); $fx_dst = '' } else { $fx_dst = [string]$fx_all[$fx_all.Count - 1]; $fx_srcs = @($fx_all[0..($fx_all.Count - 2)]) }",
     "if ($fx_srcs.Count -eq 0) { [Console]::Error.WriteLine('mv: missing file operand'); $script:fx_exit = 1 }",
     "elseif ($fx_dst -eq '') { [Console]::Error.WriteLine('mv: missing destination file operand'); $script:fx_exit = 1 }",
     'elseif ($fx_srcs.Count -gt 1 -and -not (Test-Path -LiteralPath $fx_dst -PathType Container)) { [Console]::Error.WriteLine("mv: target \'" + $fx_dst + "\' is not a directory"); $script:fx_exit = 1 }',
@@ -293,13 +288,11 @@ const mktemp: Handler = (args) => {
 const ln: Handler = (args) => {
   const { flags, operandWords } = parseWords(args);
   const sym = flags.has('s');
-  const src = operandWords.length >= 2 ? operandExpr(operandWords[0]) : "''";
-  const dst = operandWords.length >= 2 ? operandExpr(operandWords[1]) : "''";
   const kind = sym ? 'SymbolicLink' : 'HardLink';
   const label = sym ? 'symbolic link' : 'hard link';
   return [
-    '$fx_src = ' + src,
-    '$fx_dst = ' + dst,
+    '$fx_ops = ' + argListExpr(operandWords),
+    "if ($fx_ops.Count -lt 2) { $fx_src = ''; $fx_dst = '' } else { $fx_src = [string]$fx_ops[0]; $fx_dst = [string]$fx_ops[1] }",
     "if ($fx_src -eq '' -or $fx_dst -eq '') { [Console]::Error.WriteLine('ln: missing file operand'); $script:fx_exit = 1 }",
     'else {',
     '  if (Test-Path -LiteralPath $fx_dst -PathType Container) { $fx_dst = Join-Path $fx_dst (Split-Path $fx_src -Leaf) }',
@@ -344,30 +337,29 @@ const realpath: Handler = (args) => {
 /* ------------------------------------------------------------------ */
 
 const basename: Handler = (args) => {
-  if (args.length === 2) {
-    return [
-      '$fx_p = ' + exprOfWord(args[0]),
-      '$fx_sfx = ' + exprOfWord(args[1]),
-      "$fx_n = [IO.Path]::GetFileName(($fx_p.TrimEnd('/')).TrimEnd('\\'))",
-      "if ($fx_n -eq '') { $fx_n = '/' }",
-      "if ($fx_sfx -ne '' -and $fx_n.EndsWith($fx_sfx) -and ($fx_n.Length -gt $fx_sfx.Length)) { $fx_n = $fx_n.Substring(0, $fx_n.Length - $fx_sfx.Length) }",
-      '$fx_n',
-    ].join('\n');
-  }
   return [
-    '$fx_ps = @(' + args.map(exprOfWord).join(', ') + ')',
+    '$fx_ps = ' + argListExpr(args, exprOfWord),
     "if ($fx_ps.Count -eq 0) { [Console]::Error.WriteLine('basename: missing operand'); $script:fx_exit = 1 }",
-    'foreach ($fx_p in $fx_ps) {',
+    'elseif ($fx_ps.Count -eq 2) {',
+    '  $fx_p = [string]$fx_ps[0]',
+    '  $fx_sfx = [string]$fx_ps[1]',
     "  $fx_n = [IO.Path]::GetFileName(($fx_p.TrimEnd('/')).TrimEnd('\\'))",
     "  if ($fx_n -eq '') { $fx_n = '/' }",
+    "  if ($fx_sfx -ne '' -and $fx_n.EndsWith($fx_sfx) -and ($fx_n.Length -gt $fx_sfx.Length)) { $fx_n = $fx_n.Substring(0, $fx_n.Length - $fx_sfx.Length) }",
     '  $fx_n',
+    '} else {',
+    '  foreach ($fx_p in $fx_ps) {',
+    "    $fx_n = [IO.Path]::GetFileName(($fx_p.TrimEnd('/')).TrimEnd('\\'))",
+    "    if ($fx_n -eq '') { $fx_n = '/' }",
+    '    $fx_n',
+    '  }',
     '}',
   ].join('\n');
 };
 
 const dirname: Handler = (args) => {
   return [
-    '$fx_ps = @(' + args.map(exprOfWord).join(', ') + ')',
+    '$fx_ps = ' + argListExpr(args, exprOfWord),
     "if ($fx_ps.Count -eq 0) { [Console]::Error.WriteLine('dirname: missing operand'); $script:fx_exit = 1 }",
     'foreach ($fx_p in $fx_ps) {',
     "  $fx_n = ($fx_p.TrimEnd('/')).TrimEnd('\\')",
@@ -457,7 +449,7 @@ const du: Handler = (args) => {
   const { flags, longs, operandWords } = parseWords(args, [], ['--max-depth']);
   const sum = flags.has('s') || longs.has('--summarize');
   const human = flags.has('h') || longs.has('--human-readable');
-  const targets = operandWords.length ? operandWords.map((w) => operandExpr(w)) : ["'.'"];
+  const targets = operandWords.length ? argListExpr(operandWords) : "@('.')";
   return [
     PS_HSIZE_FN,
     'function fx-size($p) {',
@@ -465,7 +457,7 @@ const du: Handler = (args) => {
     '  Get-ChildItem -LiteralPath $p -Recurse -Force -File -ErrorAction SilentlyContinue | ForEach-Object { $t += $_.Length }',
     '  return [math]::Ceiling($t / 1KB)',
     '}',
-    '$fx_ts = @(' + targets.join(', ') + ')',
+    '$fx_ts = ' + targets,
     'foreach ($fx_t in $fx_ts) {',
     '  if (-not (Test-Path -LiteralPath $fx_t)) { [Console]::Error.WriteLine("du: cannot access \'" + $fx_t + "\': No such file or directory"); $script:fx_exit = 1; continue }',
     '  if (' + (sum ? '$true' : '$false') + ') {',
@@ -538,7 +530,7 @@ const find: Handler = (args) => {
   const sizeExpr = extractValue(preds, ['-size']);
   const mtimeExpr = extractValue(preds, ['-mtime']);
   const wantDelete = preds.includes('-delete');
-  const paths = pathWords.length ? pathWords.map((w) => operandExpr(w)) : ["'.'"];
+  const paths = pathWords.length ? argListExpr(pathWords) : "@('.')";
 
   const conditions: string[] = [];
   if (namePat !== null) conditions.push("($fx_i.Name -like '" + likeOf(namePat) + "')");
@@ -553,7 +545,7 @@ const find: Handler = (args) => {
   const mtimeCond = mtimeOf(mtimeExpr);
 
   return [
-    '$fx_paths = @(' + paths.join(', ') + ')',
+    '$fx_paths = ' + paths,
     'foreach ($fx_p in $fx_paths) {',
     '  if (-not (Test-Path -LiteralPath $fx_p)) { [Console]::Error.WriteLine("find: \'" + $fx_p + "\': No such file or directory"); $script:fx_exit = 1; continue }',
     '  $fx_root = (Get-Item -LiteralPath $fx_p -Force).FullName',
@@ -664,13 +656,11 @@ const diff: Handler = (args) => {
   const unified = flags.has('u') || flags.has('U');
   const brief = flags.has('q') || flags.has('brief');
   void unified;
-  const a = operandWords.length > 0 ? operandExpr(operandWords[0]) : "''";
-  const b = operandWords.length > 1 ? operandExpr(operandWords[1]) : "''";
   return [
     PS_READTEXT_FN,
     'function fx-dr($x, $y) { if ($x -eq $y) { return [string]$x } else { return ([string]$x) + \',\' + ([string]$y) } }',
-    '$fx_a = ' + a,
-    '$fx_b = ' + b,
+    '$fx_ops = ' + argListExpr(operandWords),
+    "if ($fx_ops.Count -lt 2) { $fx_a = ''; $fx_b = '' } else { $fx_a = [string]$fx_ops[0]; $fx_b = [string]$fx_ops[1] }",
     "if ($fx_a -eq '' -or $fx_b -eq '') { [Console]::Error.WriteLine('diff: missing operand'); $script:fx_exit = 2 }",
     'elseif (-not (Test-Path -LiteralPath $fx_a)) { [Console]::Error.WriteLine("diff: " + $fx_a + ": No such file or directory"); $script:fx_exit = 2 }',
     'elseif (-not (Test-Path -LiteralPath $fx_b)) { [Console]::Error.WriteLine("diff: " + $fx_b + ": No such file or directory"); $script:fx_exit = 2 }',

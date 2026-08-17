@@ -5,6 +5,7 @@ import {
   exprOfWord,
   normalizeLiteralPath,
   pathExpr,
+  splatSpec,
   translateCommandList,
   varExpr,
   wrapScript,
@@ -67,6 +68,34 @@ describe('parser', () => {
     const cmd = parse('echo $(date +%Y)').segments[0].pipeline.commands[0];
     const parts = cmd.args[0];
     expect(parts.some((p) => p.kind === 'CmdSub' && p.cmd === 'date +%Y')).toBe(true);
+  });
+
+  it('parses ${name[index]} subscripts', () => {
+    const cmd = parse('echo ${BASH_REMATCH[1]} ${PATH[0]} ${x[@]}').segments[0].pipeline.commands[0];
+    expect(cmd.args[0]).toEqual([{ kind: 'Var', name: 'BASH_REMATCH', index: '1' }]);
+    expect(cmd.args[1]).toEqual([{ kind: 'Var', name: 'PATH', index: '0' }]);
+    expect(cmd.args[2]).toEqual([{ kind: 'Var', name: 'x', index: '@' }]);
+  });
+
+  it('detects [@] splat through surrounding quotes', () => {
+    const cmd = parse('printf x pre"${a[@]}"post').segments[0].pipeline.commands[0];
+    expect(splatSpec(cmd.args[1])).toEqual({ name: 'a', prefix: 'pre', suffix: 'post' });
+  });
+
+  it('does not splat quoted ${name[*]}', () => {
+    const cmd = parse('printf x "${a[*]}"').segments[0].pipeline.commands[0];
+    expect(splatSpec(cmd.args[1])).toBeNull();
+  });
+
+  it('splats unquoted ${name[*]}', () => {
+    const cmd = parse('printf x ${a[*]}').segments[0].pipeline.commands[0];
+    expect(splatSpec(cmd.args[1])).toEqual({ name: 'a', prefix: '', suffix: '' });
+  });
+
+  it('indexes ${name[0]} through fx-subget, not $env:', () => {
+    expect(varExpr('bash_rematch', '0')).toContain('fx-subget');
+    expect(varExpr('bash_rematch', '0')).not.toMatch(/\$env:bash_rematch/i);
+    expect(varExpr('PWD', '0')).toContain('fx-subget');
   });
 
   it('rejects heredocs with a helpful message', () => {

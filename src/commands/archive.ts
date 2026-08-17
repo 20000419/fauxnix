@@ -1,6 +1,6 @@
 import { Word, wordToString } from '../ast.js';
 import { Handler, PipelineCtx, parseWords, psStr } from '../registry.js';
-import { exprOfWord, operandExpr } from '../translator.js';
+import { argListExpr, exprOfWord, operandExpr } from '../translator.js';
 
 /* ------------------------------------------------------------------ */
 /* gzip family — .NET GZipStream helpers                               */
@@ -222,7 +222,7 @@ function gzBlock(args: Word[], ctx: PipelineCtx, forced: Partial<GzOpts>): strin
 
   return [
     PS_GZ_FNS,
-    '$fx_files = @(' + (p.files.length ? p.files.map(operandExpr).join(', ') : '') + ')',
+    '$fx_files = ' + (p.files.length ? argListExpr(p.files, operandExpr) : '@()'),
     'if ($fx_files.Count -eq 0) {',
     stdinBranch,
     '} else {',
@@ -243,7 +243,7 @@ const zcat: Handler = (args, ctx) => gzBlock(args, ctx, { decompress: true, stdo
 
 const tar: Handler = (args) => {
   return [
-    "$fx_args = @(" + args.map(exprOfWord).join(', ') + ')',
+    '$fx_args = ' + argListExpr(args, exprOfWord),
     // Prefer the Windows-shipped bsdtar (System32): it accepts both path
     // styles. A PATH lookup could resolve to Git Bash's GNU tar, which
     // misreads `C:\...` argv as a remote-host spec (host:path syntax).
@@ -296,10 +296,10 @@ const zip: Handler = (args) => {
     );
   }
   const arc = operandExpr(rest[0]);
-  const inputs = rest.slice(1).map(operandExpr).join(', ');
+  const inputs = argListExpr(rest.slice(1), operandExpr);
   return [
     note + '$fx_arc = ' + arc,
-    '$fx_inputs = @(' + inputs + ')',
+    '$fx_inputs = ' + inputs,
     '$fx_valid = @()',
     'foreach ($fx_p in $fx_inputs) {',
     '  if (Test-Path -LiteralPath $fx_p) { $fx_valid += $fx_p }',

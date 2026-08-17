@@ -17,7 +17,7 @@ const hasPs =
   onWindows &&
   spawnSync('powershell.exe', ['-NoProfile', '-Command', 'exit 0'], { shell: false }).status === 0;
 
-describe.skipIf(!hasPs)('integration (real PowerShell)', () => {
+describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () => {
   let dir: string;
   let session: FauxnixSession;
 
@@ -357,6 +357,46 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', () => {
     expect((await run("[[ 'a>b' =~ (a>b) ]]")).exitCode).toBe(0);
     expect((await run("[[ 'a&&b' =~ (a&&b) ]]")).exitCode).toBe(0);
     expect((await run('[[ abc =~ b ]]; echo "$BASH_REMATCH"')).stdout.trim()).toBe('b');
+    expect((await run('[[ abc =~ ^a(.)c$ ]]; echo ${BASH_REMATCH[0]}')).stdout.trim()).toBe('abc');
+    expect((await run('[[ abc =~ ^a(.)c$ ]]; echo ${BASH_REMATCH[1]}')).stdout.trim()).toBe('b');
+    expect((await run('[[ abc =~ ^a(.)c$ ]]; echo ${BASH_REMATCH[@]}')).stdout.trim()).toBe('abc b');
+    expect((await run("[[ abc =~ ^a(.)c$ ]]; printf '<%s>\\n' \"${BASH_REMATCH[@]}\"")).stdout).toBe(
+      '<abc>\n<b>\n',
+    );
+    expect((await run("[[ abc =~ ^a(.)c$ ]]; printf '<%s>\\n' \"${BASH_REMATCH[*]}\"")).stdout).toBe(
+      '<abc b>\n',
+    );
+    expect(
+      (await run('[[ abc =~ ^a(.)c$ ]]; unset BASH_REMATCH; echo ${BASH_REMATCH[0]}')).stdout.trim(),
+    ).toBe('');
+    expect(
+      (await run('[[ abc =~ ^a(.)c$ ]]; BASH_REMATCH=x; echo ${BASH_REMATCH[0]}; echo ${BASH_REMATCH[1]}')).stdout.trim(),
+    ).toBe('x');
+    expect((await run('[[ abc =~ z ]]; echo ${BASH_REMATCH[1]}')).stdout.trim()).toBe('');
+    expect((await run('[[ abc =~ ^a(.)c$ ]]; [[ -v BASH_REMATCH[1] ]]')).exitCode).toBe(0);
+    expect((await run('[[ x =~ ^ ]]; printf "<%s>\\n" "${BASH_REMATCH[@]}"')).stdout).toBe('<>\n');
+    expect(
+      (await run('[[ abc =~ ^a(.)c$ ]]; BASH_REMATCH=x true; echo ${BASH_REMATCH[1]}')).stdout.trim(),
+    ).toBe('b');
+    expect(
+      (await run("[[ abc =~ ^a(.)c$ ]]; printf '<%s>\\n' \"pre${BASH_REMATCH[@]}post\"")).stdout,
+    ).toBe('<preabc>\n<bpost>\n');
+    expect(
+      (await run('[[ abc =~ ^a(.)c$ ]]; bash_rematch=x; echo ${BASH_REMATCH[1]}; unset bash_rematch')).stdout.trim(),
+    ).toBe('b');
+    expect((await run('unset X; printf "<%s>\\n" "pre${X[@]}post"')).stdout).toBe('<prepost>\n');
+    expect((await run('echo ${PWD[0]}')).stdout.trim()).toBe(
+      (await run('echo $PWD')).stdout.trim(),
+    );
+    expect(
+      (await run('unset bash_rematch; [[ abc =~ ^a(.)c$ ]]; echo ${bash_rematch[0]}')).stdout.trim(),
+    ).toBe('');
+    expect(
+      (await run("IFS=','; [[ abc =~ ^a(.)c$ ]]; echo \"${BASH_REMATCH[*]}\"; unset IFS")).stdout.trim(),
+    ).toBe('abc,b');
+    expect(
+      (await run("[[ abc =~ ^a(.)c$ ]]; printf '<%s>\\n' pre\"${BASH_REMATCH[@]}\"post")).stdout,
+    ).toBe('<preabc>\n<bpost>\n');
     expect(
       (await run('export BASH_REMATCH=old; [[ abc =~ b ]]; [[ $BASH_REMATCH == b ]]; echo $?; unset BASH_REMATCH')).stdout.trim(),
     ).toBe('0');
@@ -412,6 +452,28 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', () => {
     ).toBe(0);
   }, 180000);
 
+  it('array subscripts splat across commands and persist correctly', async () => {
+    expect(
+      (
+        await run(
+          '[[ abc =~ ^a(.)c$ ]]; X=y export BASH_REMATCH=z; echo ${BASH_REMATCH[0]}; echo x${BASH_REMATCH[1]}x; unset BASH_REMATCH; unset X',
+        )
+      ).stdout.trim(),
+    ).toBe('z\nxx');
+    expect((await run('[[ echo =~ ^echo$ ]]; "${BASH_REMATCH[@]}" hi')).stdout.trim()).toBe('hi');
+    expect(
+      (await run("[[ abc =~ ^a(.)c$ ]]; printf '<%s>\\n' ${BASH_REMATCH[*]}")).stdout,
+    ).toBe('<abc>\n<b>\n');
+    expect(
+      (await run("IFS=; [[ abc =~ ^a(.)c$ ]]; echo \"${BASH_REMATCH[*]}\"; unset IFS")).stdout.trim(),
+    ).toBe('abcb');
+    expect((await run('[[ 3 =~ ^3$ ]]; seq "${BASH_REMATCH[@]}"')).stdout.trim()).toBe('1\n2\n3');
+    writeFileSync(join(dir, 'abc'), 'X', 'utf8');
+    writeFileSync(join(dir, 'b'), 'Y', 'utf8');
+    expect((await run('[[ abc =~ ^a(.)c$ ]]; cat "${BASH_REMATCH[@]}"')).stdout.trim()).toBe('X\nY');
+    await run('unset BASH_REMATCH');
+  }, 60000);
+
   it('&& and || short-circuit like bash', async () => {
     expect((await run('cat missing.txt || echo FELLBACK')).stdout).toContain('FELLBACK');
     const r = await run('cat missing.txt && echo NOPE ; echo END');
@@ -465,7 +527,7 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', () => {
       (await run('SA_Z=out; SA_Z=in [[ $SA_Z == in ]] && echo YES || echo NO')).stdout.trim(),
     ).toBe('YES');
     await run('unset SA_V SA_N SA_E SA_Z');
-  });
+  }, 20000);
 
   it('session cwd persists across calls', async () => {
     await run('cd sub');
