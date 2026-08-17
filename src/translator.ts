@@ -206,7 +206,9 @@ export function argListExpr(words: Word[], fn: (w: Word) => string = exprOfWord)
         return (
           '@($( $fx_sp = @(fx-arrload ' +
           psStr(s.name) +
-          '); if ($fx_sp.Count -gt 0) { $fx_sp[0] = ' +
+          '); if ($fx_sp.Count -eq 0) { $fx_sp = @(' +
+          psStr(s.prefix + s.suffix) +
+          ') } else { $fx_sp[0] = ' +
           psStr(s.prefix) +
           ' + $fx_sp[0]; $fx_sp[$fx_sp.Count-1] = $fx_sp[$fx_sp.Count-1] + ' +
           psStr(s.suffix) +
@@ -774,11 +776,34 @@ export function wrapScript(body: string): string {
     '    foreach ($el in @($fx_pair.Substring($fx_eq + 1) -split [string][char]30)) { $out += ,(fx-svdec $el) }',
     '    return $out',
     '  }',
+    '  $s0 = fx-scalar0 $n',
+    '  if ($null -eq $s0) { return @() }',
+    '  return @([string]$s0)',
+    '}',
+    'function fx-scalar0($n) {',
+    '  $n = [string]$n',
+    "  if (@($env:FAUXNIX_UNSETVARS -split ';' | Where-Object { $_ -ceq $n }).Count -gt 0) { return $null }",
+    '  foreach ($fx_pair in @($env:FAUXNIX_SETVALS -split [string][char]10)) {',
+    '    $fx_eq = $fx_pair.IndexOf([char]61)',
+    '    if ($fx_eq -lt 1) { continue }',
+    '    if ($fx_pair.Substring(0, $fx_eq) -ceq $n) { return (fx-svdec $fx_pair.Substring($fx_eq + 1)) }',
+    '  }',
+    "  if ($n -ceq 'HOME') { return [string]$HOME }",
+    "  if ($n -ceq 'PWD') { return [string]$PWD.Path }",
+    "  if ($n -ceq 'USER' -or $n -ceq 'LOGNAME') { return [string]$env:USERNAME }",
+    "  if ($n -ceq 'PATH') { return [string]$env:PATH }",
+    "  if ($n -ceq 'SHELL') { return 'powershell' }",
+    "  if ($n -ceq 'TERM') { return 'xterm-256color' }",
+    "  if ($n -ceq 'OLDPWD') { return $(if ($env:FAUXNIX_OLDPWD) { [string]$env:FAUXNIX_OLDPWD } else { $null }) }",
+    "  if ($n -ceq 'HOSTNAME') { return [string]$env:COMPUTERNAME }",
     '  $ev = Get-ChildItem Env: | Where-Object { $_.Name -ceq $n } | Select-Object -First 1',
-    '  if ($ev) { return @([string]$ev.Value) }',
-    '  $v = [Environment]::GetEnvironmentVariable($n)',
-    '  if ($null -ne $v) { return @([string]$v) }',
-    '  return @()',
+    '  if ($ev) { return [string]$ev.Value }',
+    '  return $null',
+    '}',
+    'function fx-ifs1 {',
+    "  if ($null -eq $env:IFS) { return ' ' }",
+    "  if ([string]$env:IFS -eq '') { return '' }",
+    '  return [string]([string]$env:IFS)[0]',
     '}',
     'function fx-arrdrop($n) {',
     '  $n = [string]$n',
@@ -815,9 +840,12 @@ export function wrapScript(body: string): string {
     '}',
     'function fx-subget($n, $ix) {',
     '  $arr = @(fx-arrload $n)',
-    "  if ([string]$ix -eq '@' -or [string]$ix -eq '*') { return ($arr -join ' ') }",
+    '  $ix = [string]$ix',
+    // argv-level `@` is expanded by argListExpr; this is the scalar/quoted-* join.
+    "  if ($ix -eq '*') { return ($arr -join (fx-ifs1)) }",
+    "  if ($ix -eq '@') { return ($arr -join (fx-ifs1)) }",
     '  $i = 0',
-    '  if (-not [int]::TryParse([string]$ix, [ref]$i)) { return \'\' }',
+    '  if (-not [int]::TryParse($ix, [ref]$i)) { return \'\' }',
     "  if ($i -lt 0 -or $i -ge $arr.Count) { return '' }",
     '  return [string]$arr[$i]',
     '}',

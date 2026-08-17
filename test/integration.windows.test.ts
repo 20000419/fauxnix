@@ -382,8 +382,18 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', () => {
       (await run("[[ abc =~ ^a(.)c$ ]]; printf '<%s>\\n' \"pre${BASH_REMATCH[@]}post\"")).stdout,
     ).toBe('<preabc>\n<bpost>\n');
     expect(
-      (await run('[[ abc =~ ^a(.)c$ ]]; bash_rematch=x; echo ${BASH_REMATCH[1]}')).stdout.trim(),
+      (await run('[[ abc =~ ^a(.)c$ ]]; bash_rematch=x; echo ${BASH_REMATCH[1]}; unset bash_rematch')).stdout.trim(),
     ).toBe('b');
+    expect((await run('unset X; printf "<%s>\\n" "pre${X[@]}post"')).stdout).toBe('<prepost>\n');
+    expect((await run('echo ${PWD[0]}')).stdout.trim()).toBe(
+      (await run('echo $PWD')).stdout.trim(),
+    );
+    expect(
+      (await run('unset bash_rematch; [[ abc =~ ^a(.)c$ ]]; echo ${bash_rematch[0]}')).stdout.trim(),
+    ).toBe('');
+    expect(
+      (await run("IFS=','; [[ abc =~ ^a(.)c$ ]]; echo \"${BASH_REMATCH[*]}\"")).stdout.trim(),
+    ).toBe('abc,b');
     expect(
       (await run('export BASH_REMATCH=old; [[ abc =~ b ]]; [[ $BASH_REMATCH == b ]]; echo $?; unset BASH_REMATCH')).stdout.trim(),
     ).toBe('0');
