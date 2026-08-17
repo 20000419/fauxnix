@@ -177,7 +177,8 @@ export function translateCmdSub(cmdText: string): string {
     );
   }
   const { defs, call } = translatePipelineBody(list.segments[0].pipeline);
-  return defs ? defs + '\n' + call : call;
+  const inner = defs ? defs + '\n' + call : call;
+  return 'fx-csub { ' + inner + ' }';
 }
 
 /* ------------------------------------------------------------------ */
@@ -649,6 +650,17 @@ export function wrapScript(body: string): string {
     "  if ($parts.Count -eq 1 -and $parts[0] -eq '') { return @() }",
     "  if ($parts[$parts.Count - 1] -eq '') { $parts = $parts[0..($parts.Count - 2)] }",
     '  return $parts',
+    '}',
+    'function fx-csub([scriptblock]$b) {',
+    '  $fx_prevcs = $script:fx_csub',
+    '  $script:fx_csub = $true',
+    '  try { $fx_o = @(& $b | ForEach-Object { [string]$_ }) }',
+    '  finally { $script:fx_csub = $fx_prevcs }',
+    '  $fx_s = ($fx_o -join [string][char]10)',
+    '  while ($fx_s.Length -gt 0 -and $fx_s[$fx_s.Length - 1] -eq [char]10) {',
+    '    $fx_s = $fx_s.Substring(0, $fx_s.Length - 1)',
+    '  }',
+    '  return $fx_s',
     '}',
     'try {',
     ...body.split('\n').map((l) => '  ' + l),

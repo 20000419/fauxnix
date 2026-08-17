@@ -427,6 +427,10 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', () => {
   it('variables and command substitution', async () => {
     expect((await run('export GREET=hi; echo $GREET/there')).stdout.trim()).toBe('hi/there');
     expect((await run('echo $(echo nested)')).stdout.trim()).toBe('nested');
+    expect((await run("echo \"[$(printf 'a\\nb')]\"")).stdout).toBe('[a\nb]\n');
+    expect((await run("[[ \"$(printf 'a\\nb')\" == \"a\nb\" ]]")).exitCode).toBe(0);
+    expect((await run("X=$(printf 'a\\nb'); echo \"[$X]\"")).stdout).toBe('[a\nb]\n');
+    expect((await run("echo \"[$(printf 'a\\n')]\"")).stdout).toBe('[a]\n');
   });
 
   it('VAR=value prefixes do not leak past the command', async () => {
