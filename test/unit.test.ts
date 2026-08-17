@@ -130,6 +130,23 @@ describe('translator', () => {
     expect(plan.script).toMatch(/function __fx_s\d+/);
     expect(plan.script).toMatch(/__fx_s\d+ \| __fx_s\d+ \| __fx_s\d+/);
   });
+
+  it('scopes VAR=value prefixes and evaluates values before applying them', () => {
+    const leak = translateCommandList(parse('FOO=bar echo x'))[0].script;
+    expect(leak).toContain('try {');
+    expect(leak).toContain('finally {');
+    expect(leak).toMatch(/Remove-Item -LiteralPath 'Env:\\FOO'/);
+    const both = translateCommandList(parse('A=1 B=$A echo x'))[0].script;
+    const evalB = both.indexOf('$env:A');
+    const applyA = both.indexOf('$env:A =');
+    // `$env:A` in the B value is captured before `$env:A =` applies A=1
+    expect(evalB).toBeGreaterThan(-1);
+    expect(applyA).toBeGreaterThan(evalB);
+    const exported = translateCommandList(parse('FOO=bar export FOO'))[0].script;
+    expect(exported).toContain('$env:FOO =');
+    expect(exported).toMatch(/\$fx_ek\d+/);
+    expect(exported).toContain('[string](');
+  });
 });
 
 /* ---------------------------- registry ---------------------------- */

@@ -139,6 +139,27 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', () => {
     expect((await run('echo $(echo nested)')).stdout.trim()).toBe('nested');
   });
 
+  it('VAR=value prefixes do not leak past the command', async () => {
+    expect((await run('FX_P=bar echo $FX_P')).stdout.trim()).toBe('bar');
+    expect((await run('FX_P=bar echo $FX_P; echo x$FX_P')).stdout.trim()).toBe('bar\nx');
+    expect((await run('export FX_K=old; FX_K=new echo $FX_K; echo $FX_K')).stdout.trim()).toBe(
+      'new\nold',
+    );
+    expect((await run('FX_A=1 FX_B=$FX_A echo x$FX_B')).stdout.trim()).toBe('x');
+    expect((await run('FX_P=bar true; printenv FX_P; echo $?')).stdout.trim()).toBe('1');
+    expect((await run('env FX_P=bar printenv FX_P; printenv FX_P; echo done')).stdout.trim()).toBe(
+      'bar\ndone',
+    );
+    expect((await run('FX_P=bar export FX_P; echo $FX_P')).stdout.trim()).toBe('bar');
+    expect((await run('export FX_N=FX_P; FX_P=via export "$FX_N"; echo $FX_P')).stdout.trim()).toBe(
+      'via',
+    );
+    // export + prefix keeps the name in the session; a bare prefix must not
+    expect((await run('echo $FX_P')).stdout.trim()).toBe('via');
+    await run('unset FX_P FX_K FX_A FX_B FX_N');
+    expect((await run('FX_P=bar true; echo x$FX_P')).stdout.trim()).toBe('x');
+  }, 20000);
+
   it('session cwd persists across calls', async () => {
     await run('cd sub');
     const r = await run('pwd');
