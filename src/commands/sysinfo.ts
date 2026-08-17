@@ -23,6 +23,7 @@ const NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 function emitSetValPut(nameLit: string, valueExpr: string): string {
   const n = nameLit.replace(/'/g, "''");
   return [
+    "fx-arrdrop '" + n + "'",
     '$fx_sv = @()',
     'foreach ($fx_pair in @($env:FAUXNIX_SETVALS -split [string][char]10)) {',
     '  $fx_eq = $fx_pair.IndexOf([char]61)',
@@ -36,6 +37,7 @@ function emitSetValPut(nameLit: string, valueExpr: string): string {
 
 function emitSetValDelRuntime(nameVar: string): string {
   return [
+    'fx-arrdrop ' + nameVar,
     '$fx_sv = @()',
     'foreach ($fx_pair in @($env:FAUXNIX_SETVALS -split [string][char]10)) {',
     '  $fx_eq = $fx_pair.IndexOf([char]61)',
@@ -967,6 +969,7 @@ const FX_TNK_FN = [
   '  $fx_ev = Get-ChildItem Env: | Where-Object { $_.Name -ceq $n } | Select-Object -First 1',
   '  $nm = if ($fx_ev) { $fx_ev.Name } else { $n }',
   "  Set-Item -LiteralPath ('Env:' + $nm) -Value ([string][long]$v)",
+  '  fx-arrdrop $n',
   "  $env:FAUXNIX_SETVARS = ((@($env:FAUXNIX_SETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne $n }) + $n) -join ';')",
   "  $env:FAUXNIX_UNSETVARS = (@($env:FAUXNIX_UNSETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne $n }) -join ';')",
   '  $fx_sv = @()',

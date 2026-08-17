@@ -167,6 +167,32 @@ export function operandExpr(w: Word): string {
   return exprOfWord(w);
 }
 
+/** Whole word is `${name[@]}` or `"${name[@]}"` (bash: one argv per element). */
+export function atSplatName(w: Word): string | null {
+  if (w.length === 1 && w[0].kind === 'Var' && w[0].index === '@') return w[0].name;
+  if (w.length === 1 && w[0].kind === 'DoubleQuoted' && w[0].parts.length === 1) {
+    const p = w[0].parts[0];
+    if (p.kind === 'Var' && p.index === '@') return p.name;
+  }
+  return null;
+}
+
+/** PS expression of a string[]: `@` words splat, others stay one element. */
+export function argListExpr(words: Word[], fn: (w: Word) => string = exprOfWord): string {
+  if (words.length === 0) return '@()';
+  return (
+    '(' +
+    words
+      .map((w) => {
+        const n = atSplatName(w);
+        if (n) return '@(fx-arrload ' + psStr(n) + ')';
+        return '@(' + fn(w) + ')';
+      })
+      .join(' + ') +
+    ')'
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /* Command substitution                                                */
 /* ------------------------------------------------------------------ */
@@ -217,23 +243,21 @@ export function translateSimple(
       // invoked with the call operator and an argv-style argument array —
       // no string re-parsing of user text.
       const nameExpr = psStr(nameLit);
-      const argExprs = cmd.args.map((a) => exprOfWord(a));
-      const args = argExprs.length ? ' @(' + argExprs.join(', ') + ')' : '';
-      const call = '& ' + nameExpr + args;
+      const invoke = '& ' + nameExpr + ' @fx_na';
       body = [
+        '$fx_na = ' + argListExpr(cmd.args),
         // feed pipeline stdin into the native process when we are a non-first stage
-        (hasStdin ? '($input | ' + call + ')' : call) + ' | ForEach-Object { [string]$_ }',
+        (hasStdin ? '($input | ' + invoke + ')' : invoke) + ' | ForEach-Object { [string]$_ }',
         'if ($LASTEXITCODE -gt 0) { $script:fx_exit = $LASTEXITCODE } elseif ($LASTEXITCODE -lt 0) { $script:fx_exit = 1 }',
       ].join('\n');
     }
   } else {
     // dynamic command name — evaluate it
     const nameExpr = exprOfWord(cmd.name);
-    const argExprs = cmd.args.map((a) => exprOfWord(a));
-    const args = argExprs.length ? ' @(' + argExprs.join(', ') + ')' : '';
-    const call = '& (' + nameExpr + ')' + args;
+    const invoke = '& (' + nameExpr + ') @fx_na';
     body = [
-      (hasStdin ? '($input | ' + call + ')' : call) + ' | ForEach-Object { [string]$_ }',
+      '$fx_na = ' + argListExpr(cmd.args),
+      (hasStdin ? '($input | ' + invoke + ')' : invoke) + ' | ForEach-Object { [string]$_ }',
       'if ($LASTEXITCODE -gt 0) { $script:fx_exit = $LASTEXITCODE } elseif ($LASTEXITCODE -lt 0) { $script:fx_exit = 1 }',
     ].join('\n');
   }
@@ -350,6 +374,7 @@ export function wrapTempEnv(
     lines.push(
       '  Remove-Item -LiteralPath ' + psStr('Env:\\' + u) + ' -ErrorAction SilentlyContinue',
     );
+    lines.push('  fx-arrdrop ' + psStr(u));
     // `env -u NAME` must hide NAME from fx-envget / fx-isset for the
     // wrapped body. Removing Env:\NAME is not enough: an earlier
     // `export NAME=x` still lives in SETVARS/SETVALS, and special
@@ -376,6 +401,7 @@ export function wrapTempEnv(
     const n = sets[i].name;
     const nq = n.replace(/'/g, "''");
     lines.push('  $env:' + n + ' = ' + valVars[i]);
+    lines.push('  fx-arrdrop ' + psStr(n));
     lines.push(
       "  $env:FAUXNIX_SETVARS = ((@($env:FAUXNIX_SETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne '" +
         nq +
@@ -698,6 +724,9 @@ export function wrapScript(body: string): string {
     "  $env:FAUXNIX_UNSETVARS = (@($env:FAUXNIX_UNSETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne $n }) -join ';')",
     '  $fx_sv = @(); foreach ($fx_pair in @($env:FAUXNIX_SETVALS -split [string][char]10)) { $fx_eq = $fx_pair.IndexOf([char]61); if ($fx_eq -lt 1) { continue }; if ($fx_pair.Substring(0, $fx_eq) -cne $n) { $fx_sv += $fx_pair } }',
     "  $fx_sv += ($n + [string][char]61 + (fx-svenc $fx_0)); $env:FAUXNIX_SETVALS = ($fx_sv -join [string][char]10)",
+    '}',
+    'function fx-arrdrop($n) {',
+    "  Remove-Item -LiteralPath ('Env:\\FAUXNIX_ARR_' + [string]$n) -ErrorAction SilentlyContinue",
     '}',
     'function fx-arrclr($n) {',
     '  $n = [string]$n',

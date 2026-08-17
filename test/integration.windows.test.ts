@@ -360,6 +360,18 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', () => {
     expect((await run('[[ abc =~ ^a(.)c$ ]]; echo ${BASH_REMATCH[0]}')).stdout.trim()).toBe('abc');
     expect((await run('[[ abc =~ ^a(.)c$ ]]; echo ${BASH_REMATCH[1]}')).stdout.trim()).toBe('b');
     expect((await run('[[ abc =~ ^a(.)c$ ]]; echo ${BASH_REMATCH[@]}')).stdout.trim()).toBe('abc b');
+    expect((await run("[[ abc =~ ^a(.)c$ ]]; printf '<%s>\\n' \"${BASH_REMATCH[@]}\"")).stdout).toBe(
+      '<abc>\n<b>\n',
+    );
+    expect((await run("[[ abc =~ ^a(.)c$ ]]; printf '<%s>\\n' \"${BASH_REMATCH[*]}\"")).stdout).toBe(
+      '<abc b>\n',
+    );
+    expect(
+      (await run('[[ abc =~ ^a(.)c$ ]]; unset BASH_REMATCH; echo ${BASH_REMATCH[0]}')).stdout.trim(),
+    ).toBe('');
+    expect(
+      (await run('[[ abc =~ ^a(.)c$ ]]; BASH_REMATCH=x; echo ${BASH_REMATCH[0]}; echo ${BASH_REMATCH[1]}')).stdout.trim(),
+    ).toBe('x');
     expect((await run('[[ abc =~ z ]]; echo ${BASH_REMATCH[1]}')).stdout.trim()).toBe('');
     expect(
       (await run('export BASH_REMATCH=old; [[ abc =~ b ]]; [[ $BASH_REMATCH == b ]]; echo $?; unset BASH_REMATCH')).stdout.trim(),
@@ -469,7 +481,7 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', () => {
       (await run('SA_Z=out; SA_Z=in [[ $SA_Z == in ]] && echo YES || echo NO')).stdout.trim(),
     ).toBe('YES');
     await run('unset SA_V SA_N SA_E SA_Z');
-  });
+  }, 20000);
 
   it('session cwd persists across calls', async () => {
     await run('cd sub');

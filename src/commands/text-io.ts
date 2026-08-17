@@ -1,6 +1,6 @@
 import { Word, wordToString } from '../ast.js';
 import { Handler, lookup, parseWords, psStr } from '../registry.js';
-import { exprOfWord, operandExpr } from '../translator.js';
+import { argListExpr, exprOfWord, operandExpr } from '../translator.js';
 
 /* ------------------------------------------------------------------ */
 /* Shared PS snippets (same shape as files.ts / text-filters.ts)       */
@@ -129,8 +129,7 @@ function qErr(cmd: string, g: string, msg: string, lead = 'cannot open '): strin
 
 /** Operand Words → PS array expression of string exprs. */
 function psArray(words: Word[], fn: (w: Word) => string = operandExpr): string {
-  if (words.length === 0) return '@()';
-  return '@(' + words.map(fn).join(', ') + ')';
+  return argListExpr(words, fn);
 }
 
 /**
