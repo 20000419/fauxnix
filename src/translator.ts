@@ -1,10 +1,12 @@
 import {
+  Assignment,
   CommandList,
   FauxnixParseError,
   Redirect,
   SimpleCommand,
   Word,
   WordPart,
+  wordToString,
 } from './ast.js';
 import { parseCommand } from './parser.js';
 import { PipelineCtx, lookup, psStr } from './registry.js';
@@ -215,14 +217,115 @@ export function translateSimple(
     ].join('\n');
   }
 
-  // `VAR=value cmd ...` prefix — set process env for the invocation.
+  // `VAR=value cmd` is command-scoped. Values are captured in the
+  // current environment, then applied, then restored — including when
+  // the command throws — so they never leak into later list segments
+  // or the persisted MCP session. `VAR=x export VAR` keeps VAR (bash).
   if (cmd.assignments.length > 0) {
-    const sets = cmd.assignments
-      .map((a) => '$env:' + a.name + ' = ' + exprOfWord(a.value))
-      .join('; ');
-    body = sets + '\n' + body;
+    body = wrapTempEnv(cmd.assignments, body, {
+      persist: exportPersistNames(nameLit, cmd.args),
+    });
   }
   return body;
+}
+
+let tempEnvSeq = 0;
+
+/** Names `export` will leave in the shell after this simple command. */
+function exportPersistNames(nameLit: string | null, args: Word[]): Set<string> {
+  const keep = new Set<string>();
+  if (nameLit !== 'export') return keep;
+  for (const w of args) {
+    const t = wordToString(w);
+    if (t.startsWith('-')) continue;
+    const eq = t.indexOf('=');
+    const n = eq >= 0 ? t.slice(0, eq) : t;
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(n)) keep.add(n);
+  }
+  return keep;
+}
+
+/**
+ * Apply env assignments (and optional unsets) only for `body`, then restore.
+ * All assignment *values* are evaluated before any name is mutated.
+ */
+export function wrapTempEnv(
+  sets: Assignment[],
+  body: string,
+  extra?: { unsets?: string[]; persist?: Set<string> },
+): string {
+  const unsets = extra?.unsets ?? [];
+  const persist = extra?.persist ?? new Set<string>();
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const s of sets) {
+    if (!seen.has(s.name)) {
+      seen.add(s.name);
+      names.push(s.name);
+    }
+  }
+  for (const u of unsets) {
+    if (!seen.has(u)) {
+      seen.add(u);
+      names.push(u);
+    }
+  }
+  if (names.length === 0) return body;
+
+  const id = tempEnvSeq++;
+  const save = '$fx_es' + id;
+  const lines: string[] = [save + ' = @{}'];
+  for (const n of names) {
+    const p = psStr('Env:\\' + n);
+    lines.push(
+      save +
+        '[' +
+        psStr(n) +
+        '] = $(if (Test-Path -LiteralPath ' +
+        p +
+        ') { [string](Get-Item -LiteralPath ' +
+        p +
+        ').Value } else { $null })',
+    );
+  }
+  const valVars: string[] = [];
+  for (let i = 0; i < sets.length; i++) {
+    const vn = '$fx_ev' + id + '_' + i;
+    valVars.push(vn);
+    lines.push(vn + ' = ' + exprOfWord(sets[i].value));
+  }
+  lines.push('try {');
+  for (const u of unsets) {
+    lines.push(
+      '  Remove-Item -LiteralPath ' + psStr('Env:\\' + u) + ' -ErrorAction SilentlyContinue',
+    );
+  }
+  for (let i = 0; i < sets.length; i++) {
+    lines.push('  $env:' + sets[i].name + ' = ' + valVars[i]);
+  }
+  for (const l of body.split('\n')) lines.push(l ? '  ' + l : l);
+  lines.push('} finally {');
+  for (const n of names) {
+    if (persist.has(n)) continue;
+    const p = psStr('Env:\\' + n);
+    lines.push(
+      '  if ($null -eq ' +
+        save +
+        '[' +
+        psStr(n) +
+        ']) { Remove-Item -LiteralPath ' +
+        p +
+        ' -ErrorAction SilentlyContinue } else { Set-Item -LiteralPath ' +
+        p +
+        ' -Value ' +
+        save +
+        '[' +
+        psStr(n) +
+        '] }',
+    );
+  }
+  lines.push('}');
+  return lines.join('\n');
 }
 
 /** Unique suffix for generated stage functions (nested pipelines included). */
