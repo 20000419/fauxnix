@@ -6,6 +6,7 @@ import {
   SimpleCommand,
   Word,
   WordPart,
+  isUnquotedLiteral,
 } from './ast.js';
 import { parseCommand } from './parser.js';
 import { PipelineCtx, lookup, psStr } from './registry.js';
@@ -48,8 +49,13 @@ export function varExpr(name: string): string {
 /* ------------------------------------------------------------------ */
 
 /** Escape text destined for the inside of a PS double-quoted string. */
-function escDq(s: string): string {
-  return s.replace(/`/g, '``').replace(/"/g, '\\"').replace(/\$/g, '`$');
+export function escapeDq(s: string): string {
+  return s
+    .replace(/`/g, '``')
+    .replace(/"/g, '`"')
+    .replace(/\$/g, '`$')
+    .replace(/\r/g, '`r')
+    .replace(/\n/g, '`n');
 }
 
 /** Normalize a literal POSIX-ish path to its Windows equivalent. */
@@ -119,10 +125,10 @@ export function exprOfWord(w: Word): string {
   const emitPart = (p: WordPart) => {
     switch (p.kind) {
       case 'Text':
-        out += escDq(p.text);
+        out += escapeDq(p.text);
         break;
       case 'SingleQuoted':
-        out += escDq(p.text);
+        out += escapeDq(p.text);
         break;
       case 'DoubleQuoted':
         for (const q of p.parts) emitPart(q);
@@ -188,7 +194,7 @@ export function translateSimple(
   let body: string;
   if (nameLit !== null) {
     const handler = lookup(nameLit);
-    if (handler) {
+    if (handler && !(nameLit === '[[' && !isUnquotedLiteral(cmd.name, '[['))) {
       body = handler(cmd.args, { position, hasStdin });
     } else {
       // passthrough: native command (git, node, npm, python, cargo, ...)
@@ -255,6 +261,15 @@ function literalExportName(w: Word): string | null | '' {
 
 let tempEnvSeq = 0;
 
+/** PS expr: encode a string so SETVALS records can stay newline-delimited. */
+export function encodeSetValExpr(srcExpr: string): string {
+  return (
+    '([string](' +
+    srcExpr +
+    ')).Replace([string][char]92, ([string][char]92 + [string][char]92)).Replace([string][char]13, ([string][char]92 + [char]114)).Replace([string][char]10, ([string][char]92 + [char]110))'
+  );
+}
+
 /**
  * Apply env assignments (and optional unsets) only for `body`, then restore.
  * All assignment *values* are evaluated before any name is mutated.
@@ -288,7 +303,12 @@ export function wrapTempEnv(
   const id = tempEnvSeq++;
   const save = '$fx_es' + id;
   const keep = persistWords && persistWords.length > 0 ? '$fx_ek' + id : '';
-  const lines: string[] = [save + ' = @{}'];
+  const lines: string[] = [
+    save + ' = @{}',
+    '$fx_sv0' + id + ' = $env:FAUXNIX_SETVARS',
+    '$fx_uv0' + id + ' = $env:FAUXNIX_UNSETVARS',
+    '$fx_xv0' + id + ' = $env:FAUXNIX_SETVALS',
+  ];
   for (const n of names) {
     const p = psStr('Env:\\' + n);
     lines.push(
@@ -310,12 +330,57 @@ export function wrapTempEnv(
   }
   lines.push('try {');
   for (const u of unsets) {
+    const uq = u.replace(/'/g, "''");
     lines.push(
       '  Remove-Item -LiteralPath ' + psStr('Env:\\' + u) + ' -ErrorAction SilentlyContinue',
     );
+    // `env -u NAME` must hide NAME from fx-envget / fx-isset for the
+    // wrapped body. Removing Env:\NAME is not enough: an earlier
+    // `export NAME=x` still lives in SETVARS/SETVALS, and special
+    // names (PATH, HOME, …) have hardcoded fallbacks.
+    lines.push(
+      "  $env:FAUXNIX_SETVARS = (@($env:FAUXNIX_SETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne '" +
+        uq +
+        "' }) -join ';')",
+    );
+    lines.push(
+      "  $env:FAUXNIX_UNSETVARS = ((@($env:FAUXNIX_UNSETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne '" +
+        uq +
+        "' }) + '" +
+        uq +
+        "') -join ';')",
+    );
+    lines.push(
+      '  $fx_sm = @(); foreach ($fx_pair in @($env:FAUXNIX_SETVALS -split [string][char]10)) { $fx_eq = $fx_pair.IndexOf([char]61); if ($fx_eq -lt 1) { continue }; if ($fx_pair.Substring(0, $fx_eq) -cne \'' +
+        uq +
+        '\') { $fx_sm += $fx_pair } }; $env:FAUXNIX_SETVALS = ($fx_sm -join [string][char]10)',
+    );
   }
   for (let i = 0; i < sets.length; i++) {
-    lines.push('  $env:' + sets[i].name + ' = ' + valVars[i]);
+    const n = sets[i].name;
+    const nq = n.replace(/'/g, "''");
+    lines.push('  $env:' + n + ' = ' + valVars[i]);
+    lines.push(
+      "  $env:FAUXNIX_SETVARS = ((@($env:FAUXNIX_SETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne '" +
+        nq +
+        "' }) + '" +
+        nq +
+        "') -join ';')",
+    );
+    lines.push(
+      "  $env:FAUXNIX_UNSETVARS = (@($env:FAUXNIX_UNSETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne '" +
+        nq +
+        "' }) -join ';')",
+    );
+    lines.push(
+      '  $fx_sm = @(); foreach ($fx_pair in @($env:FAUXNIX_SETVALS -split [string][char]10)) { $fx_eq = $fx_pair.IndexOf([char]61); if ($fx_eq -lt 1) { continue }; if ($fx_pair.Substring(0, $fx_eq) -cne \'' +
+        nq +
+        '\') { $fx_sm += $fx_pair } }; $fx_sm += (\'' +
+        nq +
+        "' + [string][char]61 + " +
+        encodeSetValExpr(valVars[i]) +
+        '); $env:FAUXNIX_SETVALS = ($fx_sm -join [string][char]10)',
+    );
   }
   if (keep) {
     lines.push('  ' + keep + ' = @{}');
@@ -341,6 +406,9 @@ export function wrapTempEnv(
   }
   for (const l of body.split('\n')) lines.push(l ? '  ' + l : l);
   lines.push('} finally {');
+  lines.push('  $env:FAUXNIX_SETVARS = $fx_sv0' + id);
+  lines.push('  $env:FAUXNIX_UNSETVARS = $fx_uv0' + id);
+  lines.push('  $env:FAUXNIX_SETVALS = $fx_xv0' + id);
   for (const n of names) {
     if (persistNames.has(n)) continue;
     const p = psStr('Env:\\' + n);
@@ -378,6 +446,72 @@ export function wrapTempEnv(
           '] }',
       );
     }
+  }
+  const assigned = new Set(sets.map((s) => s.name));
+  for (const n of persistNames) {
+    const nq = n.replace(/'/g, "''");
+    const ep = psStr('Env:\\' + n);
+    // Bare `export UNSET` only marks the name for export; it must stay
+    // unset (`[[ -v UNSET ]]` is false). Persist a record only when the
+    // prefix assigned the name (including empty) or it already exists.
+    const cond = assigned.has(n) ? '$true' : '(Test-Path -LiteralPath ' + ep + ')';
+    lines.push('  if (' + cond + ') {');
+    lines.push(
+      "    $env:FAUXNIX_SETVARS = ((@($env:FAUXNIX_SETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne '" +
+        nq +
+        "' }) + '" +
+        nq +
+        "') -join ';')",
+    );
+    lines.push(
+      "    $env:FAUXNIX_UNSETVARS = (@($env:FAUXNIX_UNSETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne '" +
+        nq +
+        "' }) -join ';')",
+    );
+    lines.push(
+      '    $fx_pv = $(if (Test-Path -LiteralPath ' +
+        ep +
+        ') { [string](Get-Item -LiteralPath ' +
+        ep +
+        ").Value } else { '' })",
+    );
+    lines.push(
+      '    $fx_sm = @(); foreach ($fx_pair in @($env:FAUXNIX_SETVALS -split [string][char]10)) { $fx_eq = $fx_pair.IndexOf([char]61); if ($fx_eq -lt 1) { continue }; if ($fx_pair.Substring(0, $fx_eq) -cne \'' +
+        nq +
+        '\') { $fx_sm += $fx_pair } }; $fx_sm += (\'' +
+        nq +
+        "' + [string][char]61 + " +
+        encodeSetValExpr('$fx_pv') +
+        '); $env:FAUXNIX_SETVALS = ($fx_sm -join [string][char]10)',
+    );
+    lines.push('  }');
+  }
+  if (keep) {
+    const had =
+      '@(' +
+      [...assigned].map((n) => "'" + n.replace(/'/g, "''") + "'").join(',') +
+      ')';
+    lines.push('  foreach ($fx_pn in @(' + keep + '.Keys)) {');
+    lines.push(
+      '    if (-not ((Test-Path -LiteralPath (\'Env:\\\' + $fx_pn)) -or (' +
+        had +
+        ' -ccontains $fx_pn))) { continue }',
+    );
+    lines.push(
+      "    $env:FAUXNIX_SETVARS = ((@($env:FAUXNIX_SETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne $fx_pn }) + $fx_pn) -join ';')",
+    );
+    lines.push(
+      "    $env:FAUXNIX_UNSETVARS = (@($env:FAUXNIX_UNSETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne $fx_pn }) -join ';')",
+    );
+    lines.push(
+      "    $fx_pv = $(if (Test-Path -LiteralPath ('Env:\\' + $fx_pn)) { [string](Get-Item -LiteralPath ('Env:\\' + $fx_pn)).Value } else { '' })",
+    );
+    lines.push(
+      '    $fx_sm = @(); foreach ($fx_pair in @($env:FAUXNIX_SETVALS -split [string][char]10)) { $fx_eq = $fx_pair.IndexOf([char]61); if ($fx_eq -lt 1) { continue }; if ($fx_pair.Substring(0, $fx_eq) -cne $fx_pn) { $fx_sm += $fx_pair } }; $fx_sm += ($fx_pn + [string][char]61 + ' +
+        encodeSetValExpr('$fx_pv') +
+        '); $env:FAUXNIX_SETVALS = ($fx_sm -join [string][char]10)',
+    );
+    lines.push('  }');
   }
   lines.push('}');
   return lines.join('\n');
