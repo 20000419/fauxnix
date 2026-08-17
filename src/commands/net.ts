@@ -1,6 +1,6 @@
 import { Word, wordToString } from '../ast.js';
 import { Handler, parseWords, psErr, psStr } from '../registry.js';
-import { exprOfWord, literalOfWord, operandExpr } from '../translator.js';
+import { argListExpr, exprOfWord, literalOfWord, operandExpr } from '../translator.js';
 
 /* ------------------------------------------------------------------ */
 /* Shared PS snippets                                                  */
@@ -101,7 +101,7 @@ const curl: Handler = (args) => {
   // refuses private/loopback URLs before the process is even started.
   return [
     PS_NETGUARD_FNS,
-    "$fx_args = @(" + args.map(exprOfWord).join(', ') + ')',
+    '$fx_args = ' + argListExpr(args, exprOfWord),
     '$fx_bad = $false',
     "foreach ($fx_a in $fx_args) { if (fx-netguard 'curl' $fx_a) { $fx_bad = $true } }",
     'if ($fx_bad) { $script:fx_exit = 1 }',
@@ -222,7 +222,7 @@ const wget: Handler = (args) => {
   const mapped = mapWgetArgs(args);
   return [
     PS_NETGUARD_FNS,
-    '$fx_args = @(' + orig.join(', ') + ')',
+    '$fx_args = ' + argListExpr(args, exprOfWord),
     '$fx_margs = @(' + mapped.margs.join(', ') + ')',
     '$fx_bad = $false',
     "foreach ($fx_a in $fx_args) { if (fx-netguard 'wget' $fx_a) { $fx_bad = $true } }",
@@ -473,7 +473,11 @@ const ifconfig: Handler = (args) => {
 /* nslookup / dig / host                                               */
 /* ------------------------------------------------------------------ */
 
-const nslookup: Handler = (args) => nativeCall('nslookup.exe', args.map(exprOfWord).join(', '));
+const nslookup: Handler = (args) =>
+  [
+    '$fx_args = ' + argListExpr(args, exprOfWord),
+    nativeCall('nslookup.exe', '$fx_args'),
+  ].join('\n');
 
 const dig: Handler = (args) => {
   const raw = args.map(wordToString);

@@ -354,7 +354,7 @@ const basename: Handler = (args) => {
     ].join('\n');
   }
   return [
-    '$fx_ps = @(' + args.map(exprOfWord).join(', ') + ')',
+    '$fx_ps = ' + argListExpr(args, exprOfWord),
     "if ($fx_ps.Count -eq 0) { [Console]::Error.WriteLine('basename: missing operand'); $script:fx_exit = 1 }",
     'foreach ($fx_p in $fx_ps) {',
     "  $fx_n = [IO.Path]::GetFileName(($fx_p.TrimEnd('/')).TrimEnd('\\'))",
@@ -366,7 +366,7 @@ const basename: Handler = (args) => {
 
 const dirname: Handler = (args) => {
   return [
-    '$fx_ps = @(' + args.map(exprOfWord).join(', ') + ')',
+    '$fx_ps = ' + argListExpr(args, exprOfWord),
     "if ($fx_ps.Count -eq 0) { [Console]::Error.WriteLine('dirname: missing operand'); $script:fx_exit = 1 }",
     'foreach ($fx_p in $fx_ps) {',
     "  $fx_n = ($fx_p.TrimEnd('/')).TrimEnd('\\')",

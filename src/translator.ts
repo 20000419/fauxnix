@@ -167,14 +167,30 @@ export function operandExpr(w: Word): string {
   return exprOfWord(w);
 }
 
-/** Whole word is `${name[@]}` or `"${name[@]}"` (bash: one argv per element). */
-export function atSplatName(w: Word): string | null {
-  if (w.length === 1 && w[0].kind === 'Var' && w[0].index === '@') return w[0].name;
-  if (w.length === 1 && w[0].kind === 'DoubleQuoted' && w[0].parts.length === 1) {
-    const p = w[0].parts[0];
-    if (p.kind === 'Var' && p.index === '@') return p.name;
+function wordPartsForSplat(w: Word): WordPart[] {
+  if (w.length === 1 && w[0].kind === 'DoubleQuoted') return w[0].parts;
+  return w;
+}
+
+/** `${name[@]}` / `"pre${name[@]}post"` — one argv per element. */
+export function splatSpec(w: Word): { name: string; prefix: string; suffix: string } | null {
+  const parts = wordPartsForSplat(w);
+  let name: string | null = null;
+  let prefix = '';
+  let suffix = '';
+  let seen = false;
+  for (const p of parts) {
+    if (p.kind === 'Var' && p.index === '@') {
+      if (seen) return null;
+      seen = true;
+      name = p.name;
+      continue;
+    }
+    if (p.kind !== 'Text' && p.kind !== 'SingleQuoted') return null;
+    if (seen) suffix += p.text;
+    else prefix += p.text;
   }
-  return null;
+  return name ? { name, prefix, suffix } : null;
 }
 
 /** PS expression of a string[]: `@` words splat, others stay one element. */
@@ -184,9 +200,18 @@ export function argListExpr(words: Word[], fn: (w: Word) => string = exprOfWord)
     '(' +
     words
       .map((w) => {
-        const n = atSplatName(w);
-        if (n) return '@(fx-arrload ' + psStr(n) + ')';
-        return '@(' + fn(w) + ')';
+        const s = splatSpec(w);
+        if (!s) return '@(' + fn(w) + ')';
+        if (!s.prefix && !s.suffix) return '@(fx-arrload ' + psStr(s.name) + ')';
+        return (
+          '@($( $fx_sp = @(fx-arrload ' +
+          psStr(s.name) +
+          '); if ($fx_sp.Count -gt 0) { $fx_sp[0] = ' +
+          psStr(s.prefix) +
+          ' + $fx_sp[0]; $fx_sp[$fx_sp.Count-1] = $fx_sp[$fx_sp.Count-1] + ' +
+          psStr(s.suffix) +
+          ' }; $fx_sp ))'
+        );
       })
       .join(' + ') +
     ')'
@@ -339,6 +364,7 @@ export function wrapTempEnv(
     }
   }
   if (names.length === 0) return body;
+  const assigned = new Set(sets.map((s) => s.name));
 
   const id = tempEnvSeq++;
   const save = '$fx_es' + id;
@@ -350,6 +376,7 @@ export function wrapTempEnv(
     '$fx_sv0' + id + ' = $env:FAUXNIX_SETVARS',
     '$fx_uv0' + id + ' = $env:FAUXNIX_UNSETVARS',
     '$fx_xv0' + id + ' = $env:FAUXNIX_SETVALS',
+    '$fx_as0' + id + ' = $env:FAUXNIX_ARRS',
   ];
   for (const n of names) {
     const p = psStr('Env:\\' + n);
@@ -464,6 +491,10 @@ export function wrapTempEnv(
   lines.push('  $env:FAUXNIX_SETVARS = $fx_sv0' + id);
   lines.push('  $env:FAUXNIX_UNSETVARS = $fx_uv0' + id);
   lines.push('  $env:FAUXNIX_SETVALS = $fx_xv0' + id);
+  lines.push('  $env:FAUXNIX_ARRS = $fx_as0' + id);
+  for (const n of persistNames) {
+    if (assigned.has(n)) lines.push('  fx-arrdrop ' + psStr(n));
+  }
   for (const n of names) {
     if (persistNames.has(n)) continue;
     const p = psStr('Env:\\' + n);
@@ -524,7 +555,6 @@ export function wrapTempEnv(
       lines.push('  ' + restoreArr);
     }
   }
-  const assigned = new Set(sets.map((s) => s.name));
   for (const n of persistNames) {
     const nq = n.replace(/'/g, "''");
     const ep = psStr('Env:\\' + n);
@@ -735,38 +765,49 @@ export function wrapScript(body: string): string {
     '  return [string]$sb',
     '}',
     'function fx-arrload($n) {',
-    "  $enc = [Environment]::GetEnvironmentVariable('FAUXNIX_ARR_' + [string]$n)",
-    '  if ($null -ne $enc) {',
+    '  $n = [string]$n',
+    '  foreach ($fx_pair in @($env:FAUXNIX_ARRS -split [string][char]10)) {',
+    '    $fx_eq = $fx_pair.IndexOf([char]61)',
+    '    if ($fx_eq -lt 1) { continue }',
+    '    if ($fx_pair.Substring(0, $fx_eq) -cne $n) { continue }',
     '    $out = @()',
-    '    foreach ($line in @($enc -split [string][char]10)) { $out += ,(fx-svdec $line) }',
+    '    foreach ($el in @($fx_pair.Substring($fx_eq + 1) -split [string][char]30)) { $out += ,(fx-svdec $el) }',
     '    return $out',
     '  }',
-    '  $ev = Get-ChildItem Env: | Where-Object { $_.Name -ceq [string]$n } | Select-Object -First 1',
+    '  $ev = Get-ChildItem Env: | Where-Object { $_.Name -ceq $n } | Select-Object -First 1',
     '  if ($ev) { return @([string]$ev.Value) }',
-    '  $v = [Environment]::GetEnvironmentVariable([string]$n)',
+    '  $v = [Environment]::GetEnvironmentVariable($n)',
     '  if ($null -ne $v) { return @([string]$v) }',
     '  return @()',
+    '}',
+    'function fx-arrdrop($n) {',
+    '  $n = [string]$n',
+    '  $fx_sm = @()',
+    '  foreach ($fx_pair in @($env:FAUXNIX_ARRS -split [string][char]10)) {',
+    '    $fx_eq = $fx_pair.IndexOf([char]61)',
+    '    if ($fx_eq -lt 1) { continue }',
+    '    if ($fx_pair.Substring(0, $fx_eq) -cne $n) { $fx_sm += $fx_pair }',
+    '  }',
+    '  $env:FAUXNIX_ARRS = ($fx_sm -join [string][char]10)',
     '}',
     'function fx-arrput($n, $vals) {',
     '  $n = [string]$n',
     '  $vals = @($vals)',
-    '  if ($vals.Count -eq 0) { fx-arrdrop $n } else {',
-    '  $encs = @(); foreach ($v in $vals) { $encs += (fx-svenc $v) }',
-    "  Set-Item -LiteralPath ('Env:\\FAUXNIX_ARR_' + $n) -Value ($encs -join [string][char]10)",
+    '  fx-arrdrop $n',
+    '  if ($vals.Count -eq 0) { } else {',
+    '    $encs = @(); foreach ($v in $vals) { $encs += (fx-svenc $v) }',
+    "    $env:FAUXNIX_ARRS = ((@($env:FAUXNIX_ARRS -split [string][char]10 | Where-Object { $_ -ne '' }) + ($n + [string][char]61 + ($encs -join [string][char]30))) -join [string][char]10)",
+    '  }',
     "  $fx_0 = $(if ($vals.Count -gt 0) { [string]$vals[0] } else { '' })",
     '  Set-Item -LiteralPath (\'Env:\\\' + $n) -Value $fx_0',
     "  $env:FAUXNIX_SETVARS = ((@($env:FAUXNIX_SETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne $n }) + $n) -join ';')",
     "  $env:FAUXNIX_UNSETVARS = (@($env:FAUXNIX_UNSETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne $n }) -join ';')",
     '  $fx_sv = @(); foreach ($fx_pair in @($env:FAUXNIX_SETVALS -split [string][char]10)) { $fx_eq = $fx_pair.IndexOf([char]61); if ($fx_eq -lt 1) { continue }; if ($fx_pair.Substring(0, $fx_eq) -cne $n) { $fx_sv += $fx_pair } }',
     "  $fx_sv += ($n + [string][char]61 + (fx-svenc $fx_0)); $env:FAUXNIX_SETVALS = ($fx_sv -join [string][char]10)",
-    '  }',
-    '}',
-    'function fx-arrdrop($n) {',
-    "  Remove-Item -LiteralPath ('Env:\\FAUXNIX_ARR_' + [string]$n) -ErrorAction SilentlyContinue",
     '}',
     'function fx-arrclr($n) {',
     '  $n = [string]$n',
-    "  Remove-Item -LiteralPath ('Env:\\FAUXNIX_ARR_' + $n) -ErrorAction SilentlyContinue",
+    '  fx-arrdrop $n',
     "  Remove-Item -LiteralPath ('Env:\\' + $n) -ErrorAction SilentlyContinue",
     "  $env:FAUXNIX_SETVARS = (@($env:FAUXNIX_SETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne $n }) -join ';')",
     "  $env:FAUXNIX_UNSETVARS = ((@($env:FAUXNIX_UNSETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne $n }) + $n) -join ';')",
