@@ -124,7 +124,7 @@ development:
   translate time (unsupported constructs throw named errors, never silently misbehave)
 - **text I/O**: `echo printf cat head tail wc tee nl tac md5sum sha1sum sha256sum base64 seq yes xargs`
 - **shell/system**: `cd pwd export unset env printenv ps kill pkill pgrep sleep which type whoami
-  id groups date uname hostname uptime free nproc clear true false test [ : pushd popd dirs sudo
+  id groups date uname hostname uptime free nproc clear true false test [ [[ : pushd popd dirs sudo
   timeout man history less more source . eval exit alias set`
 - **network**: `curl wget ping netstat ss ip ifconfig nslookup dig host`
 - **archives**: `tar gzip gunzip zcat zip unzip`

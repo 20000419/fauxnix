@@ -1,6 +1,13 @@
-import { Word, WordPart, wordToString } from '../ast.js';
+import { FauxnixParseError, Word, WordPart, isUnquotedLiteral, wordToString } from '../ast.js';
 import { Handler, lookup, parseWords, psStr, registeredNames } from '../registry.js';
-import { exprOfWord, operandExpr, translateSimple } from '../translator.js';
+import {
+  exprOfWord,
+  operandExpr,
+  translateSimple,
+  translateCmdSub,
+  normalizeLiteralPath,
+  pathExpr,
+} from '../translator.js';
 import { handlers as textIoHandlers } from './text-io.js';
 
 /* ------------------------------------------------------------------ */
@@ -155,7 +162,22 @@ const exportCmd: Handler = (args) => {
     }
     sets.push(sp);
   }
-  return sets.map((s) => '$env:' + s.name + ' = ' + exprOfWord(s.value)).join('\n');
+  return sets
+    .map(
+      (s) =>
+        '$env:' +
+        s.name +
+        ' = ' +
+        exprOfWord(s.value) +
+        "; $env:FAUXNIX_SETVARS = ((@($env:FAUXNIX_SETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne '" +
+        s.name.replace(/'/g, "''") +
+        "' }) + '" +
+        s.name.replace(/'/g, "''") +
+        "') -join ';'); $env:FAUXNIX_UNSETVARS = (@($env:FAUXNIX_UNSETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne '" +
+        s.name.replace(/'/g, "''") +
+        "' }) -join ';')",
+    )
+    .join('\n');
 };
 
 const unset: Handler = (args) => {
@@ -166,6 +188,8 @@ const unset: Handler = (args) => {
     'foreach ($fx_n in $fx_ns) {',
     "  if ($fx_n -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { [Console]::Error.WriteLine(\"bash: unset: '\" + $fx_n + \"': not a valid identifier\"); $script:fx_exit = 1; continue }",
     "  Remove-Item -LiteralPath ('Env:\\' + $fx_n) -ErrorAction SilentlyContinue",
+    "  $env:FAUXNIX_SETVARS = (@($env:FAUXNIX_SETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne $fx_n }) -join ';')",
+    "  $env:FAUXNIX_UNSETVARS = ((@($env:FAUXNIX_UNSETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne $fx_n }) + $fx_n) -join ';')",
     '}',
   ].join('\n');
 };
@@ -801,14 +825,427 @@ const colon: Handler = () => '';
 /* test / [                                                            */
 /* ------------------------------------------------------------------ */
 
-const TEST_UNARY = new Set(['-e', '-f', '-d', '-r', '-w', '-x', '-s', '-z', '-n']);
-const TEST_BINARY = new Set(['=', '==', '!=', '-eq', '-ne', '-lt', '-le', '-gt', '-ge']);
+const TEST_UNARY = new Set([
+  '-e',
+  '-a',
+  '-f',
+  '-d',
+  '-r',
+  '-w',
+  '-x',
+  '-s',
+  '-z',
+  '-n',
+  '-L',
+  '-h',
+  '-v',
+]);
+const TEST_BINARY = new Set([
+  '=',
+  '==',
+  '!=',
+  '-eq',
+  '-ne',
+  '-lt',
+  '-le',
+  '-gt',
+  '-ge',
+  '-nt',
+  '-ot',
+  '-ef',
+]);
+const TEST_BINARY_KSH = new Set([...TEST_BINARY, '=~', '>', '<']);
 
 const FX_TN_FN = [
   'function fx-tn($a, $b, $op) {',
   "  if ($a -notmatch '^[+-]?[0-9]+$') { [Console]::Error.WriteLine('bash: [: ' + [string]$a + ': integer expression expected'); $script:fx_exit = 2; return $false }",
   "  if ($b -notmatch '^[+-]?[0-9]+$') { [Console]::Error.WriteLine('bash: [: ' + [string]$b + ': integer expression expected'); $script:fx_exit = 2; return $false }",
   '  $fx_x = [long]$a; $fx_y = [long]$b',
+  '  switch ($op) {',
+  "    '-eq' { return ($fx_x -eq $fx_y) }",
+  "    '-ne' { return ($fx_x -ne $fx_y) }",
+  "    '-lt' { return ($fx_x -lt $fx_y) }",
+  "    '-le' { return ($fx_x -le $fx_y) }",
+  "    '-gt' { return ($fx_x -gt $fx_y) }",
+  "    '-ge' { return ($fx_x -ge $fx_y) }",
+  '  }',
+  '  return $false',
+  '}',
+].join('\n');
+
+const FX_TNK_FN = [
+  'function fx-baseval($num, $base) {',
+  '  $b = [int]$base',
+  '  if ($b -lt 2 -or $b -gt 64) { throw "integer expression expected" }',
+  '  if ([string]$num -eq "") { throw "integer expression expected" }',
+  '  $v = [long]0',
+  '  foreach ($ch in ([string]$num).ToCharArray()) {',
+  '    $c = [int]$ch; $d = -1',
+  '    if ($c -ge 48 -and $c -le 57) { $d = $c - 48 }',
+  '    elseif ($c -ge 97 -and $c -le 122) { $d = $c - 87 }',
+  '    elseif ($c -ge 65 -and $c -le 90) { if ($b -le 36) { $d = $c - 55 } else { $d = $c - 29 } }',
+  '    elseif ($c -eq 64) { $d = 62 }',
+  '    elseif ($c -eq 95) { $d = 63 }',
+  '    if ($d -lt 0 -or $d -ge $b) { throw "integer expression expected" }',
+  '    $v = $v * $b + $d',
+  '  }',
+  '  return $v',
+  '}',
+  'function fx-arith($s) {',
+  '  $t = [string]$s',
+  '  if ($t.Trim().Length -eq 0) { return 0 }',
+  "  $t = [regex]::Replace($t, '\\b(\\d+)#([0-9A-Za-z@_]+)\\b', {",
+  '    param($m)',
+  '    return [string](fx-baseval $m.Groups[2].Value $m.Groups[1].Value)',
+  '  })',
+  "  $t = [regex]::Replace($t, '0[xX][0-9A-Fa-f]+', { param($m) [string][Convert]::ToInt64($m.Value, 16) })",
+  "  $t = [regex]::Replace($t, '\\b0[0-9]+\\b', {",
+  '    param($m)',
+  "    if ($m.Value -match '[89]') { throw 'integer expression expected' }",
+  '    return [string][Convert]::ToInt64($m.Value, 8)',
+  '  })',
+  '  $script:fx_as = $t; $script:fx_ai = 0; $script:fx_skip = $false',
+  '  $v = fx-acomma',
+  '  fx-askip',
+  '  if ($script:fx_ai -lt $script:fx_as.Length) { throw "integer expression expected" }',
+  '  return $v',
+  '}',
+  'function fx-askip {',
+  '  while ($script:fx_ai -lt $script:fx_as.Length -and ($script:fx_as[$script:fx_ai] -eq [char]32 -or $script:fx_as[$script:fx_ai] -eq [char]9)) { $script:fx_ai++ }',
+  '}',
+  'function fx-aname {',
+  '  fx-askip',
+  '  if ($script:fx_ai -ge $script:fx_as.Length) { return $null }',
+  '  $c0 = [int]$script:fx_as[$script:fx_ai]',
+  '  if (-not (($c0 -ge 65 -and $c0 -le 90) -or ($c0 -ge 97 -and $c0 -le 122) -or $c0 -eq 95)) { return $null }',
+  '  $ns = $script:fx_ai; $script:fx_ai++',
+  '  while ($script:fx_ai -lt $script:fx_as.Length) {',
+  '    $c = [int]$script:fx_as[$script:fx_ai]',
+  '    if (($c -ge 48 -and $c -le 57) -or ($c -ge 65 -and $c -le 90) -or ($c -ge 97 -and $c -le 122) -or $c -eq 95) { $script:fx_ai++ } else { break }',
+  '  }',
+  '  return $script:fx_as.Substring($ns, $script:fx_ai - $ns)',
+  '}',
+  'function fx-envset($n, $v) {',
+  '  $n = [string]$n',
+  '  $fx_ev = Get-ChildItem Env: | Where-Object { $_.Name -ceq $n } | Select-Object -First 1',
+  '  $nm = if ($fx_ev) { $fx_ev.Name } else { $n }',
+  "  Set-Item -LiteralPath ('Env:' + $nm) -Value ([string][long]$v)",
+  "  $env:FAUXNIX_SETVARS = ((@($env:FAUXNIX_SETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne $n }) + $n) -join ';')",
+  "  $env:FAUXNIX_UNSETVARS = (@($env:FAUXNIX_UNSETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne $n }) -join ';')",
+  '}',
+  'function fx-aget($nm) {',
+  '  $fx_ev = Get-ChildItem Env: | Where-Object { $_.Name -ceq $nm } | Select-Object -First 1',
+  '  if (-not $fx_ev) { return [long]0 }',
+  '  if ($null -eq $script:fx_astack) { $script:fx_astack = New-Object System.Collections.Generic.HashSet[string] }',
+  '  if (-not $script:fx_astack.Add([string]$nm)) { throw "expression recursion level exceeded" }',
+  '  $saveAs = $script:fx_as; $saveAi = $script:fx_ai; $saveSkip = $script:fx_skip',
+  '  try { $vv = fx-arith $fx_ev.Value }',
+  '  finally {',
+  '    $script:fx_as = $saveAs; $script:fx_ai = $saveAi; $script:fx_skip = $saveSkip',
+  '    [void]$script:fx_astack.Remove([string]$nm)',
+  '  }',
+  '  return [long]$vv',
+  '}',
+  'function fx-anum {',
+  '  fx-askip',
+  '  if ($script:fx_ai -lt $script:fx_as.Length -and $script:fx_as[$script:fx_ai] -eq [char]33) {',
+  '    $script:fx_ai++',
+  '    $v = fx-anum',
+  '    if ($v -eq 0) { return 1 }',
+  '    return 0',
+  '  }',
+  '  if ($script:fx_ai -lt $script:fx_as.Length -and $script:fx_as[$script:fx_ai] -eq [char]126) {',
+  '    $script:fx_ai++',
+  '    return [long](-bnot [long](fx-anum))',
+  '  }',
+  '  if ($script:fx_ai + 1 -lt $script:fx_as.Length -and $script:fx_as[$script:fx_ai] -eq [char]43 -and $script:fx_as[$script:fx_ai + 1] -eq [char]43) {',
+  '    $save = $script:fx_ai; $script:fx_ai += 2',
+  '    $nm = fx-aname',
+  '    if ($nm) {',
+  '      if ($script:fx_skip) { return 0 }',
+  '      $cur = (fx-aget $nm) + 1; fx-envset $nm $cur; return $cur',
+  '    }',
+  '    $script:fx_ai = $save',
+  '  }',
+  '  if ($script:fx_ai + 1 -lt $script:fx_as.Length -and $script:fx_as[$script:fx_ai] -eq [char]45 -and $script:fx_as[$script:fx_ai + 1] -eq [char]45) {',
+  '    $save = $script:fx_ai; $script:fx_ai += 2',
+  '    $nm = fx-aname',
+  '    if ($nm) {',
+  '      if ($script:fx_skip) { return 0 }',
+  '      $cur = (fx-aget $nm) - 1; fx-envset $nm $cur; return $cur',
+  '    }',
+  '    $script:fx_ai = $save',
+  '  }',
+  '  if ($script:fx_ai -lt $script:fx_as.Length -and $script:fx_as[$script:fx_ai] -eq [char]43) {',
+  '    $script:fx_ai++',
+  '    return [long](fx-anum)',
+  '  }',
+  '  if ($script:fx_ai -lt $script:fx_as.Length -and $script:fx_as[$script:fx_ai] -eq [char]45) {',
+  '    $script:fx_ai++',
+  '    return [long](-[long](fx-anum))',
+  '  }',
+  '  fx-askip',
+  '  if ($script:fx_ai -lt $script:fx_as.Length -and $script:fx_as[$script:fx_ai] -eq [char]40) {',
+  '    $script:fx_ai++',
+  '    $v = fx-acomma',
+  '    fx-askip',
+  '    if ($script:fx_ai -ge $script:fx_as.Length -or $script:fx_as[$script:fx_ai] -ne [char]41) { throw "integer expression expected" }',
+  '    $script:fx_ai++',
+  '    return [long]$v',
+  '  }',
+  '  $nm = fx-aname',
+  '  if ($nm) {',
+  '    fx-askip',
+  '    $post = 0',
+  '    if ($script:fx_ai + 1 -lt $script:fx_as.Length -and $script:fx_as[$script:fx_ai] -eq [char]43 -and $script:fx_as[$script:fx_ai + 1] -eq [char]43) { $script:fx_ai += 2; $post = 1 }',
+  '    elseif ($script:fx_ai + 1 -lt $script:fx_as.Length -and $script:fx_as[$script:fx_ai] -eq [char]45 -and $script:fx_as[$script:fx_ai + 1] -eq [char]45) { $script:fx_ai += 2; $post = -1 }',
+  '    if ($script:fx_skip) { return 0 }',
+  '    $vv = fx-aget $nm',
+  '    if ($post -ne 0) { fx-envset $nm ($vv + $post) }',
+  '    return [long]$vv',
+  '  }',
+  '  $start = $script:fx_ai',
+  '  while ($script:fx_ai -lt $script:fx_as.Length -and $script:fx_as[$script:fx_ai] -ge [char]48 -and $script:fx_as[$script:fx_ai] -le [char]57) { $script:fx_ai++ }',
+  '  if ($script:fx_ai -eq $start) { throw "integer expression expected" }',
+  '  return [long]$script:fx_as.Substring($start, $script:fx_ai - $start)',
+  '}',
+  'function fx-apow {',
+  '  $v = fx-anum',
+  '  fx-askip',
+  '  if ($script:fx_ai + 1 -lt $script:fx_as.Length -and $script:fx_as[$script:fx_ai] -eq [char]42 -and $script:fx_as[$script:fx_ai + 1] -eq [char]42) {',
+  '    $script:fx_ai += 2',
+  '    $r = fx-apow',
+  '    if ($r -lt 0) { throw "exponent less than 0" }',
+  '    $fx_b = [long]$v; $fx_e = [long]$r; $fx_p = [long]1',
+  '    while ($fx_e -gt 0) { if ($fx_e -band 1) { $fx_p = $fx_p * $fx_b }; $fx_b = $fx_b * $fx_b; $fx_e = $fx_e -shr 1 }',
+  '    return $fx_p',
+  '  }',
+  '  return $v',
+  '}',
+  'function fx-adiv($a, $b) {',
+  '  $a = [long]$a; $b = [long]$b',
+  '  if ($b -eq 0) { throw "division by 0" }',
+  '  if ($a -eq [long]::MinValue -and $b -eq -1) { return [long]::MinValue }',
+  '  $rem = [long]0',
+  '  return [math]::DivRem($a, $b, [ref]$rem)',
+  '}',
+  'function fx-amod($a, $b) {',
+  '  $a = [long]$a; $b = [long]$b',
+  '  if ($b -eq 0) { throw "division by 0" }',
+  '  if ($a -eq [long]::MinValue -and $b -eq -1) { return [long]0 }',
+  '  $rem = [long]0',
+  '  [void][math]::DivRem($a, $b, [ref]$rem)',
+  '  return [long]$rem',
+  '}',
+  'function fx-amul {',
+  '  $v = fx-apow',
+  '  for (;;) {',
+  '    fx-askip',
+  '    if ($script:fx_ai -ge $script:fx_as.Length) { break }',
+  '    $op = $script:fx_as[$script:fx_ai]',
+  '    if ($op -ne [char]42 -and $op -ne [char]47 -and $op -ne [char]37) { break }',
+  '    $script:fx_ai++',
+  '    $r = fx-apow',
+  '    if ($op -eq [char]42) { $v = $v * $r }',
+  '    elseif ($op -eq [char]47) { if ($r -eq 0 -and $script:fx_skip) { $v = 0 } else { $v = fx-adiv $v $r } }',
+  '    else { if ($r -eq 0 -and $script:fx_skip) { $v = 0 } else { $v = fx-amod $v $r } }',
+  '  }',
+  '  return $v',
+  '}',
+  'function fx-aadd {',
+  '  $v = fx-amul',
+  '  for (;;) {',
+  '    fx-askip',
+  '    if ($script:fx_ai -ge $script:fx_as.Length) { break }',
+  '    $op = $script:fx_as[$script:fx_ai]',
+  '    if ($op -ne [char]43 -and $op -ne [char]45) { break }',
+  '    $script:fx_ai++',
+  '    $r = fx-amul',
+  '    if ($op -eq [char]43) { $v = $v + $r } else { $v = $v - $r }',
+  '  }',
+  '  return $v',
+  '}',
+  'function fx-ashift {',
+  '  $v = fx-aadd',
+  '  for (;;) {',
+  '    fx-askip',
+  '    if ($script:fx_ai + 1 -ge $script:fx_as.Length) { break }',
+  '    $a = $script:fx_as[$script:fx_ai]; $b = $script:fx_as[$script:fx_ai + 1]',
+  '    if ($a -eq [char]60 -and $b -eq [char]60) {',
+  '      $script:fx_ai += 2; $r = fx-aadd; $v = [long]$v -shl [int]$r',
+  '    } elseif ($a -eq [char]62 -and $b -eq [char]62) {',
+  '      $script:fx_ai += 2; $r = fx-aadd; $v = [long]$v -shr [int]$r',
+  '    } else { break }',
+  '  }',
+  '  return $v',
+  '}',
+  'function fx-arel {',
+  '  $v = fx-ashift',
+  '  for (;;) {',
+  '    fx-askip',
+  '    if ($script:fx_ai -ge $script:fx_as.Length) { break }',
+  '    $a = $script:fx_as[$script:fx_ai]',
+  '    $b = if ($script:fx_ai + 1 -lt $script:fx_as.Length) { $script:fx_as[$script:fx_ai + 1] } else { [char]0 }',
+  '    if ($a -eq [char]60 -and $b -eq [char]61) { $script:fx_ai += 2; $r = fx-ashift; $v = [long]($v -le $r) }',
+  '    elseif ($a -eq [char]62 -and $b -eq [char]61) { $script:fx_ai += 2; $r = fx-ashift; $v = [long]($v -ge $r) }',
+  '    elseif ($a -eq [char]60 -and $b -ne [char]60) { $script:fx_ai++; $r = fx-ashift; $v = [long]($v -lt $r) }',
+  '    elseif ($a -eq [char]62 -and $b -ne [char]62) { $script:fx_ai++; $r = fx-ashift; $v = [long]($v -gt $r) }',
+  '    else { break }',
+  '  }',
+  '  return $v',
+  '}',
+  'function fx-aeq {',
+  '  $v = fx-arel',
+  '  for (;;) {',
+  '    fx-askip',
+  '    if ($script:fx_ai + 1 -ge $script:fx_as.Length) { break }',
+  '    $a = $script:fx_as[$script:fx_ai]; $b = $script:fx_as[$script:fx_ai + 1]',
+  '    if ($a -eq [char]61 -and $b -eq [char]61) { $script:fx_ai += 2; $r = fx-arel; $v = [long]($v -eq $r) }',
+  '    elseif ($a -eq [char]33 -and $b -eq [char]61) { $script:fx_ai += 2; $r = fx-arel; $v = [long]($v -ne $r) }',
+  '    else { break }',
+  '  }',
+  '  return $v',
+  '}',
+  'function fx-abitand {',
+  '  $v = fx-aeq',
+  '  for (;;) {',
+  '    fx-askip',
+  '    if ($script:fx_ai -ge $script:fx_as.Length) { break }',
+  '    if ($script:fx_as[$script:fx_ai] -ne [char]38) { break }',
+  '    if ($script:fx_ai + 1 -lt $script:fx_as.Length -and $script:fx_as[$script:fx_ai + 1] -eq [char]38) { break }',
+  '    $script:fx_ai++',
+  '    $v = [long]$v -band [long](fx-aeq)',
+  '  }',
+  '  return $v',
+  '}',
+  'function fx-abitxor {',
+  '  $v = fx-abitand',
+  '  for (;;) {',
+  '    fx-askip',
+  '    if ($script:fx_ai -ge $script:fx_as.Length -or $script:fx_as[$script:fx_ai] -ne [char]94) { break }',
+  '    $script:fx_ai++',
+  '    $v = [long]$v -bxor [long](fx-abitand)',
+  '  }',
+  '  return $v',
+  '}',
+  'function fx-abitor {',
+  '  $v = fx-abitxor',
+  '  for (;;) {',
+  '    fx-askip',
+  '    if ($script:fx_ai -ge $script:fx_as.Length -or $script:fx_as[$script:fx_ai] -ne [char]124) { break }',
+  '    if ($script:fx_ai + 1 -lt $script:fx_as.Length -and $script:fx_as[$script:fx_ai + 1] -eq [char]124) { break }',
+  '    $script:fx_ai++',
+  '    $v = [long]$v -bor [long](fx-abitxor)',
+  '  }',
+  '  return $v',
+  '}',
+  'function fx-aland {',
+  '  $v = fx-abitor',
+  '  for (;;) {',
+  '    fx-askip',
+  '    if ($script:fx_ai + 1 -ge $script:fx_as.Length) { break }',
+  '    if ($script:fx_as[$script:fx_ai] -ne [char]38 -or $script:fx_as[$script:fx_ai + 1] -ne [char]38) { break }',
+  '    $script:fx_ai += 2',
+  '    $old = $script:fx_skip',
+  '    if ($v -eq 0) { $script:fx_skip = $true }',
+  '    $r = fx-abitor',
+  '    $script:fx_skip = $old',
+  '    $v = [long](($v -ne 0) -and ($r -ne 0))',
+  '  }',
+  '  return $v',
+  '}',
+  'function fx-alor {',
+  '  $v = fx-aland',
+  '  for (;;) {',
+  '    fx-askip',
+  '    if ($script:fx_ai + 1 -ge $script:fx_as.Length) { break }',
+  '    if ($script:fx_as[$script:fx_ai] -ne [char]124 -or $script:fx_as[$script:fx_ai + 1] -ne [char]124) { break }',
+  '    $script:fx_ai += 2',
+  '    $old = $script:fx_skip',
+  '    if ($v -ne 0) { $script:fx_skip = $true }',
+  '    $r = fx-aland',
+  '    $script:fx_skip = $old',
+  '    $v = [long](($v -ne 0) -or ($r -ne 0))',
+  '  }',
+  '  return $v',
+  '}',
+  'function fx-atern {',
+  '  $v = fx-alor',
+  '  fx-askip',
+  '  if ($script:fx_ai -ge $script:fx_as.Length -or $script:fx_as[$script:fx_ai] -ne [char]63) { return $v }',
+  '  $script:fx_ai++',
+  '  $old = $script:fx_skip',
+  '  if ($v -eq 0) { $script:fx_skip = $true }',
+  '  $t = fx-acomma',
+  '  $script:fx_skip = $old',
+  '  fx-askip',
+  '  if ($script:fx_ai -ge $script:fx_as.Length -or $script:fx_as[$script:fx_ai] -ne [char]58) { throw "integer expression expected" }',
+  '  $script:fx_ai++',
+  '  if ($v -ne 0) { $script:fx_skip = $true }',
+  '  $f = fx-atern',
+  '  $script:fx_skip = $old',
+  '  if ($v -ne 0) { return $t }',
+  '  return $f',
+  '}',
+  'function fx-aop {',
+  '  fx-askip',
+  '  if ($script:fx_ai -ge $script:fx_as.Length) { return $null }',
+  '  $rest = $script:fx_as.Substring($script:fx_ai)',
+  "  if ($rest.StartsWith('==', [System.StringComparison]::Ordinal)) { return $null }",
+  "  foreach ($op in @('<<=', '>>=', '*=', '/=', '%=', '+=', '-=', '&=', '^=', '|=', '=')) {",
+  '    if (-not $rest.StartsWith($op, [System.StringComparison]::Ordinal)) { continue }',
+  '    $script:fx_ai += $op.Length',
+  '    return $op',
+  '  }',
+  '  return $null',
+  '}',
+  'function fx-aassign {',
+  '  fx-askip',
+  '  $save = $script:fx_ai',
+  '  $nm = fx-aname',
+  '  if ($nm) {',
+  '    $op = fx-aop',
+  '    if ($op) {',
+  '      $old = [long]0',
+  "      if (-not $script:fx_skip -and $op -ne '=') { $old = [long](fx-aget $nm) }",
+  '      $r = [long](fx-aassign)',
+  '      if ($script:fx_skip) { return 0 }',
+  '      switch ($op) {',
+  "        '=' { $v = [long]$r }",
+  "        '+=' { $v = [long]($old + $r) }",
+  "        '-=' { $v = [long]($old - $r) }",
+  "        '*=' { $v = [long]($old * $r) }",
+  "        '/=' { $v = fx-adiv $old $r }",
+  "        '%=' { $v = fx-amod $old $r }",
+  "        '<<=' { $v = [long]$old -shl [int]$r }",
+  "        '>>=' { $v = [long]$old -shr [int]$r }",
+  "        '&=' { $v = [long]$old -band [long]$r }",
+  "        '^=' { $v = [long]$old -bxor [long]$r }",
+  "        '|=' { $v = [long]$old -bor [long]$r }",
+  '        default { throw "integer expression expected" }',
+  '      }',
+  '      fx-envset $nm $v',
+  '      return [long]$v',
+  '    }',
+  '  }',
+  '  $script:fx_ai = $save',
+  '  return [long](fx-atern)',
+  '}',
+  'function fx-acomma {',
+  '  $v = fx-aassign',
+  '  for (;;) {',
+  '    fx-askip',
+  '    if ($script:fx_ai -ge $script:fx_as.Length -or $script:fx_as[$script:fx_ai] -ne [char]44) { break }',
+  '    $script:fx_ai++',
+  '    $v = fx-aassign',
+  '  }',
+  '  return [long]$v',
+  '}',
+  'function fx-tnk($a, $b, $op) {',
+  '  try { $fx_x = fx-arith $a }',
+  "  catch { [Console]::Error.WriteLine('bash: [[: ' + [string]$a + ': integer expression expected'); $script:fx_exit = 2; return $false }",
+  '  try { $fx_y = fx-arith $b }',
+  "  catch { [Console]::Error.WriteLine('bash: [[: ' + [string]$b + ': integer expression expected'); $script:fx_exit = 2; return $false }",
   '  switch ($op) {',
   "    '-eq' { return ($fx_x -eq $fx_y) }",
   "    '-ne' { return ($fx_x -ne $fx_y) }",
@@ -830,110 +1267,789 @@ function strNe(e: string): string {
   return "([string](" + e + ") -ne '')";
 }
 
+const FX_ISLINK_FN = [
+  'function fx-islink($p) {',
+  '  try {',
+  '    $fx_li = Get-Item -LiteralPath ([string]$p) -Force -ErrorAction Stop',
+  '    return [bool]($fx_li.Attributes -band [IO.FileAttributes]::ReparsePoint)',
+  '  } catch { return $false }',
+  '}',
+].join('\n');
+
+const FX_ENVGET_FN = [
+  'function fx-envexact($n) {',
+  '  return (Get-ChildItem Env: | Where-Object { $_.Name -ceq ([string]$n) } | Select-Object -First 1)',
+  '}',
+  'function fx-envexplicit($n) {',
+  '  $fx_ev = fx-envexact $n',
+  '  if ($fx_ev) { return [string]$fx_ev.Value }',
+  // Windows preserves the provider entry's original casing (notably Path),
+  // even after `$env:PATH = ...`. SETVARS is the case-sensitive proof that
+  // this shell explicitly wrote the requested Bash name, so only here is a
+  // case-insensitive process-environment fallback semantically safe.
+  '  $fx_v = [Environment]::GetEnvironmentVariable([string]$n)',
+  "  if ($null -eq $fx_v) { return '' }",
+  '  return [string]$fx_v',
+  '}',
+  'function fx-home {',
+  "  if (@($env:FAUXNIX_SETVARS -split ';' | Where-Object { $_ -ceq 'HOME' }).Count -gt 0) { return (fx-envexplicit 'HOME') }",
+  "  if (@($env:FAUXNIX_UNSETVARS -split ';' | Where-Object { $_ -ceq 'HOME' }).Count -gt 0) { return [string]$HOME }",
+  '  return [string]$HOME',
+  '}',
+  'function fx-envget($n) {',
+  '  $n = [string]$n',
+  "  if (@($env:FAUXNIX_UNSETVARS -split ';' | Where-Object { $_ -ceq $n }).Count -gt 0) { return '' }",
+  "  if (@($env:FAUXNIX_SETVARS -split ';' | Where-Object { $_ -ceq $n }).Count -gt 0) { return (fx-envexplicit $n) }",
+  "  if ($n -ceq 'HOME') { return [string]$HOME }",
+  "  if ($n -ceq 'PWD') { return [string]$PWD.Path }",
+  "  if ($n -ceq 'USER' -or $n -ceq 'LOGNAME') { return [string]$env:USERNAME }",
+  "  if ($n -ceq 'PATH') { return [string]$env:PATH }",
+  "  if ($n -ceq 'SHELL') { return 'powershell' }",
+  "  if ($n -ceq 'TERM') { return 'xterm-256color' }",
+  "  if ($n -ceq 'OLDPWD') { return [string]$env:FAUXNIX_OLDPWD }",
+  "  if ($n -ceq '?') { return [string]$fx_prev }",
+  "  if ($n -ceq '$') { return [string]$PID }",
+  "  if ($n -ceq 'HOSTNAME') { return [string]$env:COMPUTERNAME }",
+  '  $fx_ev = fx-envexact $n',
+  "  if (-not $fx_ev) { return '' }",
+  '  return [string]$fx_ev.Value',
+  '}',
+].join('\n');
+
+/** Like exprOfWord, but $var is an exact-case env lookup (bash, not $env:). */
+function kshExprOfWord(w: Word): string {
+  const expanded: WordPart[] = [];
+  let tilde = false;
+  if (
+    w.length > 0 &&
+    w[0].kind === 'Text' &&
+    !w[0].escaped &&
+    w[0].text.startsWith('~')
+  ) {
+    tilde = true;
+    const rest = w[0].text.slice(1);
+    if (rest) expanded.push({ kind: 'Text', text: rest });
+    expanded.push(...w.slice(1));
+  } else {
+    expanded.push(...w);
+  }
+  if (tilde && expanded.length === 0) return '(fx-home)';
+  if (!tilde && expanded.length === 1 && expanded[0].kind === 'Var') {
+    return '(fx-envget ' + psStr(expanded[0].name) + ')';
+  }
+  const literal =
+    !tilde && expanded.every((p) => p.kind === 'Text' || p.kind === 'SingleQuoted');
+  if (literal) {
+    const text = expanded.map((p) => (p as { text: string }).text).join('');
+    return pathExpr(normalizeLiteralPath(text));
+  }
+  let out = '"';
+  if (tilde) out += '$(fx-home)';
+  const emitPart = (p: WordPart) => {
+    switch (p.kind) {
+      case 'Text':
+      case 'SingleQuoted':
+        out += String(p.text).replace(/`/g, '``').replace(/"/g, '`"').replace(/\$/g, '`$');
+        break;
+      case 'DoubleQuoted':
+        for (const q of p.parts) emitPart(q);
+        break;
+      case 'Var':
+        out += '$(fx-envget ' + psStr(p.name) + ')';
+        break;
+      case 'CmdSub':
+        out += '$(' + translateCmdSub(p.cmd) + ')';
+        break;
+    }
+  };
+  for (const p of expanded) emitPart(p);
+  out += '"';
+  return out;
+}
+
+const FX_ISSET_FN = [
+  'function fx-isset($n) {',
+  '  $n = [string]$n',
+  "  if ($n -eq '') { return $false }",
+  "  if (@($env:FAUXNIX_UNSETVARS -split ';' | Where-Object { $_ -ceq $n }).Count -gt 0) { return $false }",
+  "  if (@($env:FAUXNIX_SETVARS -split ';' | Where-Object { $_ -ceq $n }).Count -gt 0) { return $true }",
+  "  if (@('HOME','PWD','USER','LOGNAME','PATH','SHELL','TERM','HOSTNAME') | Where-Object { $_ -ceq $n }) { return $true }",
+  "  if ($n -ceq 'OLDPWD') { return [bool]$env:FAUXNIX_OLDPWD }",
+  "  return [bool](Get-ChildItem Env: | Where-Object { $_.Name -ceq $n } | Select-Object -First 1)",
+  '}',
+].join('\n');
+
+function testVExpr(w: Word): string {
+  return '(fx-isset ([string](' + kshExprOfWord(w) + ')))';
+}
+
 function testUnaryExpr(op: string, w: Word): string {
   switch (op) {
     case '-e':
+    case '-a':
     case '-r':
     case '-w':
     case '-x':
-      return '(Test-Path -LiteralPath ' + operandExpr(w) + ')';
+      return '(Test-Path -LiteralPath ' + kshExprOfWord(w) + ')';
     case '-f':
-      return '(Test-Path -LiteralPath ' + operandExpr(w) + ' -PathType Leaf)';
+      return '(Test-Path -LiteralPath ' + kshExprOfWord(w) + ' -PathType Leaf)';
     case '-d':
-      return '(Test-Path -LiteralPath ' + operandExpr(w) + ' -PathType Container)';
+      return '(Test-Path -LiteralPath ' + kshExprOfWord(w) + ' -PathType Container)';
+    case '-L':
+    case '-h':
+      return '(fx-islink ' + kshExprOfWord(w) + ')';
+    case '-v':
+      return testVExpr(w);
     case '-s':
       return (
         '((Test-Path -LiteralPath ' +
-        operandExpr(w) +
+        kshExprOfWord(w) +
         ' -PathType Leaf) -and ((Get-Item -LiteralPath ' +
-        operandExpr(w) +
+        kshExprOfWord(w) +
         ' -Force).Length -gt 0))'
       );
     case '-z':
-      return "([string](" + exprOfWord(w) + ") -eq '')";
+      return "([string](" + kshExprOfWord(w) + ") -eq '')";
     case '-n':
     default:
-      return strNe(exprOfWord(w));
+      return strNe(kshExprOfWord(w));
   }
 }
 
-function testBinaryExpr(l: Word, op: string, r: Word): string {
-  const le = '[string](' + exprOfWord(l) + ')';
-  const re = '[string](' + exprOfWord(r) + ')';
-  if (op === '=' || op === '==') return '(' + le + ' -ceq ' + re + ')';
-  if (op === '!=') return '(' + le + ' -cne ' + re + ')';
+const FX_RE_FN = [
+  'function fx-re($a, $b) {',
+  '  try { return [regex]::IsMatch([string]$a, (fx-posixre ([string]$b)), [Text.RegularExpressions.RegexOptions]::Singleline) }',
+  "  catch { [Console]::Error.WriteLine('bash: [[: invalid regular expression'); $script:fx_exit = 2; return $false }",
+  '}',
+].join('\n');
+
+const POSIX_CLASS_INNER: [RegExp, string][] = [
+  [/\[:alnum:\]/g, 'A-Za-z0-9'],
+  [/\[:alpha:\]/g, 'A-Za-z'],
+  [/\[:blank:\]/g, ' \\t'],
+  [/\[:cntrl:\]/g, '\\x00-\\x1F\\x7F'],
+  [/\[:digit:\]/g, '0-9'],
+  [/\[:graph:\]/g, '\\x21-\\x7E'],
+  [/\[:lower:\]/g, 'a-z'],
+  [/\[:print:\]/g, '\\x20-\\x7E'],
+  [/\[:punct:\]/g, '!-/:-@\\[-`{-~'],
+  [/\[:space:\]/g, '\\s'],
+  [/\[:upper:\]/g, 'A-Z'],
+  [/\[:word:\]/g, 'A-Za-z0-9_'],
+  [/\[:xdigit:\]/g, '0-9A-Fa-f'],
+];
+
+/** Replace `[:name:]` only inside an already-extracted bracket expression. */
+function replacePosixClassesInBracketInner(s: string): string {
+  let t = s;
+  for (const [re, rep] of POSIX_CLASS_INNER) t = t.replace(re, rep);
+  return t;
+}
+
+/** Index of the `]` that closes the `[` at `i`, skipping `[:name:]`. */
+function findBracketClose(s: string, i: number): number {
+  let j = i + 1;
+  if (j < s.length && (s[j] === '!' || s[j] === '^')) j++;
+  if (j < s.length && s[j] === ']') j++;
+  while (j < s.length) {
+    if (s.startsWith('[:', j)) {
+      const end = s.indexOf(':]', j + 2);
+      if (end >= 0) {
+        j = end + 2;
+        continue;
+      }
+    }
+    if (s[j] === ']') return j;
+    j++;
+  }
+  return -1;
+}
+
+/** POSIX ERE specials that keep their backslash; anything else is the char. */
+const ERE_KEEP_ESC = new Set([
+  '.',
+  '[',
+  ']',
+  '\\',
+  '(',
+  ')',
+  '*',
+  '+',
+  '?',
+  '{',
+  '}',
+  '|',
+  '^',
+  '$',
+  '1',
+  '2',
+  '3',
+  '4',
+  '5',
+  '6',
+  '7',
+  '8',
+  '9',
+  'b',
+  'B',
+  'w',
+  'W',
+  's',
+  'S',
+]);
+
+/**
+ * Map a POSIX ERE to a .NET pattern: POSIX classes only inside `[…]`,
+ * and drop .NET-only escapes (`\\d` → `d`) so `[[ 1 =~ $re ]]` with
+ * `re='\\d'` stays false.
+ */
+function rewriteEre(s: string): string {
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '\\') {
+      if (i + 1 >= s.length) {
+        out += '\\\\';
+        break;
+      }
+      const n = s[i + 1];
+      out += ERE_KEEP_ESC.has(n) ? '\\' + n : n;
+      i++;
+      continue;
+    }
+    if (s[i] === '[') {
+      const j = findBracketClose(s, i);
+      if (j < 0) {
+        out += '[';
+        continue;
+      }
+      out += '[' + replacePosixClassesInBracketInner(s.slice(i + 1, j)) + ']';
+      i = j;
+      continue;
+    }
+    out += s[i];
+  }
+  return out;
+}
+
+/** Escape glob metacharacters so a quoted/escaped piece stays literal. */
+function globLitEsc(s: string): string {
+  return s.replace(/([*?[\]\\()\-])/g, '\\$1');
+}
+
+const FX_LIKEESC_FN = [
+  'function fx-likeesc($s) {',
+  '  $fx_o = New-Object System.Text.StringBuilder',
+  '  foreach ($fx_ch in ([string]$s).ToCharArray()) {',
+  "    if (@('*','?','[',']','`') -contains [string]$fx_ch) { [void]$fx_o.Append('`' + $fx_ch) }",
+  '    else { [void]$fx_o.Append($fx_ch) }',
+  '  }',
+  '  $fx_o.ToString()',
+  '}',
+].join('\n');
+
+/** Build a regex pattern, escaping quoted/backslash-escaped portions. */
+function mergeUnescapedText(w: Word): Word {
+  const merged: Word = [];
+  for (const p of w) {
+    const last = merged[merged.length - 1];
+    if (
+      p.kind === 'Text' &&
+      !p.escaped &&
+      last &&
+      last.kind === 'Text' &&
+      !last.escaped
+    ) {
+      last.text += p.text;
+    } else {
+      merged.push(p.kind === 'Text' ? { ...p } : p);
+    }
+  }
+  return merged;
+}
+
+function regexOperandExpr(w: Word): string {
+  if (w.length === 0) return "''";
+  const bits: string[] = [];
+  let rest = w;
+  if (w[0].kind === 'Text' && !w[0].escaped && w[0].text.startsWith('~')) {
+    bits.push('[regex]::Escape([string](fx-home))');
+    const after = w[0].text.slice(1);
+    rest = after ? [{ kind: 'Text', text: after }, ...w.slice(1)] : w.slice(1);
+  }
+  for (const p of mergeUnescapedText(rest)) {
+    if (p.kind === 'SingleQuoted') {
+      bits.push('[regex]::Escape(' + psStr(p.text) + ')');
+    } else if (p.kind === 'DoubleQuoted') {
+      bits.push('[regex]::Escape([string](' + kshExprOfWord([p]) + '))');
+    } else if (p.kind === 'Text') {
+      bits.push(
+        p.escaped
+          ? '[regex]::Escape(' + psStr(p.text) + ')'
+          : psStr(rewriteEre(p.text)),
+      );
+    } else {
+      bits.push('[string](' + kshExprOfWord([p]) + ')');
+    }
+  }
+  return bits.length === 1 ? bits[0] : '(' + bits.join(' + ') + ')';
+}
+
+/** Build a bash glob string: quoted/escaped metas stay literal. */
+function globPatternExpr(w: Word): string {
+  if (w.length === 0) return "''";
+  const bits: string[] = [];
+  let rest = w;
+  if (w[0].kind === 'Text' && !w[0].escaped && w[0].text.startsWith('~')) {
+    bits.push('(fx-gesc (([string](fx-home)).Replace([char]92, [char]47)))');
+    const after = w[0].text.slice(1);
+    rest = after ? [{ kind: 'Text', text: after }, ...w.slice(1)] : w.slice(1);
+  }
+  for (const p of mergeUnescapedText(rest)) {
+    if (p.kind === 'SingleQuoted') {
+      bits.push(psStr(globLitEsc(p.text)));
+    } else if (p.kind === 'DoubleQuoted') {
+      bits.push('(fx-gesc ([string](' + kshExprOfWord([p]) + ')))');
+    } else if (p.kind === 'Text') {
+      bits.push(psStr(p.escaped ? globLitEsc(p.text) : p.text));
+    } else {
+      bits.push('[string](' + kshExprOfWord([p]) + ')');
+    }
+  }
+  return bits.length === 1 ? bits[0] : '(' + bits.join(' + ') + ')';
+}
+
+/** String operand for [[ compares — do not POSIX-normalize paths. */
+function stringOperandExpr(w: Word): string {
+  if (w.length > 0 && w[0].kind === 'Text' && !w[0].escaped && w[0].text.startsWith('~')) {
+    return '[string](' + kshExprOfWord(w) + ')';
+  }
+  const lit = w.every((p) => p.kind === 'Text' || p.kind === 'SingleQuoted')
+    ? w.map((p) => (p as { text: string }).text).join('')
+    : null;
+  if (lit !== null) return psStr(lit);
+  return '[string](' + kshExprOfWord(w) + ')';
+}
+
+const FX_POSIX_INNER_PS = [
+  "      $inner = $inner.Replace('[:alnum:]', 'A-Za-z0-9')",
+  "      $inner = $inner.Replace('[:alpha:]', 'A-Za-z')",
+  "      $inner = $inner.Replace('[:blank:]', ' \\t')",
+  "      $inner = $inner.Replace('[:cntrl:]', '\\x00-\\x1F\\x7F')",
+  "      $inner = $inner.Replace('[:digit:]', '0-9')",
+  "      $inner = $inner.Replace('[:graph:]', '\\x21-\\x7E')",
+  "      $inner = $inner.Replace('[:lower:]', 'a-z')",
+  "      $inner = $inner.Replace('[:print:]', '\\x20-\\x7E')",
+  "      $inner = $inner.Replace('[:punct:]', '!-/:-@\\[-`{-~')",
+  "      $inner = $inner.Replace('[:space:]', '\\s')",
+  "      $inner = $inner.Replace('[:upper:]', 'A-Z')",
+  "      $inner = $inner.Replace('[:word:]', 'A-Za-z0-9_')",
+  "      $inner = $inner.Replace('[:xdigit:]', '0-9A-Fa-f')",
+].join('\n');
+
+const FX_GMATCH_FN = [
+  'function fx-gesc($s) {',
+  '  $o = New-Object System.Text.StringBuilder',
+  '  foreach ($ch in ([string]$s).ToCharArray()) {',
+  "    if (@('*','?','[',']','\\','-','(',')') -contains [string]$ch) { [void]$o.Append('\\') }",
+  '    [void]$o.Append($ch)',
+  '  }',
+  '  return $o.ToString()',
+  '}',
+  'function fx-gposix([char]$ch, [string]$name) {',
+  '  $c = [int]$ch',
+  '  switch ($name) {',
+  "    'digit' { return ($c -ge 48 -and $c -le 57) }",
+  "    'xdigit' { return (($c -ge 48 -and $c -le 57) -or ($c -ge 65 -and $c -le 70) -or ($c -ge 97 -and $c -le 102)) }",
+  "    'lower' { return ($c -ge 97 -and $c -le 122) }",
+  "    'upper' { return ($c -ge 65 -and $c -le 90) }",
+  "    'alpha' { return (($c -ge 65 -and $c -le 90) -or ($c -ge 97 -and $c -le 122)) }",
+  "    'alnum' { return (($c -ge 48 -and $c -le 57) -or ($c -ge 65 -and $c -le 90) -or ($c -ge 97 -and $c -le 122)) }",
+  "    'word' { return (($c -ge 48 -and $c -le 57) -or ($c -ge 65 -and $c -le 90) -or ($c -ge 97 -and $c -le 122) -or $ch -eq [char]95) }",
+  '    \'blank\' { return ($ch -eq [char]32 -or $ch -eq [char]9) }',
+  '    \'space\' { return ($ch -eq [char]32 -or $ch -eq [char]9 -or $ch -eq [char]10 -or $ch -eq [char]11 -or $ch -eq [char]12 -or $ch -eq [char]13) }',
+  '    \'cntrl\' { return ($c -le 31 -or $c -eq 127) }',
+  "    'graph' { return ($c -ge 33 -and $c -le 126) }",
+  "    'print' { return ($c -ge 32 -and $c -le 126) }",
+  "    'punct' { return (($c -ge 33 -and $c -le 47) -or ($c -ge 58 -and $c -le 64) -or ($c -ge 91 -and $c -le 96) -or ($c -ge 123 -and $c -le 126)) }",
+  '    default { return $false }',
+  '  }',
+  '}',
+  'function fx-ginclass([char]$ch, [string]$inner) {',
+  '  $i = 0',
+  '  while ($i -lt $inner.Length) {',
+  '    if ($inner[$i] -eq [char]92 -and ($i + 1) -lt $inner.Length) {',
+  '      if ([int]$inner[$i + 1] -ceq [int]$ch) { return $true }',
+  '      $i += 2; continue',
+  '    }',
+  "    if (($i + 1) -lt $inner.Length -and $inner[$i] -eq '[' -and $inner[$i + 1] -eq ':') {",
+  "      $k = $inner.IndexOf(':]', $i + 2)",
+  '      if ($k -ge 0) {',
+  '        if (fx-gposix $ch $inner.Substring($i + 2, $k - $i - 2)) { return $true }',
+  '        $i = $k + 2; continue',
+  '      }',
+  '    }',
+  '    if ($i -eq 0 -and $inner[$i] -eq [char]45) {',
+  '      if ($ch -eq [char]45) { return $true }',
+  '      $i++; continue',
+  '    }',
+  "    if (($i + 2) -lt $inner.Length -and $inner[$i + 1] -eq '-' -and $inner[$i] -ne [char]92) {",
+  '      $lo = [int][char]$inner[$i]; $hi = [int][char]$inner[$i + 2]',
+  '      if ([int]$ch -ge $lo -and [int]$ch -le $hi) { return $true }',
+  '      $i += 3; continue',
+  '    }',
+  '    if ([int]$inner[$i] -ceq [int]$ch) { return $true }',
+  '    $i++',
+  '  }',
+  '  return $false',
+  '}',
+  'function fx-gext([string]$p, [int]$pi) {',
+  '  $pref = [string]$p[$pi]',
+  '  $i = $pi + 2',
+  '  $alts = New-Object System.Collections.ArrayList',
+  '  $start = $i',
+  '  $depth = 1',
+  '  while ($i -lt $p.Length -and $depth -gt 0) {',
+  '    $c = $p[$i]',
+  '    if ($c -eq [char]92 -and ($i + 1) -lt $p.Length) { $i += 2; continue }',
+  "    if (($i + 1) -lt $p.Length -and $p[$i + 1] -eq '(' -and @('*','?','@','+','!') -contains [string]$c) { $depth++; $i += 2; continue }",
+  "    if ($c -eq ')') {",
+  '      $depth--',
+  '      if ($depth -eq 0) { [void]$alts.Add($p.Substring($start, $i - $start)); $i++; break }',
+  '      $i++; continue',
+  '    }',
+  "    if ($c -eq '|' -and $depth -eq 1) { [void]$alts.Add($p.Substring($start, $i - $start)); $i++; $start = $i; continue }",
+  '    $i++',
+  '  }',
+  '  return @{ pref = $pref; alts = $alts; after = $i }',
+  '}',
+  'function fx-gok([string]$s, [int]$si, [string]$p, [int]$pi) {',
+  '  while ($pi -lt $p.Length) {',
+  '    $c = $p[$pi]',
+  '    if ($c -eq [char]92) {',
+  '      if (($pi + 1) -ge $p.Length) {',
+  '        if ($si -ge $s.Length -or $s[$si] -cne [char]92) { return $false }',
+  '        $si++; $pi++; continue',
+  '      }',
+  '      $n = $p[$pi + 1]',
+  '      if ($si -ge $s.Length -or $s[$si] -cne $n) { return $false }',
+  '      $si++; $pi += 2; continue',
+  '    }',
+  "    if (($pi + 1) -lt $p.Length -and $p[$pi + 1] -eq '(' -and @('*','?','@','+','!') -contains [string]$c) {",
+  '      $ex = fx-gext $p $pi',
+  '      $after = [int]$ex.after',
+  '      $alts = @($ex.alts)',
+  "      if ($ex.pref -eq '!') {",
+  '        for ($e = $si; $e -le $s.Length; $e++) {',
+  '          $hit = $false',
+  '          foreach ($alt in $alts) {',
+  '            if (fx-gok $s.Substring($si, $e - $si) 0 ([string]$alt) 0) { $hit = $true; break }',
+  '          }',
+  '          if (-not $hit) { if (fx-gok $s $e $p $after) { return $true } }',
+  '        }',
+  '        return $false',
+  '      }',
+  "      if ($ex.pref -eq '?' -or $ex.pref -eq '*') {",
+  '        if (fx-gok $s $si $p $after) { return $true }',
+  '      }',
+  "      if ($ex.pref -eq '@' -or $ex.pref -eq '?') {",
+  '        foreach ($alt in $alts) {',
+  '          for ($e = $si; $e -le $s.Length; $e++) {',
+  '            if (fx-gok $s.Substring($si, $e - $si) 0 ([string]$alt) 0) {',
+  '              if (fx-gok $s $e $p $after) { return $true }',
+  '            }',
+  '          }',
+  '        }',
+  '        return $false',
+  '      }',
+  '      $q = New-Object System.Collections.Generic.Queue[int]',
+  "      if ($ex.pref -eq '*') { $q.Enqueue($si) }",
+  '      else {',
+  '        foreach ($alt in $alts) {',
+  '          for ($e = $si; $e -le $s.Length; $e++) {',
+  '            if (fx-gok $s.Substring($si, $e - $si) 0 ([string]$alt) 0) { $q.Enqueue($e) }',
+  '          }',
+  '        }',
+  '      }',
+  '      $seen = New-Object System.Collections.Generic.HashSet[int]',
+  '      while ($q.Count -gt 0) {',
+  '        $pos = $q.Dequeue()',
+  '        if (-not $seen.Add($pos)) { continue }',
+  '        if (fx-gok $s $pos $p $after) { return $true }',
+  '        foreach ($alt in $alts) {',
+  '          for ($e = $pos + 1; $e -le $s.Length; $e++) {',
+  '            if (fx-gok $s.Substring($pos, $e - $pos) 0 ([string]$alt) 0) { $q.Enqueue($e) }',
+  '          }',
+  '        }',
+  '      }',
+  '      return $false',
+  '    }',
+  "    if ($c -eq '*') {",
+  '      $pi++',
+  '      if ($pi -ge $p.Length) { return $true }',
+  '      for ($k = $si; $k -le $s.Length; $k++) { if (fx-gok $s $k $p $pi) { return $true } }',
+  '      return $false',
+  '    }',
+  "    if ($c -eq '?') {",
+  '      if ($si -ge $s.Length) { return $false }',
+  '      $si++; $pi++; continue',
+  '    }',
+  "    if ($c -eq '[') {",
+  '      $j = $pi + 1',
+  "      if ($j -lt $p.Length -and ($p[$j] -eq '!' -or $p[$j] -eq '^')) { $j++ }",
+  "      if ($j -lt $p.Length -and $p[$j] -eq ']') { $j++ }",
+  '      while ($j -lt $p.Length) {',
+  "        if (($j + 1) -lt $p.Length -and $p[$j] -eq '[' -and $p[$j + 1] -eq ':') {",
+  "          $k = $p.IndexOf(':]', $j + 2)",
+  '          if ($k -ge 0) { $j = $k + 2; continue }',
+  '        }',
+  "        if ($p[$j] -eq ']') { break }",
+  '        $j++',
+  '      }',
+  '      if ($j -ge $p.Length) {',
+  "        if ($si -ge $s.Length -or $s[$si] -cne '[') { return $false }",
+  '        $si++; $pi++; continue',
+  '      }',
+  '      if ($si -ge $s.Length) { return $false }',
+  '      $inner = $p.Substring($pi + 1, $j - $pi - 1)',
+  '      $neg = $false',
+  "      if ($inner.StartsWith('!') -or $inner.StartsWith('^')) { $neg = $true; $inner = $inner.Substring(1) }",
+  '      $ok = fx-ginclass $s[$si] $inner',
+  '      if ($neg) { $ok = -not $ok }',
+  '      if (-not $ok) { return $false }',
+  '      $si++; $pi = $j + 1; continue',
+  '    }',
+  '    if ($si -ge $s.Length -or [int]$s[$si] -cne [int]$c) { return $false }',
+  '    $si++; $pi++; continue',
+  '  }',
+  '  return ($si -eq $s.Length)',
+  '}',
+  'function fx-gmatch($a, $b) {',
+  '  $a = [string]$a; $b = [string]$b',
+  '  if ($a.Length -ge 3 -and $a[1] -eq [char]58 -and $a[2] -eq [char]92) {',
+  '    $a = $a.Replace([char]92, [char]47); $b = $b.Replace([char]92, [char]47)',
+  '  } elseif ($b.Length -ge 3 -and $b[1] -eq [char]58 -and $b[2] -eq [char]92) {',
+  '    $a = $a.Replace([char]92, [char]47); $b = $b.Replace([char]92, [char]47)',
+  '  }',
+  '  return [bool](fx-gok $a 0 $b 0)',
+  '}',
+].join('\n');
+
+const FX_POSIXRE_FN = [
+  'function fx-posixre($s) {',
+  '  $t = [string]$s',
+  '  $sb = New-Object System.Text.StringBuilder',
+  '  $i = 0',
+  "  $keep = @('.','[',']','\\','(',')','*','+','?','{','}','|','^','$','1','2','3','4','5','6','7','8','9','b','B','w','W','s','S')",
+  '  while ($i -lt $t.Length) {',
+  '    $c = $t[$i]',
+  "    if ($c -eq '\\') {",
+  "      if (($i + 1) -ge $t.Length) { throw 'invalid regular expression' }",
+  '      $n = $t[$i + 1]',
+  "      if ($keep -contains [string]$n) { [void]$sb.Append('\\' + [string]$n) }",
+  '      else { [void]$sb.Append([string]$n) }',
+  '      $i += 2',
+  '      continue',
+  '    }',
+  "    if ($c -eq '(' -and ($i + 1) -lt $t.Length -and $t[$i + 1] -eq '?') {",
+  "      throw 'invalid regular expression'",
+  '    }',
+  "    if ($c -eq '[') {",
+  '      $j = $i + 1',
+  "      if ($j -lt $t.Length -and ($t[$j] -eq '!' -or $t[$j] -eq '^')) { $j++ }",
+  "      if ($j -lt $t.Length -and $t[$j] -eq ']') { $j++ }",
+  '      while ($j -lt $t.Length) {',
+  "        if (($j + 1) -lt $t.Length -and $t[$j] -eq '[' -and $t[$j + 1] -eq ':') {",
+  "          $k = $t.IndexOf(':]', $j + 2)",
+  '          if ($k -ge 0) { $j = $k + 2; continue }',
+  '        }',
+  "        if ($t[$j] -eq ']') { break }",
+  '        $j++',
+  '      }',
+  "      if ($j -ge $t.Length) { [void]$sb.Append('['); $i++; continue }",
+  '      $inner = $t.Substring($i + 1, $j - $i - 1)',
+  FX_POSIX_INNER_PS,
+  "      [void]$sb.Append('[' + $inner + ']')",
+  '      $i = $j + 1',
+  '      continue',
+  '    }',
+  '    if ($c -eq [char]36) { [void]$sb.Append(([string][char]92) + ([char]122)); $i++; continue }',
+  '    [void]$sb.Append($c)',
+  '    $i++',
+  '  }',
+  '  return $sb.ToString()',
+  '}',
+].join('\n');
+
+const FX_FCOMP_FN = [
+  'function fx-nt($a, $b) {',
+  '  $a = [string]$a; $b = [string]$b',
+  '  $ea = Test-Path -LiteralPath $a; $eb = Test-Path -LiteralPath $b',
+  '  if ($ea -and -not $eb) { return $true }',
+  '  if (-not $ea -or -not $eb) { return $false }',
+  '  return ((Get-Item -LiteralPath $a -Force).LastWriteTimeUtc -gt (Get-Item -LiteralPath $b -Force).LastWriteTimeUtc)',
+  '}',
+  'function fx-ot($a, $b) {',
+  '  $a = [string]$a; $b = [string]$b',
+  '  $ea = Test-Path -LiteralPath $a; $eb = Test-Path -LiteralPath $b',
+  '  if ($eb -and -not $ea) { return $true }',
+  '  if (-not $ea -or -not $eb) { return $false }',
+  '  return ((Get-Item -LiteralPath $a -Force).LastWriteTimeUtc -lt (Get-Item -LiteralPath $b -Force).LastWriteTimeUtc)',
+  '}',
+  'function fx-fid($p) {',
+  '  $p = [string]$p',
+  '  try { $id = ((& fsutil.exe file queryfileid $p 2>$null) | Out-String).Trim() } catch { return \'\' }',
+  "  if (-not $id) { return '' }",
+  '  return ([IO.Path]::GetPathRoot($p) + \'|\' + $id)',
+  '}',
+  'function fx-ef($a, $b) {',
+  '  try {',
+  '    $ia = Get-Item -LiteralPath ([string]$a) -Force -ErrorAction Stop',
+  '    $ib = Get-Item -LiteralPath ([string]$b) -Force -ErrorAction Stop',
+  '  } catch { return $false }',
+  '  if ([string]$ia.FullName -ieq [string]$ib.FullName) { return $true }',
+  '  $fa = fx-fid $ia.FullName; $fb = fx-fid $ib.FullName',
+  "  return ($fa -ne '' -and $fa -eq $fb)",
+  '}',
+].join('\n');
+
+function testBinaryExpr(l: Word, op: string, r: Word, allowKsh: boolean): string {
+  if (op === '-nt' || op === '-ot' || op === '-ef') {
+    const lp = kshExprOfWord(l);
+    const rp = kshExprOfWord(r);
+    return '(fx-' + op.slice(1) + ' (' + lp + ') (' + rp + '))';
+  }
+  const le = stringOperandExpr(l);
+  const re = stringOperandExpr(r);
+  if (op === '=~') return '(fx-re (' + le + ') (' + regexOperandExpr(r) + '))';
+  if (op === '>' || op === '<') {
+    const cmp =
+      '[string]::Compare(' + le + ', ' + re + ', [System.StringComparison]::Ordinal)';
+    return '((' + cmp + ') ' + (op === '>' ? '-gt' : '-lt') + ' 0)';
+  }
+  if (op === '=' || op === '==') {
+    if (allowKsh) {
+      if (r.every((p) => p.kind === 'SingleQuoted' || p.kind === 'DoubleQuoted'))
+        return '(' + le + ' -ceq ' + re + ')';
+      return '(fx-gmatch (' + le + ') (' + globPatternExpr(r) + '))';
+    }
+    return '(' + le + ' -ceq ' + re + ')';
+  }
+  if (op === '!=') {
+    if (allowKsh) {
+      if (r.every((p) => p.kind === 'SingleQuoted' || p.kind === 'DoubleQuoted'))
+        return '(' + le + ' -cne ' + re + ')';
+      return '(-not (fx-gmatch (' + le + ') (' + globPatternExpr(r) + ')))';
+    }
+    return '(' + le + ' -cne ' + re + ')';
+  }
+  if (allowKsh) return '(fx-tnk (' + le + ') (' + re + ') ' + psStr(op) + ')';
   return '(fx-tn (' + le + ') (' + re + ') ' + psStr(op) + ')';
 }
 
-function parseTestOr(ws: Word[], st: { i: number }): TestParse {
-  const r = parseTestAnd(ws, st);
+function parseTestOr(ws: Word[], st: { i: number }, allowRe: boolean): TestParse {
+  const r = parseTestAnd(ws, st, allowRe);
   if (r.error) return r;
   let expr = r.expr!;
-  while (st.i < ws.length && wordToString(ws[st.i]) === '-o') {
+  while (
+    st.i < ws.length &&
+    (allowRe ? isUnquotedLiteral(ws[st.i], '||') : wordToString(ws[st.i]) === '-o')
+  ) {
     st.i++;
-    const rr = parseTestAnd(ws, st);
+    const rr = parseTestAnd(ws, st, allowRe);
     if (rr.error) return rr;
     expr = '(' + expr + ') -or (' + rr.expr + ')';
   }
   return { expr, error: null };
 }
 
-function parseTestAnd(ws: Word[], st: { i: number }): TestParse {
-  const r = parseTestNot(ws, st);
+function parseTestAnd(ws: Word[], st: { i: number }, allowRe: boolean): TestParse {
+  const r = parseTestNot(ws, st, allowRe);
   if (r.error) return r;
   let expr = r.expr!;
-  while (st.i < ws.length && wordToString(ws[st.i]) === '-a') {
+  while (
+    st.i < ws.length &&
+    (allowRe ? isUnquotedLiteral(ws[st.i], '&&') : wordToString(ws[st.i]) === '-a')
+  ) {
     st.i++;
-    const rr = parseTestNot(ws, st);
+    const rr = parseTestNot(ws, st, allowRe);
     if (rr.error) return rr;
     expr = '(' + expr + ') -and (' + rr.expr + ')';
   }
   return { expr, error: null };
 }
 
-function parseTestNot(ws: Word[], st: { i: number }): TestParse {
+function parseTestNot(ws: Word[], st: { i: number }, allowRe: boolean): TestParse {
   const t = st.i < ws.length ? wordToString(ws[st.i]) : null;
-  if (t === '!' && st.i + 1 < ws.length) {
+  if (t === '!' && (!allowRe || isUnquotedLiteral(ws[st.i], '!'))) {
+    if (st.i + 1 >= ws.length) {
+      if (allowRe) return { expr: null, error: "`!': unary operator expected" };
+      return parseTestAtom(ws, st, allowRe);
+    }
     st.i++;
-    const r = parseTestNot(ws, st);
+    const r = parseTestNot(ws, st, allowRe);
     if (r.error) return r;
     return { expr: '(-not (' + r.expr + '))', error: null };
   }
-  return parseTestAtom(ws, st);
+  return parseTestAtom(ws, st, allowRe);
 }
 
-function parseTestAtom(ws: Word[], st: { i: number }): TestParse {
+function parseTestAtom(ws: Word[], st: { i: number }, allowRe: boolean): TestParse {
   if (st.i >= ws.length) return { expr: null, error: 'too many arguments' };
+  if (allowRe && isUnquotedLiteral(ws[st.i], '(')) {
+    st.i++;
+    const inner = parseTestOr(ws, st, allowRe);
+    if (inner.error) return inner;
+    if (st.i >= ws.length || !isUnquotedLiteral(ws[st.i], ')')) {
+      return { expr: null, error: "`)' expected" };
+    }
+    st.i++;
+    return inner;
+  }
   const t = wordToString(ws[st.i]);
   if (st.i === ws.length - 1) {
+    if (allowRe && TEST_UNARY.has(t) && isUnquotedLiteral(ws[st.i], t)) {
+      return { expr: null, error: t + ': unary operator expected' };
+    }
     // single remaining word: bash test treats any non-null string as true
-    const e = exprOfWord(ws[st.i]);
+    const e = kshExprOfWord(ws[st.i]);
     st.i++;
     return { expr: strNe(e), error: null };
   }
-  if (TEST_UNARY.has(t)) {
+  if (TEST_UNARY.has(t) && (!allowRe || isUnquotedLiteral(ws[st.i], t))) {
     const w = ws[st.i + 1];
+    if (
+      allowRe &&
+      (isUnquotedLiteral(w, '&&') ||
+        isUnquotedLiteral(w, '||') ||
+        isUnquotedLiteral(w, '<') ||
+        isUnquotedLiteral(w, '>') ||
+        isUnquotedLiteral(w, '|'))
+    ) {
+      return { expr: null, error: t + ': unary operator expected' };
+    }
     st.i += 2;
     return { expr: testUnaryExpr(t, w), error: null };
   }
-  const nt = wordToString(ws[st.i + 1]);
-  if (TEST_BINARY.has(nt)) {
+  const opWord = ws[st.i + 1];
+  const nt = wordToString(opWord);
+  const binaries = allowRe ? TEST_BINARY_KSH : TEST_BINARY;
+  if ((!allowRe || isUnquotedLiteral(opWord, nt)) && binaries.has(nt)) {
     if (st.i + 2 < ws.length) {
-      const expr = testBinaryExpr(ws[st.i], nt, ws[st.i + 2]);
+      const expr = testBinaryExpr(ws[st.i], nt, ws[st.i + 2], allowRe);
       st.i += 3;
       return { expr, error: null };
     }
     return { expr: null, error: 'OP:' + nt };
   }
-  const e = exprOfWord(ws[st.i]);
+  const e = kshExprOfWord(ws[st.i]);
   st.i++;
   return { expr: strNe(e), error: null };
 }
 
-function buildTest(ws: Word[], label: string): string {
+function buildTest(ws: Word[], label: string, allowRe = false): string {
   if (ws.length === 0) return '$script:fx_exit = 1';
   const st = { i: 0 };
-  const res = parseTestOr(ws, st);
+  const res = parseTestOr(ws, st, allowRe);
   let err: string | null = null;
   if (res.error) {
     err = res.error.startsWith('OP:')
@@ -943,14 +2059,53 @@ function buildTest(ws: Word[], label: string): string {
     err = 'bash: ' + label + ': too many arguments';
   }
   if (err !== null) {
+    // [[ syntax errors must abort translation so later ; / && segments
+    // cannot run (bash rejects the whole list).
+    if (label === '[[') throw new FauxnixParseError(err);
     return '[Console]::Error.WriteLine(' + psStr(err) + '); $script:fx_exit = 2';
   }
+  const helpers = [FX_TN_FN];
+  if (allowRe && res.expr && res.expr.indexOf('fx-tnk') >= 0) helpers.push(FX_TNK_FN);
+  if (allowRe && res.expr && res.expr.indexOf('fx-re') >= 0) {
+    helpers.push(FX_POSIXRE_FN, FX_RE_FN);
+  }
+  if (
+    allowRe &&
+    res.expr &&
+    res.expr.indexOf('fx-posixre') >= 0 &&
+    helpers.indexOf(FX_POSIXRE_FN) < 0
+  )
+    helpers.push(FX_POSIXRE_FN);
+  if (
+    allowRe &&
+    res.expr &&
+    (res.expr.indexOf('fx-gmatch') >= 0 || res.expr.indexOf('fx-gesc') >= 0)
+  )
+    helpers.push(FX_GMATCH_FN);
+  if (res.expr && res.expr.indexOf('fx-islink') >= 0) helpers.push(FX_ISLINK_FN);
+  if (res.expr && res.expr.indexOf('fx-isset') >= 0) helpers.push(FX_ISSET_FN);
+  if (allowRe && res.expr && res.expr.indexOf('fx-likeesc') >= 0) helpers.push(FX_LIKEESC_FN);
+  if (
+    res.expr &&
+    (res.expr.indexOf('fx-envget') >= 0 || res.expr.indexOf('fx-home') >= 0)
+  )
+    helpers.push(FX_ENVGET_FN);
+  if (
+    res.expr &&
+    (res.expr.indexOf('fx-nt') >= 0 ||
+      res.expr.indexOf('fx-ot') >= 0 ||
+      res.expr.indexOf('fx-ef') >= 0)
+  )
+    helpers.push(FX_FCOMP_FN);
   return [
-    FX_TN_FN,
+    ...helpers,
     '$fx_tr = ' + res.expr,
-    'if ($script:fx_exit -eq 2) { }',
-    'elseif (-not $fx_tr) { $script:fx_exit = 1 }',
-  ].join('\n');
+    allowRe
+      ? 'if (-not $fx_tr) { if ($script:fx_exit -ne 2) { $script:fx_exit = 1 } } else { $script:fx_exit = 0 }'
+      : 'if ($script:fx_exit -eq 2) { } elseif (-not $fx_tr) { $script:fx_exit = 1 }',
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 const test: Handler = (args) => buildTest(args, 'test');
@@ -960,6 +2115,13 @@ const bracket: Handler = (args) => {
     return '[Console]::Error.WriteLine(' + psStr("bash: [: missing `]'") + '); $script:fx_exit = 2';
   }
   return buildTest(args.slice(0, -1), '[');
+};
+
+const dblBracket: Handler = (args) => {
+  if (args.length === 0 || !isUnquotedLiteral(args[args.length - 1], ']]')) {
+    return '[Console]::Error.WriteLine(' + psStr("bash: [[: missing `]]'") + '); $script:fx_exit = 2';
+  }
+  return buildTest(args.slice(0, -1), '[[', true);
 };
 
 /* ------------------------------------------------------------------ */
@@ -1221,6 +2383,7 @@ export const handlers: Record<string, Handler> = {
   false: falseCmd,
   test,
   '[': bracket,
+  '[[': dblBracket,
   ':': colon,
   pushd,
   popd,
