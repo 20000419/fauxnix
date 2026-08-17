@@ -450,6 +450,23 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', () => {
     expect((await run('FX_P=bar true; echo x$FX_P')).stdout.trim()).toBe('x');
   }, 20000);
 
+  it('standalone assignment segments persist and feed later commands (#82)', async () => {
+    expect((await run('SA_V=hello; echo $SA_V')).stdout.trim()).toBe('hello');
+    expect((await run('SA_N=7; [[ $SA_N -gt 3 ]] && echo YES || echo NO')).stdout.trim()).toBe(
+      'YES',
+    );
+    expect((await run('SA_E=; [[ -v SA_E ]] && echo SET || echo UNSET')).stdout.trim()).toBe(
+      'SET',
+    );
+    // bash: word expansion happens BEFORE the same-segment prefix applies,
+    // so `Z=temp [[ $Z == temp ]]` is false there. fauxnix evaluates at
+    // runtime after applying the prefix — documented deviation (README).
+    expect(
+      (await run('SA_Z=out; SA_Z=in [[ $SA_Z == in ]] && echo YES || echo NO')).stdout.trim(),
+    ).toBe('YES');
+    await run('unset SA_V SA_N SA_E SA_Z');
+  });
+
   it('session cwd persists across calls', async () => {
     await run('cd sub');
     const r = await run('pwd');

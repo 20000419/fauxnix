@@ -189,6 +189,19 @@ export function translateSimple(
   position: PipelineCtx['position'],
   hasStdin: boolean,
 ): string {
+  // assignment-only segment (`X=1; cmd`): bash semantics are "set for the
+  // rest of the shell". Reuse the export code path — persist + env shadow —
+  // so empty values (`X=`) and `[[ -v X ]]` behave like bash (documented
+  // deviation: shell var vs exported var are indistinguishable here).
+  if (cmd.name === null) {
+    const exportHandler = lookup('export');
+    const words = cmd.assignments.map((a) => [
+      { kind: 'Text' as const, text: a.name + '=' },
+      ...a.value,
+    ]);
+    return exportHandler ? exportHandler(words, { position, hasStdin }) : '';
+  }
+
   const nameLit = literalOfWord(cmd.name);
 
   let body: string;

@@ -159,6 +159,10 @@ agent ◀── GNU-style output, bash-style errors ◀── decoder (UTF-8 →
 
 fauxnix optimizes for the commands agents actually run. Documented deviations:
 
+- `X=1` standalone assignments follow `export` semantics (one session-wide environment; bash's
+  shell-var vs exported-var distinction does not exist), and a same-segment prefix is visible to
+  `$VAR` inside the command's own words (`Z=in [[ $Z == in ]]` is true here, false in bash where
+  word expansion precedes the temporary environment).
 - `yes` is capped at 65,536 lines — PS 5.1 pipelines cannot signal upstream producers to stop, so
   an unbounded `yes | head` would hang.
 - `tail -f`, `source`, `eval`, `alias`, heredocs, backticks, shell control flow (`if`/`for`/`while`)
