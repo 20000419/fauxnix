@@ -740,7 +740,13 @@ export function parseCommand(input: string): CommandList {
       }
     }
 
-    if (!name) throw new FauxnixParseError('fauxnix: expected a command');
+    if (!name) {
+      // assignment-only segment (`X=1; cmd`) — no command word
+      if (assignments.length > 0) {
+        return { kind: 'SimpleCommand', assignments, name: null, args: [], redirects };
+      }
+      throw new FauxnixParseError('fauxnix: expected a command');
+    }
     if (isUnquotedLiteral(name, '[[')) {
       const close = args.findIndex((w) => isUnquotedLiteral(w, ']]'));
       if (close < 0) throw new FauxnixParseError("fauxnix: [[: missing `]]'");

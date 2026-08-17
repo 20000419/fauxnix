@@ -36,7 +36,8 @@ export interface SimpleCommand {
   kind: 'SimpleCommand';
   /** `VAR=value` prefixes before the command name. */
   assignments: Assignment[];
-  name: Word;
+  /** Command word; null for an assignment-only segment (`X=1; cmd`). */
+  name: Word | null;
   args: Word[];
   redirects: Redirect[];
 }
