@@ -218,7 +218,7 @@ function mapWgetArgs(args: Word[]): WgetMap {
 }
 
 const wget: Handler = (args) => {
-  const orig = args.map(exprOfWord);
+  const orig = args.map((w) => exprOfWord(w));
   const mapped = mapWgetArgs(args);
   return [
     PS_NETGUARD_FNS,
