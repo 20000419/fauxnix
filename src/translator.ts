@@ -16,7 +16,10 @@ import { PipelineCtx, lookup, psStr } from './registry.js';
 /* ------------------------------------------------------------------ */
 
 /** Map a bash $VAR name to a PowerShell expression (usable inside $(...)). */
-export function varExpr(name: string): string {
+export function varExpr(name: string, index?: string): string {
+  if (index !== undefined) {
+    return '(fx-subget ' + psStr(name) + ' ' + psStr(index) + ')';
+  }
   switch (name) {
     case 'HOME':
       return '$HOME';
@@ -111,7 +114,7 @@ export function exprOfWord(w: Word): string {
 
   // single bare variable → bare expression
   if (expanded.length === 1 && expanded[0].kind === 'Var') {
-    return varExpr(expanded[0].name);
+    return varExpr(expanded[0].name, expanded[0].index);
   }
 
   const literal = expanded.every((p) => p.kind === 'Text' || p.kind === 'SingleQuoted');
@@ -134,7 +137,7 @@ export function exprOfWord(w: Word): string {
         for (const q of p.parts) emitPart(q);
         break;
       case 'Var':
-        out += '$(' + varExpr(p.name) + ')';
+        out += '$(' + varExpr(p.name, p.index) + ')';
         break;
       case 'CmdSub':
         out += '$(' + translateCmdSub(p.cmd) + ')';
@@ -649,6 +652,68 @@ export function wrapScript(body: string): string {
     "  if ($parts.Count -eq 1 -and $parts[0] -eq '') { return @() }",
     "  if ($parts[$parts.Count - 1] -eq '') { $parts = $parts[0..($parts.Count - 2)] }",
     '  return $parts',
+    '}',
+    'function fx-svenc($s) {',
+    '  return ([string]$s).Replace([string][char]92, ([string][char]92 + [string][char]92)).Replace([string][char]13, ([string][char]92 + [char]114)).Replace([string][char]10, ([string][char]92 + [char]110))',
+    '}',
+    'function fx-svdec($s) {',
+    '  $s = [string]$s',
+    '  $sb = New-Object System.Text.StringBuilder',
+    '  $i = 0',
+    '  while ($i -lt $s.Length) {',
+    '    $c = $s[$i]',
+    '    if ($c -eq [char]92 -and ($i + 1) -lt $s.Length) {',
+    '      $n2 = $s[$i + 1]',
+    '      if ($n2 -eq [char]110) { [void]$sb.Append([char]10); $i += 2; continue }',
+    '      if ($n2 -eq [char]114) { [void]$sb.Append([char]13); $i += 2; continue }',
+    '      if ($n2 -eq [char]92) { [void]$sb.Append([char]92); $i += 2; continue }',
+    '    }',
+    '    [void]$sb.Append($c)',
+    '    $i++',
+    '  }',
+    '  return [string]$sb',
+    '}',
+    'function fx-arrload($n) {',
+    "  $enc = [Environment]::GetEnvironmentVariable('FAUXNIX_ARR_' + [string]$n)",
+    '  if ($null -ne $enc) {',
+    "    if ($enc -eq '') { return @() }",
+    '    $out = @()',
+    '    foreach ($line in @($enc -split [string][char]10)) { $out += ,(fx-svdec $line) }',
+    '    return $out',
+    '  }',
+    '  $ev = Get-ChildItem Env: | Where-Object { $_.Name -ceq [string]$n } | Select-Object -First 1',
+    '  if ($ev) { return @([string]$ev.Value) }',
+    '  $v = [Environment]::GetEnvironmentVariable([string]$n)',
+    '  if ($null -ne $v) { return @([string]$v) }',
+    '  return @()',
+    '}',
+    'function fx-arrput($n, $vals) {',
+    '  $n = [string]$n',
+    '  $vals = @($vals)',
+    '  $encs = @(); foreach ($v in $vals) { $encs += (fx-svenc $v) }',
+    "  Set-Item -LiteralPath ('Env:\\FAUXNIX_ARR_' + $n) -Value ($encs -join [string][char]10)",
+    "  $fx_0 = $(if ($vals.Count -gt 0) { [string]$vals[0] } else { '' })",
+    '  Set-Item -LiteralPath (\'Env:\\\' + $n) -Value $fx_0',
+    "  $env:FAUXNIX_SETVARS = ((@($env:FAUXNIX_SETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne $n }) + $n) -join ';')",
+    "  $env:FAUXNIX_UNSETVARS = (@($env:FAUXNIX_UNSETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne $n }) -join ';')",
+    '  $fx_sv = @(); foreach ($fx_pair in @($env:FAUXNIX_SETVALS -split [string][char]10)) { $fx_eq = $fx_pair.IndexOf([char]61); if ($fx_eq -lt 1) { continue }; if ($fx_pair.Substring(0, $fx_eq) -cne $n) { $fx_sv += $fx_pair } }',
+    "  $fx_sv += ($n + [string][char]61 + (fx-svenc $fx_0)); $env:FAUXNIX_SETVALS = ($fx_sv -join [string][char]10)",
+    '}',
+    'function fx-arrclr($n) {',
+    '  $n = [string]$n',
+    "  Remove-Item -LiteralPath ('Env:\\FAUXNIX_ARR_' + $n) -ErrorAction SilentlyContinue",
+    "  Remove-Item -LiteralPath ('Env:\\' + $n) -ErrorAction SilentlyContinue",
+    "  $env:FAUXNIX_SETVARS = (@($env:FAUXNIX_SETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne $n }) -join ';')",
+    "  $env:FAUXNIX_UNSETVARS = ((@($env:FAUXNIX_UNSETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne $n }) + $n) -join ';')",
+    '  $fx_sv = @(); foreach ($fx_pair in @($env:FAUXNIX_SETVALS -split [string][char]10)) { $fx_eq = $fx_pair.IndexOf([char]61); if ($fx_eq -lt 1) { continue }; if ($fx_pair.Substring(0, $fx_eq) -cne $n) { $fx_sv += $fx_pair } }; $env:FAUXNIX_SETVALS = ($fx_sv -join [string][char]10)',
+    '}',
+    'function fx-subget($n, $ix) {',
+    '  $arr = @(fx-arrload $n)',
+    "  if ([string]$ix -eq '@' -or [string]$ix -eq '*') { return ($arr -join ' ') }",
+    '  $i = 0',
+    '  if (-not [int]::TryParse([string]$ix, [ref]$i)) { return \'\' }',
+    "  if ($i -lt 0 -or $i -ge $arr.Count) { return '' }",
+    '  return [string]$arr[$i]',
     '}',
     'try {',
     ...body.split('\n').map((l) => '  ' + l),

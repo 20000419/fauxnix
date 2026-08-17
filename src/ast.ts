@@ -6,7 +6,7 @@
  *   - lists:                cmd1 ; cmd2 && cmd3 || cmd4   (newlines act as ';')
  *   - redirections:         > >> 2> 2>> &> 2>&1 1>&2 <
  *   - quoting:              'literal'  "interp $VAR $(cmd)"
- *   - variables:            $VAR ${VAR} plus special cases ($HOME $USER $PATH ...)
+ *   - variables:            $VAR ${VAR} ${VAR[n]} plus special cases ($HOME $USER $PATH ...)
  *   - command substitution: $(...) (recursively translated)
  *   - env assignment prefix: VAR=value cmd
  *
@@ -64,7 +64,7 @@ export type WordPart =
   | { kind: 'Text'; text: string; escaped?: boolean }
   | { kind: 'SingleQuoted'; text: string }
   | { kind: 'DoubleQuoted'; parts: WordPart[] }
-  | { kind: 'Var'; name: string }
+  | { kind: 'Var'; name: string; index?: string }
   | { kind: 'CmdSub'; cmd: string };
 
 export function wordToString(w: Word): string {
@@ -94,7 +94,7 @@ function partToString(p: WordPart): string {
     case 'DoubleQuoted':
       return p.parts.map(partToString).join('');
     case 'Var':
-      return `$${p.name}`;
+      return p.index !== undefined ? `\${${p.name}[${p.index}]}` : `$${p.name}`;
     case 'CmdSub':
       return '$(' + p.cmd + ')';
   }

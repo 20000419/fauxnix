@@ -1430,6 +1430,9 @@ function kshExprOfWord(w: Word): string {
   }
   if (tilde && expanded.length === 0) return '(fx-home)';
   if (!tilde && expanded.length === 1 && expanded[0].kind === 'Var') {
+    if (expanded[0].index !== undefined) {
+      return '(fx-subget ' + psStr(expanded[0].name) + ' ' + psStr(expanded[0].index) + ')';
+    }
     return '(fx-envget ' + psStr(expanded[0].name) + ')';
   }
   const literal =
@@ -1450,7 +1453,10 @@ function kshExprOfWord(w: Word): string {
         for (const q of p.parts) emitPart(q);
         break;
       case 'Var':
-        out += '$(fx-envget ' + psStr(p.name) + ')';
+        out +=
+          p.index !== undefined
+            ? '$(fx-subget ' + psStr(p.name) + ' ' + psStr(p.index) + ')'
+            : '$(fx-envget ' + psStr(p.name) + ')';
         break;
       case 'CmdSub':
         out += '$(' + translateCmdSub(p.cmd) + ')';
@@ -1518,18 +1524,11 @@ const FX_RE_FN = [
   '  try {',
   '    $fx_rm = [regex]::Match([string]$a, (fx-posixre ([string]$b)), [Text.RegularExpressions.RegexOptions]::Singleline)',
   '    if ($fx_rm.Success) {',
-  '      $env:BASH_REMATCH = [string]$fx_rm.Value',
-  "      $env:FAUXNIX_SETVARS = ((@($env:FAUXNIX_SETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne 'BASH_REMATCH' }) + 'BASH_REMATCH') -join ';')",
-  "      $env:FAUXNIX_UNSETVARS = (@($env:FAUXNIX_UNSETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne 'BASH_REMATCH' }) -join ';')",
-  '      $fx_enc = ([string]$fx_rm.Value).Replace([string][char]92, ([string][char]92 + [string][char]92)).Replace([string][char]13, ([string][char]92 + [char]114)).Replace([string][char]10, ([string][char]92 + [char]110))',
-  "      $fx_sv = @(); foreach ($fx_pair in @($env:FAUXNIX_SETVALS -split [string][char]10)) { $fx_eq = $fx_pair.IndexOf([char]61); if ($fx_eq -lt 1) { continue }; if ($fx_pair.Substring(0, $fx_eq) -cne 'BASH_REMATCH') { $fx_sv += $fx_pair } }",
-  "      $fx_sv += ('BASH_REMATCH' + [string][char]61 + $fx_enc); $env:FAUXNIX_SETVALS = ($fx_sv -join [string][char]10)",
+  '      $fx_gs = @(); foreach ($fx_g in $fx_rm.Groups) { $fx_gs += ,[string]$fx_g.Value }',
+  "      fx-arrput 'BASH_REMATCH' $fx_gs",
   '      return $true',
   '    }',
-  "    Remove-Item -LiteralPath 'Env:\\BASH_REMATCH' -ErrorAction SilentlyContinue",
-  "    $env:FAUXNIX_SETVARS = (@($env:FAUXNIX_SETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne 'BASH_REMATCH' }) -join ';')",
-  "    $env:FAUXNIX_UNSETVARS = ((@($env:FAUXNIX_UNSETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne 'BASH_REMATCH' }) + 'BASH_REMATCH') -join ';')",
-  "    $fx_sv = @(); foreach ($fx_pair in @($env:FAUXNIX_SETVALS -split [string][char]10)) { $fx_eq = $fx_pair.IndexOf([char]61); if ($fx_eq -lt 1) { continue }; if ($fx_pair.Substring(0, $fx_eq) -cne 'BASH_REMATCH') { $fx_sv += $fx_pair } }; $env:FAUXNIX_SETVALS = ($fx_sv -join [string][char]10)",
+  "    fx-arrclr 'BASH_REMATCH'",
   '    return $false',
   '  }',
   "  catch { [Console]::Error.WriteLine('bash: [[: invalid regular expression'); $script:fx_exit = 2; return $false }",

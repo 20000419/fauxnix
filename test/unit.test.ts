@@ -69,6 +69,13 @@ describe('parser', () => {
     expect(parts.some((p) => p.kind === 'CmdSub' && p.cmd === 'date +%Y')).toBe(true);
   });
 
+  it('parses ${name[index]} subscripts', () => {
+    const cmd = parse('echo ${BASH_REMATCH[1]} ${PATH[0]} ${x[@]}').segments[0].pipeline.commands[0];
+    expect(cmd.args[0]).toEqual([{ kind: 'Var', name: 'BASH_REMATCH', index: '1' }]);
+    expect(cmd.args[1]).toEqual([{ kind: 'Var', name: 'PATH', index: '0' }]);
+    expect(cmd.args[2]).toEqual([{ kind: 'Var', name: 'x', index: '@' }]);
+  });
+
   it('rejects heredocs with a helpful message', () => {
     expect(() => parse('cat <<EOF')).toThrow(FauxnixParseError);
     expect(() => parse('cat <<EOF')).toThrow(/heredoc/);

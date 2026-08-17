@@ -357,6 +357,10 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', () => {
     expect((await run("[[ 'a>b' =~ (a>b) ]]")).exitCode).toBe(0);
     expect((await run("[[ 'a&&b' =~ (a&&b) ]]")).exitCode).toBe(0);
     expect((await run('[[ abc =~ b ]]; echo "$BASH_REMATCH"')).stdout.trim()).toBe('b');
+    expect((await run('[[ abc =~ ^a(.)c$ ]]; echo ${BASH_REMATCH[0]}')).stdout.trim()).toBe('abc');
+    expect((await run('[[ abc =~ ^a(.)c$ ]]; echo ${BASH_REMATCH[1]}')).stdout.trim()).toBe('b');
+    expect((await run('[[ abc =~ ^a(.)c$ ]]; echo ${BASH_REMATCH[@]}')).stdout.trim()).toBe('abc b');
+    expect((await run('[[ abc =~ z ]]; echo ${BASH_REMATCH[1]}')).stdout.trim()).toBe('');
     expect(
       (await run('export BASH_REMATCH=old; [[ abc =~ b ]]; [[ $BASH_REMATCH == b ]]; echo $?; unset BASH_REMATCH')).stdout.trim(),
     ).toBe('0');
