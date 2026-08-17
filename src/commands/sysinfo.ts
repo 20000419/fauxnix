@@ -1,6 +1,6 @@
 import { Word, WordPart, wordToString } from '../ast.js';
 import { Handler, lookup, parseWords, psStr, registeredNames } from '../registry.js';
-import { exprOfWord, operandExpr, translateSimple } from '../translator.js';
+import { exprOfWord, operandExpr, translateSimple, wrapTempEnv } from '../translator.js';
 import { handlers as textIoHandlers } from './text-io.js';
 
 /* ------------------------------------------------------------------ */
@@ -210,10 +210,6 @@ const env: Handler = (args, ctx) => {
     break;
   }
   const lines: string[] = [];
-  for (const u of unsets) {
-    lines.push("Remove-Item -LiteralPath ('Env:\\' + " + psStr(u) + ') -ErrorAction SilentlyContinue');
-  }
-  for (const s of sets) lines.push('$env:' + s.name + ' = ' + exprOfWord(s.value));
   if (cmdIdx >= 0 && cmdIdx < args.length) {
     const cmdWords = args.slice(cmdIdx);
     lines.push(
@@ -226,7 +222,8 @@ const env: Handler = (args, ctx) => {
   } else {
     lines.push(ENV_LIST_PS);
   }
-  return lines.join('\n');
+  // `env NAME=val cmd` / `env -u NAME cmd` must not leak into the session.
+  return wrapTempEnv(sets, lines.join('\n'), { unsets });
 };
 
 const printenv: Handler = (args) => {
