@@ -198,7 +198,7 @@ const exportCmd: Handler = (args) => {
   }
   return sets
     .map((s) => {
-      const val = exprOfWord(s.value);
+      const val = exprOfWord(s.value, { preserveCmdSub: true });
       return (
         '$fx_exv = ' +
         val +
@@ -1464,7 +1464,8 @@ function kshExprOfWord(w: Word): string {
             : '$(fx-envget ' + psStr(p.name) + ')';
         break;
       case 'CmdSub':
-        out += '$(' + translateCmdSub(p.cmd) + ')';
+        // [[ ]] does not IFS-split, so keep the newline contract.
+        out += '$(' + translateCmdSub(p.cmd, true) + ')';
         break;
     }
   };

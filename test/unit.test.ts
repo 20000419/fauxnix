@@ -70,6 +70,17 @@ describe('parser', () => {
     expect(parts.some((p) => p.kind === 'CmdSub' && p.cmd === 'date +%Y')).toBe(true);
   });
 
+  it('quoted cmdsub and assignments keep newlines; unquoted splits', () => {
+    const q = parse('echo "$(printf a)"').segments[0].pipeline.commands[0];
+    expect(exprOfWord(q.args[0])).toContain('fx-csub');
+    expect(exprOfWord(q.args[0])).not.toContain("-join ' '");
+    const u = parse('echo $(printf a)').segments[0].pipeline.commands[0];
+    expect(exprOfWord(u.args[0])).toContain("-join ' '");
+    const a = parse('X=$(printf a)').segments[0].pipeline.commands[0];
+    expect(exprOfWord(a.assignments[0].value, { preserveCmdSub: true })).toContain('fx-csub');
+    expect(exprOfWord(a.assignments[0].value, { preserveCmdSub: true })).not.toContain("-join ' '");
+  });
+
   it('parses ${name[index]} subscripts', () => {
     const cmd = parse('echo ${BASH_REMATCH[1]} ${PATH[0]} ${x[@]}').segments[0].pipeline.commands[0];
     expect(cmd.args[0]).toEqual([{ kind: 'Var', name: 'BASH_REMATCH', index: '1' }]);

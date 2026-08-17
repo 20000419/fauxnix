@@ -89,6 +89,9 @@ const PS_UNESQ_FN = [
 const PS_WRITE_FN = [
   'function fx-write($s, $term) {',
   "  if ($s -eq '') { return }",
+  // Inside quoted/assignment $(...) the collector wants one string object
+  // so interior newlines survive (PS would otherwise join lines with spaces).
+  '  if ($script:fx_csub) { $s; return }',
   '  if (-not $term) { $s; return }',
   '  if (-not $s.EndsWith([string][char]10)) { [Console]::Out.Write($s); return }',
   '  $t = $s.Substring(0, $s.Length - 1)',

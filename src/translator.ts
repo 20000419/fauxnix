@@ -103,7 +103,7 @@ export function pathExpr(s: string): string {
  * Literal words become single-quoted strings; dynamic ones become
  * double-quoted strings with $(...) interpolation.
  */
-export function exprOfWord(w: Word): string {
+export function exprOfWord(w: Word, opts?: { preserveCmdSub?: boolean }): string {
   // tilde expansion (unquoted leading ~)
   const expanded: WordPart[] = [];
   if (w.length > 0 && w[0].kind === 'Text' && w[0].text.startsWith('~')) {
@@ -119,6 +119,11 @@ export function exprOfWord(w: Word): string {
   if (expanded.length === 1 && expanded[0].kind === 'Var') {
     return varExpr(expanded[0].name, expanded[0].index);
   }
+  // Bare `$(...)` must not sit inside a PS expandable string: the
+  // substitution body contains `"` / `$_` that would break interpolation.
+  if (expanded.length === 1 && expanded[0].kind === 'CmdSub') {
+    return '$(' + translateCmdSub(expanded[0].cmd, opts?.preserveCmdSub === true) + ')';
+  }
 
   const literal = expanded.every((p) => p.kind === 'Text' || p.kind === 'SingleQuoted');
   if (literal) {
@@ -128,7 +133,7 @@ export function exprOfWord(w: Word): string {
 
   // dynamic — build a PS double-quoted string with interpolation
   let out = '"';
-  const emitPart = (p: WordPart) => {
+  const emitPart = (p: WordPart, quoted: boolean) => {
     switch (p.kind) {
       case 'Text':
         out += escapeDq(p.text);
@@ -137,17 +142,17 @@ export function exprOfWord(w: Word): string {
         out += escapeDq(p.text);
         break;
       case 'DoubleQuoted':
-        for (const q of p.parts) emitPart(q);
+        for (const q of p.parts) emitPart(q, true);
         break;
       case 'Var':
         out += '$(' + varExpr(p.name, p.index) + ')';
         break;
       case 'CmdSub':
-        out += '$(' + translateCmdSub(p.cmd) + ')';
+        out += '$(' + translateCmdSub(p.cmd, quoted || opts?.preserveCmdSub === true) + ')';
         break;
     }
   };
-  for (const p of expanded) emitPart(p);
+  for (const p of expanded) emitPart(p, false);
   out += '"';
   return out;
 }
@@ -239,8 +244,14 @@ export function argListExpr(words: Word[], fn: (w: Word) => string = exprOfWord)
 /* Command substitution                                                */
 /* ------------------------------------------------------------------ */
 
-/** Translate the inside of $(...) — pipelines only, no wrappers. */
-export function translateCmdSub(cmdText: string): string {
+/**
+ * Translate the inside of $(...).
+ * `keepNl`: quoted words and assignments keep interior newlines (bash).
+ * Unquoted command words join non-empty lines with a space (IFS
+ * word-split approximation). Handlers often emit one string object, so
+ * a bare `$(…)` interpolation would keep those newlines.
+ */
+export function translateCmdSub(cmdText: string, keepNl = false): string {
   const list = parseCommand(cmdText);
   if (list.segments.length !== 1) {
     throw new FauxnixParseError(
@@ -248,7 +259,14 @@ export function translateCmdSub(cmdText: string): string {
     );
   }
   const { defs, call } = translatePipelineBody(list.segments[0].pipeline);
-  return defs ? defs + '\n' + call : call;
+  const inner = defs ? defs + '\n' + call : call;
+  const collected = '(fx-csub { ' + inner + ' })';
+  if (keepNl) return collected;
+  return (
+    '((' +
+    collected +
+    " -split [string][char]10 | Where-Object { $_ -ne '' }) -join ' ')"
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -429,7 +447,7 @@ export function wrapTempEnv(
   for (let i = 0; i < sets.length; i++) {
     const vn = '$fx_ev' + id + '_' + i;
     valVars.push(vn);
-    lines.push(vn + ' = ' + exprOfWord(sets[i].value));
+    lines.push(vn + ' = ' + exprOfWord(sets[i].value, { preserveCmdSub: true }));
   }
   lines.push('try {');
   for (const u of unsets) {
@@ -746,6 +764,17 @@ export function wrapScript(body: string): string {
     "  if ($parts.Count -eq 1 -and $parts[0] -eq '') { return @() }",
     "  if ($parts[$parts.Count - 1] -eq '') { $parts = $parts[0..($parts.Count - 2)] }",
     '  return $parts',
+    '}',
+    'function fx-csub([scriptblock]$b) {',
+    '  $fx_prevcs = $script:fx_csub',
+    '  $script:fx_csub = $true',
+    '  try { $fx_o = @(& $b | ForEach-Object { [string]$_ }) }',
+    '  finally { $script:fx_csub = $fx_prevcs }',
+    '  $fx_s = ($fx_o -join [string][char]10)',
+    '  while ($fx_s.Length -gt 0 -and $fx_s[$fx_s.Length - 1] -eq [char]10) {',
+    '    $fx_s = $fx_s.Substring(0, $fx_s.Length - 1)',
+    '  }',
+    '  return $fx_s',
     '}',
     'function fx-svenc($s) {',
     '  return ([string]$s).Replace([string][char]92, ([string][char]92 + [string][char]92)).Replace([string][char]13, ([string][char]92 + [char]114)).Replace([string][char]10, ([string][char]92 + [char]110))',
