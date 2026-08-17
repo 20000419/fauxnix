@@ -6,3 +6,4 @@ coverage/
 scratch/
 .mimosa/
 *.log
+grok_work/

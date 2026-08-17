@@ -1,6 +1,6 @@
 import { spawn, ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { promises as fs, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { promises as fs, readFileSync, writeFileSync, existsSync, openSync, closeSync, writeSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Redirect } from './ast.js';
@@ -39,6 +39,71 @@ interface SegmentRedirects {
   appendStderr: boolean;
   mergeStderr: boolean;
   devNull: boolean;
+}
+
+/** Where a fd points during left-to-right redirect setup. */
+type PrepDest = { kind: 'caller' } | { kind: 'nul' } | { kind: 'file'; path: string };
+
+function emitToPrepDest(
+  dest: PrepDest,
+  msg: string,
+  fds: Map<string, number>,
+  fallback: (s: string) => void,
+): void {
+  if (dest.kind === 'nul') return;
+  if (dest.kind === 'file') {
+    try {
+      writeToPrepFd(fds, dest.path, msg);
+      return;
+    } catch {
+      /* fall through to caller */
+    }
+  }
+  fallback(msg);
+}
+
+function writeAllSync(fd: number, data: Buffer): void {
+  let off = 0;
+  while (off < data.length) {
+    const n = writeSync(fd, data, off, data.length - off);
+    if (n <= 0) throw new Error('fauxnix: short write to redirect');
+    off += n;
+  }
+}
+
+function writeToPrepFd(fds: Map<string, number>, file: string, data: string): void {
+  const fd = fds.get(file);
+  if (fd === undefined) throw new Error('fauxnix: redirect fd missing for ' + file);
+  writeAllSync(fd, Buffer.from(data, 'utf8'));
+}
+
+function closePrepFds(fds: Map<string, number>): void {
+  for (const fd of fds.values()) {
+    try {
+      closeSync(fd);
+    } catch {
+      /* already closed */
+    }
+  }
+  fds.clear();
+}
+
+function prepareRedirectFile(file: string, append: boolean, fds: Map<string, number>): string | null {
+  try {
+    const prev = fds.get(file);
+    if (prev !== undefined) {
+      closeSync(prev);
+      fds.delete(file);
+    }
+    fds.set(file, openSync(file, append ? 'a' : 'w'));
+    return null;
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    if (err.code === 'ENOENT') return file + ': No such file or directory';
+    if (err.code === 'EACCES' || err.code === 'EPERM') return file + ': Permission denied';
+    if (err.code === 'EISDIR') return file + ': Is a directory';
+    return file + ': cannot create: ' + err.message;
+  }
 }
 
 function planRedirects(redirects: Redirect[]): SegmentRedirects {
@@ -195,10 +260,13 @@ async function runPlans(
   // skips b AND c when a fails. chainOk models the value of the current
   // &&/|| chain; `;` segments always run and restart the chain.
   let chainOk = true;
-  // redirect targets are relative to the session cwd, not this node process
-  const baseDir = opts.cwd ?? session.cwd ?? process.cwd();
+  // Redirect targets are relative to the *current* session cwd, not this
+  // Node process. Re-read after every segment so `cd src && echo x > out.txt`
+  // writes under src (same as two separate session calls). A one-shot
+  // capture of the entry cwd would land the file in the old directory.
+  let currentDir = opts.cwd ?? session.cwd ?? process.cwd();
   const resolveTarget = (t: string): string =>
-    path.isAbsolute(t) || /^[A-Za-z]:[\\/]/.test(t) ? t : path.resolve(baseDir, t);
+    path.isAbsolute(t) || /^[A-Za-z]:[\\/]/.test(t) ? t : path.resolve(currentDir, t);
 
   for (const plan of plans) {
     if (plan.op === '&&' && !chainOk) continue;
@@ -209,9 +277,66 @@ async function runPlans(
     red.stdoutFile = red.stdoutFile ? resolveTarget(red.stdoutFile) : null;
     red.stderrFile = red.stderrFile ? resolveTarget(red.stderrFile) : null;
 
-    // bash: a missing `< file` target aborts the segment before running it
-    if (red.stdinFile && !existsSync(red.stdinFile)) {
-      stderr += 'bash: ' + red.stdinFile + ': No such file or directory\n';
+    // bash applies redirects left-to-right *before* the command runs.
+    // Walk the parsed list in source order so a failing earlier redirect
+    // (e.g. `2>nosuch/err >important.txt`) does not truncate a later file,
+    // and a failing redirected `cd` cannot change cwd. Setup errors after
+    // an earlier `2>file` go to that file, not the caller (bash already
+    // applied the stderr redirect).
+    const prepFds = new Map<string, number>();
+    try {
+    let redirectPrepFailed = false;
+    // Snapshot fd destinations as we walk. `2>&1` copies stdout *at that
+    // moment*; a later `>file` must not drag stderr along (bash fd dup).
+    let prepStdout: PrepDest = { kind: 'caller' };
+    let prepStderr: PrepDest = { kind: 'caller' };
+    const emitPrepError = (msg: string) =>
+      emitToPrepDest(prepStderr, msg, prepFds, (s) => {
+        stderr += s;
+      });
+    for (const r of plan.redirects) {
+      if (r.op === '2>&1') {
+        prepStderr = prepStdout;
+        continue;
+      }
+      if (r.op === '1>&2') {
+        prepStdout = prepStderr;
+        continue;
+      }
+      const target = resolveTarget(winTarget(r.target));
+      if (r.op === '<') {
+        if (!existsSync(target)) {
+          emitPrepError('bash: ' + target + ': No such file or directory\n');
+          redirectPrepFailed = true;
+          break;
+        }
+        continue;
+      }
+      if (target === 'NUL') {
+        if (r.op === '>' || r.op === '>>') prepStdout = { kind: 'nul' };
+        else if (r.op === '2>' || r.op === '2>>') prepStderr = { kind: 'nul' };
+        else if (r.op === '&>' || r.op === '&>>') {
+          prepStdout = { kind: 'nul' };
+          prepStderr = { kind: 'nul' };
+        }
+        continue;
+      }
+      const append = r.op === '>>' || r.op === '2>>' || r.op === '&>>';
+      const fail = prepareRedirectFile(target, append, prepFds);
+      if (fail) {
+        emitPrepError('bash: ' + fail + '\n');
+        redirectPrepFailed = true;
+        break;
+      }
+      const fileDest: PrepDest = { kind: 'file', path: target };
+      if (r.op === '>' || r.op === '>>') prepStdout = fileDest;
+      else if (r.op === '2>' || r.op === '2>>') prepStderr = fileDest;
+      else if (r.op === '&>' || r.op === '&>>') {
+        prepStdout = fileDest;
+        prepStderr = fileDest;
+      }
+    }
+    if (redirectPrepFailed) {
       exitCode = 1;
       session.prevExit = exitCode;
       chainOk = false;
@@ -232,7 +357,7 @@ async function runPlans(
     }
 
     const child = spawn('powershell.exe', psArgs, {
-      env: session.childEnv(opts.cwd, red.stdinFile),
+      env: session.childEnv(currentDir, red.stdinFile),
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     });
@@ -292,33 +417,25 @@ async function runPlans(
     const swallowStderr = (red as { swallowStderr?: boolean }).swallowStderr;
     if (swallowStderr) segErr = '';
 
-    // redirect stdout to file instead of the result stream
+    // Write captured streams through the fds opened during preflight
+    // (bash: the redirect refers to the open file, not the path). Reopening
+    // the path would recreate a file the command just unlinked
+    // (`rm out.txt > out.txt`).
+    let redirectOk = true;
     if (red.stdoutFile) {
       try {
-        if (red.appendStdout) {
-          const prev = existsSync(red.stdoutFile) ? readFileSync(red.stdoutFile) : Buffer.alloc(0);
-          writeFileSync(red.stdoutFile, Buffer.concat([prev, Buffer.from(segOut, 'utf8')]));
-        } else {
-          writeFileSync(red.stdoutFile, segOut, 'utf8');
-        }
+        writeToPrepFd(prepFds, red.stdoutFile, segOut);
         segOut = '';
       } catch (e) {
         segErr += 'bash: ' + red.stdoutFile + ': cannot create: ' + (e as Error).message + '\n';
         exitCode = 1;
+        redirectOk = false;
       }
     }
     if (red.stderrFile) {
       try {
         const body = red.stderrFile === red.stdoutFile ? segOut + segErr : segErr;
-        if (red.appendStderr && existsSync(red.stderrFile)) {
-          const prev = readFileSync(red.stderrFile);
-          writeFileSync(red.stderrFile, Buffer.concat([prev, Buffer.from(body, 'utf8')]));
-        } else if (red.stderrFile === red.stdoutFile && existsSync(red.stderrFile)) {
-          const prev = readFileSync(red.stderrFile);
-          writeFileSync(red.stderrFile, Buffer.concat([prev, Buffer.from(body, 'utf8')]));
-        } else {
-          writeFileSync(red.stderrFile, body, 'utf8');
-        }
+        writeToPrepFd(prepFds, red.stderrFile, body);
         segErr = '';
       } catch {
         /* best effort */
@@ -330,6 +447,13 @@ async function runPlans(
     exitCode = code ?? 0;
     session.prevExit = exitCode;
     chainOk = exitCode === 0;
+    // Only inherit cwd from a segment that actually ran and whose
+    // output redirects succeeded. A failed `cd dir > missing/out` must
+    // not move later relative redirects.
+    if (redirectOk && session.cwd) currentDir = session.cwd;
+    } finally {
+      closePrepFds(prepFds);
+    }
   }
 
   return { stdout, stderr, exitCode };
