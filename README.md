@@ -1,5 +1,10 @@
 # fauxnix
 
+[![CI](https://github.com/20000419/fauxnix/actions/workflows/ci.yml/badge.svg)](https://github.com/20000419/fauxnix/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/fauxnix-cli.svg)](https://www.npmjs.com/package/fauxnix-cli)
+[![npm downloads](https://img.shields.io/npm/dt/fauxnix-cli.svg)](https://www.npmjs.com/package/fauxnix-cli)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **Run Linux-style commands on Windows — natively, deterministically, with no VM and no WSL.**
 
 fauxnix is a bash→PowerShell translation layer built for AI agents. Your agent keeps writing the
@@ -8,14 +13,36 @@ fauxnix deterministically translates each command into PowerShell, executes it n
 back output that looks like GNU/Linux: `ls -l` columns, bash-style error messages, coreutils exit
 codes, UTF-8/GBK handled automatically.
 
+```bash
+npm install -g fauxnix-cli    # then point any MCP harness at `fauxnix mcp`
+```
+
+![fauxnix demo](docs/assets/demo.svg)
+
 ```
 $ fauxnix "ls -la src | head -2"
 -rw-r--r-- 1 me me 1204 Aug 16 09:12 ast.ts
--rw-r--r-- 1 me me  8192 Aug 16 09:12 cli.ts
+-rw-r--r-- 1 me me 8192 Aug 16 09:12 cli.ts
 
 $ fauxnix "cat nope.txt"
 cat: nope.txt: No such file or directory        # not a PowerShell stack trace
 ```
+
+## Measured: your model is probably worse at PowerShell than you think
+
+Same model (DeepSeek-V4-Pro), same 5 tasks, three execution modes on one Windows machine —
+full data in [`docs/benchmark-deepseek-v4-pro.md`](docs/benchmark-deepseek-v4-pro.md) and
+[`docs/benchmark-ark-models.md](docs/benchmark-ark-models.md):
+
+| | PowerShell | **fauxnix** | Git Bash |
+|---|---|---|---|
+| tool calls / unexpected errors | 14 / 9 | **7 / 0** | 4 / 0 |
+| time (T1–T4) | 163s | **66s** | 57s |
+
+Across 7 models on the Volcano Ark Coding Plan, the PowerShell-vs-fauxnix gap held for every
+model tested — worst case (kimi-k2-thinking): **3.1× slower with 24 error events** writing
+PowerShell vs zero errors through fauxnix. fauxnix lands within ~15% of the real-bash ceiling
+with no bash toolchain installed.
 
 ## Why
 
