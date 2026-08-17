@@ -342,9 +342,11 @@ export function wrapTempEnv(
 
   const id = tempEnvSeq++;
   const save = '$fx_es' + id;
+  const arrSave = '$fx_ar' + id;
   const keep = persistWords && persistWords.length > 0 ? '$fx_ek' + id : '';
   const lines: string[] = [
     save + ' = @{}',
+    arrSave + ' = @{}',
     '$fx_sv0' + id + ' = $env:FAUXNIX_SETVARS',
     '$fx_uv0' + id + ' = $env:FAUXNIX_UNSETVARS',
     '$fx_xv0' + id + ' = $env:FAUXNIX_SETVALS',
@@ -359,6 +361,17 @@ export function wrapTempEnv(
         p +
         ') { [string](Get-Item -LiteralPath ' +
         p +
+        ').Value } else { $null })',
+    );
+    const ap = psStr('Env:\\FAUXNIX_ARR_' + n);
+    lines.push(
+      arrSave +
+        '[' +
+        psStr(n) +
+        '] = $(if (Test-Path -LiteralPath ' +
+        ap +
+        ') { [string](Get-Item -LiteralPath ' +
+        ap +
         ').Value } else { $null })',
     );
   }
@@ -487,6 +500,28 @@ export function wrapTempEnv(
           psStr(n) +
           '] }',
       );
+    }
+    const ap = psStr('Env:\\FAUXNIX_ARR_' + n);
+    const restoreArr =
+      'if ($null -eq ' +
+      arrSave +
+      '[' +
+      psStr(n) +
+      ']) { Remove-Item -LiteralPath ' +
+      ap +
+      ' -ErrorAction SilentlyContinue } else { Set-Item -LiteralPath ' +
+      ap +
+      ' -Value ' +
+      arrSave +
+      '[' +
+      psStr(n) +
+      '] }';
+    if (keep) {
+      lines.push(
+        '  if (-not $fx_skip) { ' + restoreArr + ' }',
+      );
+    } else {
+      lines.push('  ' + restoreArr);
     }
   }
   const assigned = new Set(sets.map((s) => s.name));
@@ -702,7 +737,6 @@ export function wrapScript(body: string): string {
     'function fx-arrload($n) {',
     "  $enc = [Environment]::GetEnvironmentVariable('FAUXNIX_ARR_' + [string]$n)",
     '  if ($null -ne $enc) {',
-    "    if ($enc -eq '') { return @() }",
     '    $out = @()',
     '    foreach ($line in @($enc -split [string][char]10)) { $out += ,(fx-svdec $line) }',
     '    return $out',
@@ -716,6 +750,7 @@ export function wrapScript(body: string): string {
     'function fx-arrput($n, $vals) {',
     '  $n = [string]$n',
     '  $vals = @($vals)',
+    '  if ($vals.Count -eq 0) { fx-arrdrop $n } else {',
     '  $encs = @(); foreach ($v in $vals) { $encs += (fx-svenc $v) }',
     "  Set-Item -LiteralPath ('Env:\\FAUXNIX_ARR_' + $n) -Value ($encs -join [string][char]10)",
     "  $fx_0 = $(if ($vals.Count -gt 0) { [string]$vals[0] } else { '' })",
@@ -724,6 +759,7 @@ export function wrapScript(body: string): string {
     "  $env:FAUXNIX_UNSETVARS = (@($env:FAUXNIX_UNSETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne $n }) -join ';')",
     '  $fx_sv = @(); foreach ($fx_pair in @($env:FAUXNIX_SETVALS -split [string][char]10)) { $fx_eq = $fx_pair.IndexOf([char]61); if ($fx_eq -lt 1) { continue }; if ($fx_pair.Substring(0, $fx_eq) -cne $n) { $fx_sv += $fx_pair } }',
     "  $fx_sv += ($n + [string][char]61 + (fx-svenc $fx_0)); $env:FAUXNIX_SETVALS = ($fx_sv -join [string][char]10)",
+    '  }',
     '}',
     'function fx-arrdrop($n) {',
     "  Remove-Item -LiteralPath ('Env:\\FAUXNIX_ARR_' + [string]$n) -ErrorAction SilentlyContinue",

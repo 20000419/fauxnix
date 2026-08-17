@@ -1,6 +1,7 @@
 import { FauxnixParseError, Word, WordPart, isUnquotedLiteral, wordToString } from '../ast.js';
 import { Handler, lookup, parseWords, psStr, registeredNames } from '../registry.js';
 import {
+  argListExpr,
   exprOfWord,
   operandExpr,
   translateSimple,
@@ -82,8 +83,7 @@ function splitAssignWord(w: Word): AssignSplit | null {
 
 /** Text Words -> PS array expression. */
 function textArgs(words: Word[]): string {
-  if (words.length === 0) return '@()';
-  return '@(' + words.map(exprOfWord).join(', ') + ')';
+  return argListExpr(words, exprOfWord);
 }
 
 /** Drop dash-arguments, return operand words. */
@@ -1475,7 +1475,16 @@ const FX_ISSET_FN = [
   'function fx-isset($n) {',
   '  $n = [string]$n',
   "  if ($n -eq '') { return $false }",
-  "  if ($n -match '^([A-Za-z_][A-Za-z0-9_]*)\\[(0|@|\\*)\\]$') { $n = $Matches[1] }",
+  "  if ($n -match '^([A-Za-z_][A-Za-z0-9_]*)\\[([0-9]+|@|\\*)\\]$') {",
+  '    $fx_ib = $Matches[1]; $fx_ix = [string]$Matches[2]',
+  "    if ($fx_ix -eq '@' -or $fx_ix -eq '*' -or $fx_ix -eq '0') { $n = $fx_ib }",
+  '    else {',
+  '      $fx_ia = @(fx-arrload $fx_ib)',
+  '      $fx_ii = 0',
+  '      if (-not [int]::TryParse($fx_ix, [ref]$fx_ii)) { return $false }',
+  '      return ($fx_ii -ge 0 -and $fx_ii -lt $fx_ia.Count)',
+  '    }',
+  '  }',
   "  elseif ($n -match '^[A-Za-z_][A-Za-z0-9_]*\\[') { return $false }",
   "  if (@($env:FAUXNIX_UNSETVARS -split ';' | Where-Object { $_ -ceq $n }).Count -gt 0) { return $false }",
   "  if (@($env:FAUXNIX_SETVARS -split ';' | Where-Object { $_ -ceq $n }).Count -gt 0) { return $true }",

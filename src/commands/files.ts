@@ -1,6 +1,6 @@
 import { Word, wordToString } from '../ast.js';
 import { Handler, parseWords, psStr } from '../registry.js';
-import { exprOfWord, operandExpr } from '../translator.js';
+import { argListExpr, exprOfWord, operandExpr } from '../translator.js';
 
 /* ------------------------------------------------------------------ */
 /* Shared PS snippets                                                  */
@@ -51,8 +51,7 @@ const PS_HSIZE_FN = [
 
 /** Operand Words → PS array expression of string exprs. */
 function psArray(words: Word[], fn: (w: Word) => string = operandExpr): string {
-  if (words.length === 0) return '@()';
-  return '@(' + words.map(fn).join(', ') + ')';
+  return argListExpr(words, fn);
 }
 
 /* ------------------------------------------------------------------ */
@@ -70,7 +69,7 @@ const ls: Handler = (args) => {
   const sortByTime = flags.has('t');
   const sortBySize = flags.has('S');
   const reverse = flags.has('r');
-  const targets = operandWords.length ? operandWords.map((w) => operandExpr(w)) : ["'.'"];
+  const targets = operandWords.length ? argListExpr(operandWords) : "@('.')";
 
   return [
     PS_GLOB_FN,
@@ -92,7 +91,7 @@ const ls: Handler = (args) => {
     '  }',
     '  return $n',
     '}',
-    '$fx_targets = @(' + targets.join(', ') + ')',
+    '$fx_targets = ' + targets,
     '$fx_all = @()',
     'foreach ($fx_t in $fx_targets) {',
     '  foreach ($fx_g in (fx-glob $fx_t)) {',
@@ -457,7 +456,7 @@ const du: Handler = (args) => {
   const { flags, longs, operandWords } = parseWords(args, [], ['--max-depth']);
   const sum = flags.has('s') || longs.has('--summarize');
   const human = flags.has('h') || longs.has('--human-readable');
-  const targets = operandWords.length ? operandWords.map((w) => operandExpr(w)) : ["'.'"];
+  const targets = operandWords.length ? argListExpr(operandWords) : "@('.')";
   return [
     PS_HSIZE_FN,
     'function fx-size($p) {',
@@ -465,7 +464,7 @@ const du: Handler = (args) => {
     '  Get-ChildItem -LiteralPath $p -Recurse -Force -File -ErrorAction SilentlyContinue | ForEach-Object { $t += $_.Length }',
     '  return [math]::Ceiling($t / 1KB)',
     '}',
-    '$fx_ts = @(' + targets.join(', ') + ')',
+    '$fx_ts = ' + targets,
     'foreach ($fx_t in $fx_ts) {',
     '  if (-not (Test-Path -LiteralPath $fx_t)) { [Console]::Error.WriteLine("du: cannot access \'" + $fx_t + "\': No such file or directory"); $script:fx_exit = 1; continue }',
     '  if (' + (sum ? '$true' : '$false') + ') {',
@@ -538,7 +537,7 @@ const find: Handler = (args) => {
   const sizeExpr = extractValue(preds, ['-size']);
   const mtimeExpr = extractValue(preds, ['-mtime']);
   const wantDelete = preds.includes('-delete');
-  const paths = pathWords.length ? pathWords.map((w) => operandExpr(w)) : ["'.'"];
+  const paths = pathWords.length ? argListExpr(pathWords) : "@('.')";
 
   const conditions: string[] = [];
   if (namePat !== null) conditions.push("($fx_i.Name -like '" + likeOf(namePat) + "')");
@@ -553,7 +552,7 @@ const find: Handler = (args) => {
   const mtimeCond = mtimeOf(mtimeExpr);
 
   return [
-    '$fx_paths = @(' + paths.join(', ') + ')',
+    '$fx_paths = ' + paths,
     'foreach ($fx_p in $fx_paths) {',
     '  if (-not (Test-Path -LiteralPath $fx_p)) { [Console]::Error.WriteLine("find: \'" + $fx_p + "\': No such file or directory"); $script:fx_exit = 1; continue }',
     '  $fx_root = (Get-Item -LiteralPath $fx_p -Force).FullName',
