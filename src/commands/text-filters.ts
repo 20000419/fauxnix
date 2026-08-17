@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { FauxnixParseError, Word, wordToString } from '../ast.js';
 import { Handler, parseWords, psStr } from '../registry.js';
-import { exprOfWord, literalOfWord, operandExpr } from '../translator.js';
+import { argListExpr, exprOfWord, literalOfWord, operandExpr } from '../translator.js';
 
 /* ------------------------------------------------------------------ */
 /* Shared PS snippets (same shape as files.ts)                         */
@@ -40,8 +40,7 @@ const STDIN_LINES = '@($input | ForEach-Object { [string]$_ })';
 
 /** Operand Words → PS array expression of string exprs. */
 function psArray(words: Word[], fn: (w: Word) => string = operandExpr): string {
-  if (words.length === 0) return '@()';
-  return '@(' + words.map(fn).join(', ') + ')';
+  return argListExpr(words, fn);
 }
 
 /** PS boolean literal. */

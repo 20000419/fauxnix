@@ -1,6 +1,6 @@
 import { Word, wordToString } from '../ast.js';
 import { Handler, lookup, parseWords, psStr } from '../registry.js';
-import { exprOfWord, operandExpr } from '../translator.js';
+import { argListExpr, exprOfWord, operandExpr } from '../translator.js';
 
 /* ------------------------------------------------------------------ */
 /* Shared PS snippets (same shape as files.ts / text-filters.ts)       */
@@ -129,8 +129,7 @@ function qErr(cmd: string, g: string, msg: string, lead = 'cannot open '): strin
 
 /** Operand Words → PS array expression of string exprs. */
 function psArray(words: Word[], fn: (w: Word) => string = operandExpr): string {
-  if (words.length === 0) return '@()';
-  return '@(' + words.map(fn).join(', ') + ')';
+  return argListExpr(words, fn);
 }
 
 /**
@@ -160,8 +159,8 @@ function psCollectFiles(
     const lit = w.every((p) => p.kind === 'Text' || p.kind === 'SingleQuoted')
       ? w.map((p) => (p as { text: string }).text).join('')
       : null;
-    out.push('$fx_d = ' + (lit !== null ? psStr(lit) : exprOfWord(w)));
-    out.push('foreach ($fx_g in (fx-glob ' + operandExpr(w) + ')) {');
+    out.push('foreach ($fx_d in ' + argListExpr([w], lit !== null ? operandExpr : exprOfWord) + ') {');
+    out.push('foreach ($fx_g in (fx-glob $fx_d)) {');
     if (dirErr) {
       const dis = lit !== null && /[*?]/.test(lit) ? '$fx_g' : '$fx_d';
       out.push(
@@ -183,7 +182,7 @@ function psCollectFiles(
           ? '$fx_names += $fx_g'
           : '$fx_names += $fx_d'),
     );
-    out.push('}');
+    out.push('}', '}');
   }
   return out;
 }
@@ -1067,16 +1066,6 @@ const base64: Handler = (args, ctx) => {
 const seq: Handler = (args, ctx) => {
   const { flags, values, operandWords } = parseWords(args, ['s']);
   const eq = flags.has('w');
-  const nums = operandWords.map((w) => exprOfWord(w));
-  if (nums.length === 0) {
-    return psErrExpr(psStr('seq: missing operand'));
-  }
-  if (nums.length > 3) {
-    return psErrExpr(psStr('seq: extra operand ') + ' + ' + nums[3]);
-  }
-  const first = nums.length >= 2 ? nums[0] : '1';
-  const inc = nums.length === 3 ? nums[1] : '1';
-  const last = nums.length === 3 ? nums[2] : nums[nums.length - 1];
   const sepExpr = values.has('-s') ? psStr(values.get('-s')!) : '[string][char]10';
 
   return [
@@ -1090,9 +1079,17 @@ const seq: Handler = (args, ctx) => {
     "  if ([string]$s -match '^[+-]?[0-9]*\\.([0-9]+)') { return $Matches[1].Length }",
     '  return 0',
     '}',
-    '$fx_a = [string](' + first + ')',
-    '$fx_b = [string](' + inc + ')',
-    '$fx_c = [string](' + last + ')',
+    '$fx_nums = ' + argListExpr(operandWords),
+    "if ($fx_nums.Count -eq 0) { " +
+      psErrExpr(psStr('seq: missing operand')) +
+      ' }',
+    "elseif ($fx_nums.Count -gt 3) { " +
+      psErrExpr(psStr('seq: extra operand ') + ' + $fx_nums[3]') +
+      ' }',
+    'else {',
+    "  $fx_a = [string]$(if ($fx_nums.Count -ge 2) { $fx_nums[0] } else { '1' })",
+    "  $fx_b = [string]$(if ($fx_nums.Count -eq 3) { $fx_nums[1] } else { '1' })",
+    '  $fx_c = [string]$(if ($fx_nums.Count -eq 3) { $fx_nums[2] } else { $fx_nums[$fx_nums.Count - 1] })',
     '$fx_first = fx-tod $fx_a',
     '$fx_inc = fx-tod $fx_b',
     '$fx_last = fx-tod $fx_c',
@@ -1121,6 +1118,7 @@ const seq: Handler = (args, ctx) => {
     '  }',
     '  if ($fx_strs.Count -eq 0) { }',
     '  else { fx-write (($fx_strs -join (' + sepExpr + ')) + [string][char]10) $fx_term }',
+    '  }',
     '}',
   ].join('\n');
 };
@@ -1225,8 +1223,6 @@ const xargs: Handler = (args) => {
     return psErrExpr(psStr(XARGS_BUILTIN_MSG));
   }
 
-  const cmdExpr = exprOfWord(target[0]);
-  const baseArgs = psArray(target.slice(1), exprOfWord);
   const n = chunkN !== null && Number.isFinite(chunkN) && chunkN > 0 ? chunkN : 0;
   const replExpr = repl !== null ? psStr(repl) : null;
 
@@ -1294,8 +1290,8 @@ const xargs: Handler = (args) => {
   return [
     PS_SPLITLINES_FN,
     STDIN_INLINES,
-    '$fx_cmd = ' + cmdExpr,
-    '$fx_base = ' + baseArgs,
+    '$fx_tg = ' + argListExpr(target, exprOfWord),
+    "if ($fx_tg.Count -eq 0) { $fx_cmd = ''; $fx_base = @() } else { $fx_cmd = [string]$fx_tg[0]; $fx_base = $(if ($fx_tg.Count -gt 1) { @($fx_tg[1..($fx_tg.Count - 1)]) } else { @() }) }",
     "$fx_args = @($fx_in | Where-Object { $_ -ne '' })",
     ...dispatch,
   ].join('\n');
