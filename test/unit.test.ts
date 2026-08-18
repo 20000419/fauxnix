@@ -411,6 +411,28 @@ describe('translator', () => {
     expect(s).toContain('[Environment]::CurrentDirectory');
   });
 
+  it('omits unused wrapScript helpers on a body that calls none of them', () => {
+    const s = wrapScript('x');
+    expect(s).not.toContain('function fx-arrload');
+    expect(s).not.toContain('function fx-csub');
+    expect(s).not.toContain('function fx-readlines');
+    expect(s).not.toContain('function fx-subget');
+  });
+
+  it('emits only the wrapScript helpers a translation actually calls', () => {
+    const echo = translateCommandList(parse('echo hi'))[0].script;
+    expect(echo).not.toContain('function fx-arrload');
+    expect(echo).not.toContain('function fx-csub');
+    const splat = translateCommandList(parse('echo ${X[@]}'))[0].script;
+    expect(splat).toContain('function fx-arrload');
+    expect(splat).toContain('function fx-scalar0');
+    expect(splat).not.toContain('function fx-csub');
+    const csub = translateCommandList(parse('echo $(echo a)'))[0].script;
+    expect(csub).toContain('function fx-csub');
+    const stdin = translateCommandList(parse('wc -l < f.txt'))[0].script;
+    expect(stdin).toContain('function fx-readlines');
+  });
+
   it('feeds stdin for < redirects', () => {
     const plan = translateCommandList(parse('wc -l < f.txt'))[0];
     expect(plan.script).toContain('fx-readlines $env:FAUXNIX_STDIN_FILE |');
