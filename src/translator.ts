@@ -62,7 +62,21 @@ export function varExpr(
   name: string,
   index?: string,
   param?: { op: ':-' | ':=' | ':+' | ':?' | '-' | '+' | '?'; word: string },
+  length = false,
 ): string {
+  if (length) {
+    if (index === '@' || index === '*') {
+      return '@(fx-arrload ' + psStr(name) + ').Count';
+    }
+    if (index !== undefined) {
+      return '([string](fx-subget ' + psStr(name) + ' ' + psStr(index) + ')).Length';
+    }
+    return (
+      '([string]$(if ($null -eq ($fx_pv = fx-scalar0 ' +
+      psStr(name) +
+      ')) { \'\' } else { $fx_pv })).Length'
+    );
+  }
   if (param) return paramExpr(name, param.op, param.word);
   // Indexed reads always go through fx-subget → fx-arrload → fx-scalar0 so
   // ${PWD[0]} keeps the special mapping and ${bash_rematch[0]} stays
@@ -164,7 +178,12 @@ export function exprOfWord(w: Word, opts?: { preserveCmdSub?: boolean }): string
 
   // single bare variable → bare expression
   if (expanded.length === 1 && expanded[0].kind === 'Var') {
-    return varExpr(expanded[0].name, expanded[0].index, expanded[0].param);
+    return varExpr(
+      expanded[0].name,
+      expanded[0].index,
+      expanded[0].param,
+      expanded[0].length === true,
+    );
   }
   // Bare `$(...)` must not sit inside a PS expandable string: the
   // substitution body contains `"` / `$_` that would break interpolation.
@@ -192,7 +211,7 @@ export function exprOfWord(w: Word, opts?: { preserveCmdSub?: boolean }): string
         for (const q of p.parts) emitPart(q, true);
         break;
       case 'Var':
-        out += '$(' + varExpr(p.name, p.index, p.param) + ')';
+        out += '$(' + varExpr(p.name, p.index, p.param, p.length === true) + ')';
         break;
       case 'CmdSub':
         out += '$(' + translateCmdSub(p.cmd, quoted || opts?.preserveCmdSub === true) + ')';
@@ -246,7 +265,10 @@ export function splatSpec(w: Word): { name: string; prefix: string; suffix: stri
   let suffix = '';
   let seen = false;
   for (const { part: p, quoted } of parts) {
-    const splat = p.kind === 'Var' && (p.index === '@' || (p.index === '*' && !quoted));
+    const splat =
+      p.kind === 'Var' &&
+      !p.length &&
+      (p.index === '@' || (p.index === '*' && !quoted));
     if (splat) {
       if (seen) return null;
       seen = true;

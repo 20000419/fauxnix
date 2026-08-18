@@ -70,6 +70,8 @@ export type WordPart =
       index?: string;
       /** `${name:-word}` / `${name:+word}` / `${name:?word}` (and non-colon). */
       param?: { op: ':-' | ':=' | ':+' | ':?' | '-' | '+' | '?'; word: string };
+      /** `${#name}` / `${#name[@]}` */
+      length?: boolean;
     }
   | { kind: 'CmdSub'; cmd: string };
 

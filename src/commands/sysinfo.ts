@@ -12,6 +12,7 @@ import {
   normalizeLiteralPath,
   pathExpr,
   paramExpr,
+  varExpr,
 } from '../translator.js';
 import { handlers as textIoHandlers } from './text-io.js';
 
@@ -1488,6 +1489,9 @@ function kshExprOfWord(w: Word): string {
   }
   if (tilde && expanded.length === 0) return '(fx-home)';
   if (!tilde && expanded.length === 1 && expanded[0].kind === 'Var') {
+    if (expanded[0].length) {
+      return varExpr(expanded[0].name, expanded[0].index, undefined, true);
+    }
     if (expanded[0].param) {
       return paramExpr(expanded[0].name, expanded[0].param.op, expanded[0].param.word);
     }
@@ -1515,7 +1519,9 @@ function kshExprOfWord(w: Word): string {
         break;
       case 'Var':
         out +=
-          p.param
+          p.length
+            ? '$(' + varExpr(p.name, p.index, undefined, true) + ')'
+            : p.param
             ? '$(' + paramExpr(p.name, p.param.op, p.param.word) + ')'
             : p.index !== undefined
             ? '$(fx-subget ' + psStr(p.name) + ' ' + psStr(p.index) + ')'
