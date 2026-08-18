@@ -98,6 +98,15 @@ describe('parser', () => {
     expect(splatSpec(cmd.args[1])).toBeNull();
   });
 
+  it('promotes the next word when a command-position [@] is empty', () => {
+    const empty = translateCommandList(parse('${X[@]}'))[0].script;
+    expect(empty).toContain('if ($fx_cw.Count -eq 0)');
+    expect(empty).not.toContain("bash: : command not found");
+    const one = translateCommandList(parse('${X[@]} printf %s hi'))[0].script;
+    expect(one).toContain('fx-printf');
+    expect(one).toContain('[object[]]');
+  });
+
   it('splats unquoted ${name[*]}', () => {
     const cmd = parse('printf x ${a[*]}').segments[0].pipeline.commands[0];
     expect(splatSpec(cmd.args[1])).toEqual({ name: 'a', prefix: '', suffix: '' });

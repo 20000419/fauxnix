@@ -474,6 +474,9 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     writeFileSync(join(dir, 'b'), 'Y', 'utf8');
     expect((await run('[[ abc =~ ^a(.)c$ ]]; cat "${BASH_REMATCH[@]}"')).stdout.trim()).toBe('X\nY');
     await run('unset BASH_REMATCH');
+    expect((await run('unset X; ${X[@]}')).exitCode).toBe(0);
+    expect((await run('unset X; ${X[@]} echo ok')).stdout.trim()).toBe('ok');
+    expect((await run('unset X; ${X[@]} printf %s hi')).stdout).toBe('hi');
   }, 60000);
 
   it('&& and || short-circuit like bash', async () => {
