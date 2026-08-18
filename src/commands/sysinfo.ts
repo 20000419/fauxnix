@@ -596,6 +596,58 @@ const type: Handler = (args) => {
   ].join('\n');
 };
 
+/** `command -v name` (and bare `command name args` as a no-alias run). */
+const commandCmd: Handler = (args, ctx) => {
+  let i = 0;
+  let identify = false;
+  while (i < args.length) {
+    const t = wordToString(args[i]);
+    if (t === '-v' || t === '-V') {
+      identify = true;
+      i++;
+      continue;
+    }
+    if (t === '--') {
+      i++;
+      break;
+    }
+    if (t.startsWith('-')) {
+      i++;
+      continue;
+    }
+    break;
+  }
+  const rest = args.slice(i);
+  if (identify) {
+    if (rest.length === 0) return '';
+    return [
+      PS_WHICH_FN,
+      '$fx_b = @(' + builtinNames().map(psStr).join(', ') + ')',
+      '$fx_ns = ' + textArgs(rest),
+      'foreach ($fx_n in $fx_ns) {',
+      "  if ($fx_b -contains $fx_n) { '/usr/bin/' + $fx_n }",
+      '  else {',
+      '    $fx_w = fx-which $fx_n',
+      "    if ($fx_w -eq '') { $script:fx_exit = 1 }",
+      "    else { $fx_w.Replace('\\', '/') }",
+      '  }',
+      '}',
+    ].join('\n');
+  }
+  if (rest.length === 0) return '';
+  return translateSimple(
+    {
+      kind: 'SimpleCommand',
+      assignments: [],
+      name: rest[0],
+      args: rest.slice(1),
+      redirects: [],
+    },
+    ctx.position,
+    ctx.hasStdin,
+  );
+};
+
 /* ------------------------------------------------------------------ */
 /* whoami / id / groups                                                */
 /* ------------------------------------------------------------------ */
@@ -2507,6 +2559,7 @@ export const handlers: Record<string, Handler> = {
   sleep,
   which,
   type,
+  command: commandCmd,
   whoami,
   id,
   groups,

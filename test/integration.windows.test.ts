@@ -711,6 +711,12 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect((await run('uname -r')).stdout.trim()).toBe('6.8.0-fauxnix');
   });
 
+  it('command -v finds builtins and missing names', async () => {
+    expect((await run('command -v echo')).stdout.trim()).toBe('/usr/bin/echo');
+    expect((await run('command -v definitely_not_a_cmd_xyz')).exitCode).toBe(1);
+    expect((await run('command echo hi')).stdout.trim()).toBe('hi');
+  });
+
   it('date format tokens', async () => {
     expect((await run('date +%Y')).stdout).toMatch(/^\d{4}/);
   });
