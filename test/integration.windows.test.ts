@@ -711,6 +711,12 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect((await run('uname -r')).stdout.trim()).toBe('6.8.0-fauxnix');
   });
 
+  it('${#name} is string length and ${#name[@]} is element count', async () => {
+    expect((await run('X=abcd; echo ${#X}; unset X')).stdout.trim()).toBe('4');
+    expect((await run('[[ abc =~ ^a(.)c$ ]]; echo ${#BASH_REMATCH[@]}')).stdout.trim()).toBe('2');
+    expect((await run('unset Z; echo ${#Z}')).stdout.trim()).toBe('0');
+  });
+
   it('date format tokens', async () => {
     expect((await run('date +%Y')).stdout).toMatch(/^\d{4}/);
   });
