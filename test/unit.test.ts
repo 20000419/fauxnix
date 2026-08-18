@@ -81,6 +81,12 @@ describe('parser', () => {
     expect(exprOfWord(a.assignments[0].value, { preserveCmdSub: true })).not.toContain("-join ' '");
   });
 
+  it('set -e is a loud usage error, not a silent no-op', () => {
+    const script = translateCommandList(parse('set -e'))[0].script;
+    expect(script).toMatch(/set -e\/-u\/-x is not supported/);
+    expect(script).toContain('$script:fx_exit = 2');
+  });
+
   it('parses ${name[index]} subscripts', () => {
     const cmd = parse('echo ${BASH_REMATCH[1]} ${PATH[0]} ${x[@]}').segments[0].pipeline.commands[0];
     expect(cmd.args[0]).toEqual([{ kind: 'Var', name: 'BASH_REMATCH', index: '1' }]);

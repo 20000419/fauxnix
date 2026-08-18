@@ -2636,7 +2636,35 @@ const alias: Handler = (args) => {
   return "[Console]::Error.WriteLine('fauxnix: alias is not supported'); $script:fx_exit = 1";
 };
 
-const set: Handler = () => ''; // silently ignore (`set -e`, `set --` ... no-op)
+const set: Handler = (args) => {
+  const raw = args.map(wordToString);
+  const unsupported = raw.filter(
+    (t) =>
+      t === '-e' ||
+      t === '-u' ||
+      t === '-x' ||
+      t === '-o' ||
+      t === '+e' ||
+      t === '+u' ||
+      t === '+x' ||
+      t.startsWith('-o') ||
+      t.startsWith('+o') ||
+      t === '-eu' ||
+      t === '-ue' ||
+      t === '-eux' ||
+      /^-.*[eux]/.test(t),
+  );
+  if (unsupported.length > 0) {
+    return (
+      '[Console]::Error.WriteLine(' +
+      psStr(
+        'fauxnix: set -e/-u/-x is not supported (would silently lie); use explicit || exit',
+      ) +
+      '); $script:fx_exit = 2'
+    );
+  }
+  return '';
+};
 
 /* ------------------------------------------------------------------ */
 
