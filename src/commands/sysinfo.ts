@@ -2489,6 +2489,59 @@ const less: Handler = (args, ctx) => {
 };
 
 /* ------------------------------------------------------------------ */
+/* read                                                                */
+/* ------------------------------------------------------------------ */
+
+const readCmd: Handler = (args, ctx) => {
+  const names: string[] = [];
+  for (const w of args) {
+    const t = wordToString(w);
+    if (t === '-r' || t === '-a' || t.startsWith('-')) continue;
+    if (!NAME_RE.test(t)) {
+      return (
+        '[Console]::Error.WriteLine(' +
+        psStr('bash: read: `' + t + "': not a valid identifier") +
+        '); $script:fx_exit = 2'
+      );
+    }
+    names.push(t);
+  }
+  if (names.length === 0) names.push('REPLY');
+  const first = names[0];
+  return [
+    ctx.hasStdin
+      ? "$fx_line = [string]((@($input) | Select-Object -First 1))"
+      : "$fx_line = ''",
+    ctx.hasStdin ? '' : '$script:fx_exit = 1',
+    names.length === 1
+      ? [
+          "Set-Item -LiteralPath ('Env:\\' + " + psStr(first) + ') -Value $fx_line',
+          " $n = " + psStr(first),
+          " $env:FAUXNIX_SETVARS = ((@($env:FAUXNIX_SETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne $n }) + $n) -join ';')",
+          " $env:FAUXNIX_UNSETVARS = (@($env:FAUXNIX_UNSETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne $n }) -join ';')",
+          ' fx-arrdrop $n',
+          ' $fx_sv = @(); foreach ($fx_pair in @($env:FAUXNIX_SETVALS -split [string][char]10)) { $fx_eq = $fx_pair.IndexOf([char]61); if ($fx_eq -lt 1) { continue }; if ($fx_pair.Substring(0, $fx_eq) -cne $n) { $fx_sv += $fx_pair } }',
+          ' $fx_sv += ($n + [string][char]61 + (fx-svenc $fx_line)); $env:FAUXNIX_SETVALS = ($fx_sv -join [string][char]10)',
+        ].join('\n')
+      : [
+          "$fx_fs = @($fx_line -split '\\s+', " + names.length + ')',
+          'foreach ($fx_i in 0..' + (names.length - 1) + ') {',
+          '  $n = @(' + names.map(psStr).join(',') + ')[$fx_i]',
+          "  $fx_v = $(if ($fx_i -lt $fx_fs.Count) { [string]$fx_fs[$fx_i] } else { '' })",
+          "  Set-Item -LiteralPath ('Env:\\' + $n) -Value $fx_v",
+          "  $env:FAUXNIX_SETVARS = ((@($env:FAUXNIX_SETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne $n }) + $n) -join ';')",
+          "  $env:FAUXNIX_UNSETVARS = (@($env:FAUXNIX_UNSETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne $n }) -join ';')",
+          '  fx-arrdrop $n',
+          '  $fx_sv = @(); foreach ($fx_pair in @($env:FAUXNIX_SETVALS -split [string][char]10)) { $fx_eq = $fx_pair.IndexOf([char]61); if ($fx_eq -lt 1) { continue }; if ($fx_pair.Substring(0, $fx_eq) -cne $n) { $fx_sv += $fx_pair } }',
+          '  $fx_sv += ($n + [string][char]61 + (fx-svenc $fx_v)); $env:FAUXNIX_SETVALS = ($fx_sv -join [string][char]10)',
+          '}',
+        ].join('\n'),
+  ]
+    .filter((l) => l !== '')
+    .join('\n');
+};
+
+/* ------------------------------------------------------------------ */
 /* source / . / eval / exit / alias / set                              */
 /* ------------------------------------------------------------------ */
 
@@ -2627,6 +2680,7 @@ export const handlers: Record<string, Handler> = {
   history,
   less,
   more: less,
+  read: readCmd,
   source,
   '.': source,
   eval: evalCmd,
