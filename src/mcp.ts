@@ -1,13 +1,43 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
+import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
 import { FauxnixSession } from './executor.js';
 import { parseCommand } from './parser.js';
 import { translateCommandList, wrapScript, translatePipelineBody } from './translator.js';
 import { registeredNames } from './registry.js';
 import './commands/install-all.js';
 
+// single source of truth: the npm package version in package.json
+// (src/ and dist/ sit one level below the root, so the relative path holds in both)
+const pkgVersion: string = JSON.parse(
+  readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'),
+).version;
+
 const TOOL_NAME = process.env.FAUXNIX_TOOL_NAME || 'bash';
+
+const EXEC_ANNOTATIONS: ToolAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: true,
+  idempotentHint: false,
+  openWorldHint: true,
+};
+
+const TRANSLATE_ANNOTATIONS: ToolAnnotations = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+};
+
+const SESSION_ANNOTATIONS: ToolAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+};
 
 const TOOL_DESCRIPTION = `Execute a Linux/bash-style command on this Windows machine.
 
@@ -19,11 +49,13 @@ Unknown commands (git, node, npm, python, cargo...) are passed through and execu
 Not supported: heredocs, backticks, control flow (if/for/while), background jobs.
 
 CWD, environment variables, export/unset and cd persist across calls within this session — but prefer COMBINING related commands in one call with ; or && (e.g. 'cd src && ls | wc -l'); each call is a fresh translation+process, so batching is faster than many tiny calls.
-Exit codes follow bash conventions (0 ok, 1 fail, 2 usage/serious, 127 command not found, 124 timeout).`;
+Exit codes follow bash conventions (0 ok, 1 fail, 2 usage/serious, 127 command not found, 124 timeout).
+
+Platform requirement: the execution backend is native Windows PowerShell 5.1+. On hosts without PowerShell on PATH (e.g. Linux containers/sandboxes), the bash tool returns exit code 127 with an actionable error instead of running the command.`;
 
 export async function startMcpServer(): Promise<void> {
   const server = new McpServer(
-    { name: 'fauxnix', version: '0.4.0' },
+    { name: 'fauxnix', version: pkgVersion },
     { capabilities: { tools: {} } },
   );
   const session = new FauxnixSession();
@@ -41,6 +73,7 @@ export async function startMcpServer(): Promise<void> {
         .optional()
         .describe('Timeout in milliseconds (default 120000)'),
     },
+    EXEC_ANNOTATIONS,
     async ({ command, timeout_ms }) => {
       try {
         const plans = translateCommandList(parseCommand(command));
@@ -61,7 +94,8 @@ export async function startMcpServer(): Promise<void> {
   server.tool(
     'fauxnix_translate',
     'Translate a bash-style command into the equivalent PowerShell script WITHOUT executing it. Useful for learning/debugging what fauxnix does under the hood.',
-    { command: z.string() },
+    { command: z.string().describe('The bash-style command line to translate (never executed)') },
+    TRANSLATE_ANNOTATIONS,
     async ({ command }) => {
       try {
         const list = parseCommand(command);
@@ -78,7 +112,13 @@ export async function startMcpServer(): Promise<void> {
   server.tool(
     'fauxnix_session',
     'Inspect or reset the persistent fauxnix shell session (current directory, environment, session id). Actions: "status" (default) or "reset".',
-    { action: z.enum(['status', 'reset']).default('status') },
+    {
+      action: z
+        .enum(['status', 'reset'])
+        .default('status')
+        .describe('"status" shows the session state (cwd, tracked env keys); "reset" clears it back to a fresh shell'),
+    },
+    SESSION_ANNOTATIONS,
     async ({ action }) => {
       if (action === 'reset') {
         await session.dispose();

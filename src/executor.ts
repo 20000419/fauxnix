@@ -383,7 +383,14 @@ async function runPlans(
 
     const code = await new Promise<number | null>((resolve) => {
       child.on('error', (e) => {
-        stderr += 'fauxnix: failed to start powershell.exe: ' + e.message + '\n';
+        if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+          stderr +=
+            'fauxnix: powershell.exe not found — fauxnix executes bash via native Windows PowerShell 5.1+.\n' +
+            'This host has no PowerShell on PATH (typical for Linux containers/sandboxes).\n' +
+            'Run fauxnix on Windows, or install PowerShell and make powershell.exe reachable on PATH.\n';
+        } else {
+          stderr += 'fauxnix: failed to start powershell.exe: ' + e.message + '\n';
+        }
         resolve(127);
       });
       child.on('close', (c) => resolve(running.killed ? 124 : (c ?? 0)));

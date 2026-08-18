@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.4.2 — 2026-08-18
+
+- Glama/Linux-host readiness (audit follow-up):
+  - `powershell.exe` ENOENT now returns an actionable platform error
+    (exit 127) instead of a raw spawn message — sandboxes without
+    PowerShell get a clear "run on Windows" explanation
+  - MCP `serverInfo.version` reads from package.json (single source —
+    was a hardcoded string that drifted)
+  - Tool metadata hardening: per-parameter descriptions on
+    `fauxnix_translate.command` / `fauxnix_session.action`, and MCP
+    annotations (readOnly/destructive/idempotent/openWorld hints) on all
+    three tools; `bash` description states the Windows/PowerShell
+    requirement
+- Housekeeping: dev deps audited to 0 vulnerabilities (vitest 2.1.9 →
+  3.2.6, 111/111 tests green), package-lock version drift (0.2.1)
+  resolved, stale `fauxnix-cli-0.2.0.tgz` removed from the repo
+
 ## v0.4.0 — 2026-08-17
 
 - `[[ ]]` ecosystem completed (RFC #81 "Next" roadmap):
