@@ -299,17 +299,35 @@ export function translateSimple(
     const invoke = '& $fx_cmd @fx_na';
     body = [
       '$fx_cw = @(fx-arrload ' + psStr(nameSplat.name) + ')',
-      'if ($fx_cw.Count -eq 0) { $fx_cw = @(' + psStr(nameSplat.prefix + nameSplat.suffix) + ') }',
-      'else { $fx_cw[0] = ' +
+      'if ($fx_cw.Count -eq 0) {',
+      // Empty ${X[@]} in command position is removed; bash promotes the
+      // next word. Only synthesize an empty command when an affix remains.
+      '  if (' +
+        (nameSplat.prefix || nameSplat.suffix ? '$true' : '$false') +
+        ') { $fx_cw = @(' +
+        psStr(nameSplat.prefix + nameSplat.suffix) +
+        ') }',
+      '} else { $fx_cw[0] = ' +
         psStr(nameSplat.prefix) +
         ' + $fx_cw[0]; $fx_cw[$fx_cw.Count-1] = $fx_cw[$fx_cw.Count-1] + ' +
         psStr(nameSplat.suffix) +
         ' }',
-      '$fx_cmd = [string]$fx_cw[0]',
       '$fx_na = ' + argListExpr(cmd.args),
-      'if ($fx_cw.Count -gt 1) { $fx_na = @($fx_cw[1..($fx_cw.Count - 1)]) + $fx_na }',
-      (hasStdin ? '($input | ' + invoke + ')' : invoke) + ' | ForEach-Object { [string]$_ }',
-      'if ($LASTEXITCODE -gt 0) { $script:fx_exit = $LASTEXITCODE } elseif ($LASTEXITCODE -lt 0) { $script:fx_exit = 1 }',
+      'if ($fx_cw.Count -eq 0) {',
+      "  if ($fx_na.Count -eq 0) { [Console]::Error.WriteLine('bash: : command not found'); $script:fx_exit = 127 }",
+      '  else { $fx_cmd = [string]$fx_na[0]; if ($fx_na.Count -gt 1) { $fx_na = @($fx_na[1..($fx_na.Count - 1)]) } else { $fx_na = @() }',
+      '    ' +
+        (hasStdin ? '($input | & $fx_cmd @fx_na)' : '& $fx_cmd @fx_na') +
+        ' | ForEach-Object { [string]$_ }',
+      '    if ($LASTEXITCODE -gt 0) { $script:fx_exit = $LASTEXITCODE } elseif ($LASTEXITCODE -lt 0) { $script:fx_exit = 1 } }',
+      '} else {',
+      '  $fx_cmd = [string]$fx_cw[0]',
+      '  if ($fx_cw.Count -gt 1) { $fx_na = @($fx_cw[1..($fx_cw.Count - 1)]) + $fx_na }',
+      '  ' +
+        (hasStdin ? '($input | ' + invoke + ')' : invoke) +
+        ' | ForEach-Object { [string]$_ }',
+      '  if ($LASTEXITCODE -gt 0) { $script:fx_exit = $LASTEXITCODE } elseif ($LASTEXITCODE -lt 0) { $script:fx_exit = 1 }',
+      '}',
     ].join('\n');
   } else if (nameLit !== null) {
     const handler = lookup(nameLit);

@@ -98,6 +98,12 @@ describe('parser', () => {
     expect(splatSpec(cmd.args[1])).toBeNull();
   });
 
+  it('promotes the next word when a command-position [@] is empty', () => {
+    const script = translateCommandList(parse('${X[@]} echo ok'))[0].script;
+    expect(script).toContain('$fx_na.Count -eq 0');
+    expect(script).toContain('$fx_cmd = [string]$fx_na[0]');
+  });
+
   it('splats unquoted ${name[*]}', () => {
     const cmd = parse('printf x ${a[*]}').segments[0].pipeline.commands[0];
     expect(splatSpec(cmd.args[1])).toEqual({ name: 'a', prefix: '', suffix: '' });
