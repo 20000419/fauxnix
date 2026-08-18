@@ -99,9 +99,12 @@ describe('parser', () => {
   });
 
   it('promotes the next word when a command-position [@] is empty', () => {
-    const script = translateCommandList(parse('${X[@]} echo ok'))[0].script;
-    expect(script).toContain('$fx_na.Count -eq 0');
-    expect(script).toContain('$fx_cmd = [string]$fx_na[0]');
+    const empty = translateCommandList(parse('${X[@]}'))[0].script;
+    expect(empty).toContain('if ($fx_cw.Count -eq 0)');
+    expect(empty).not.toContain("bash: : command not found");
+    const one = translateCommandList(parse('${X[@]} printf %s hi'))[0].script;
+    expect(one).toContain('fx-printf');
+    expect(one).toContain('[object[]]');
   });
 
   it('splats unquoted ${name[*]}', () => {
