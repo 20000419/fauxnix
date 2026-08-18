@@ -11,8 +11,8 @@ link as evidence.
 
 | Issue | Why it fits |
 |---|---|
-| [#3159](https://github.com/openai/codex/issues/3159) (closed but active 💬7) — "Codex bypasses PATH resolution and incorrectly uses WSL bash instead of user-configured MSYS2 bash" | Users fighting to get bash behavior on Windows. fauxnix removes the need for ANY bash: MCP `bash` tool, `codex mcp add fauxnix -- fauxnix mcp` |
-| [#22185](https://github.com/openai/codex/issues/22185) (open 💬12) — "unified_exec tries to CreateProcess /bin/bash and fails with ENOENT" on Windows | Same class: `/bin/bash` assumed on Windows. fauxnix gives a bash-semantics tool with zero bash dependency |
+| [#3159](https://github.com/openai/codex/issues/3159) (closed, **stale since 2025-11 — skip**) — "Codex bypasses PATH resolution and incorrectly uses WSL bash instead of user-configured MSYS2 bash" | Users fighting to get bash behavior on Windows. fauxnix removes the need for ANY bash: MCP `bash` tool, `codex mcp add fauxnix -- fauxnix mcp`. Revisit only if the thread revives |
+| [#22185](https://github.com/openai/codex/issues/22185) (open 💬12) — "unified_exec tries to CreateProcess /bin/bash and fails with ENOENT" on Windows | ✅ **Commented 2026-08-18** (npm 0.4.2 + Glama all-A day). Same class: `/bin/bash` assumed on Windows. fauxnix gives a bash-semantics tool with zero bash dependency |
 | [#21715](https://github.com/openai/codex/issues/21715) (open) — "Windows bash commands fail with CreateMapping fatal error in workspace-write sandbox" | Windows shell fragility; fauxnix runs as a local stdio MCP server (read docs/comparison-built-in-shells.md note on exec-mode approval flag) |
 | #37962 (open 💬6) — "[Windows][WSL] Integrated terminal auto-closes when Git availability probe fails" | The WSL-required-for-bash treadmill. Angle: you don't need WSL for agent shell work at all |
 
@@ -26,7 +26,7 @@ fauxnix = `bash` MCP tool, keeps their model choice free.
 | Issue | Why |
 |---|---|
 | [#72389](https://github.com/anthropics/claude-code/issues/72389) (closed 💬3) — "Desktop app `!` interactive shell forces PowerShell, ignoring defaultShell bash" | PowerShell-forced pain; fauxnix MCP `bash` tool is model-side, immune to host default shell |
-| [#73461](https://github.com/anthropics/claude-code/issues/73461) (open) — "Git Bash not detected on Windows ARM64" | Claude Code REQUIRES Git for Windows for its Bash tool. fauxnix needs only Node — perfect for ARM64/no-Git machines |
+| [#73461](https://github.com/anthropics/claude-code/issues/73461) (open) — "Git Bash not detected on Windows ARM64" | ✅ **Commented 2026-08-18**. Claude Code REQUIRES Git for Windows for its Bash tool. fauxnix needs only Node — perfect for ARM64/no-Git machines |
 | [#14828](https://github.com/anthropics/claude-code/issues/14828) (open 💬62, very active) — console window flashing on tool exec | High-traffic Windows pain thread; only mention fauxnix if a sub-thread asks for bash-tool alternatives — the issue itself is about flashing, not shells. DO NOT hijack |
 
 ### opencode-ai/opencode
