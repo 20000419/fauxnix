@@ -2440,14 +2440,56 @@ const less: Handler = (args, ctx) => {
 /* source / . / eval / exit / alias / set                              */
 /* ------------------------------------------------------------------ */
 
-const source: Handler = () => {
-  return (
-    '[Console]::Error.WriteLine(' +
-    psStr(
-      'fauxnix: source/. requires a persistent shell; fauxnix persists cwd and env across calls but not shell functions',
-    ) +
-    '); $script:fx_exit = 1'
-  );
+const source: Handler = (args) => {
+  const files = stripFlags(args);
+  if (files.length === 0) {
+    return (
+      '[Console]::Error.WriteLine(' +
+      psStr('bash: source: filename argument required') +
+      '); $script:fx_exit = 2'
+    );
+  }
+  const q = (c: string) => '[char]' + c.charCodeAt(0);
+  return [
+    '$fx_files = ' + argListExpr(files, operandExpr),
+    'foreach ($fx_f in $fx_files) {',
+    '  if (-not (Test-Path -LiteralPath $fx_f -PathType Leaf)) {',
+    "    [Console]::Error.WriteLine('bash: source: ' + $fx_f + ': No such file or directory'); $script:fx_exit = 1; continue",
+    '  }',
+    '  $fx_raw = [IO.File]::ReadAllText($fx_f) -replace ([string][char]13 + [string][char]10), [string][char]10',
+    '  foreach ($fx_line in @($fx_raw -split [string][char]10)) {',
+    '    $fx_t = $fx_line.Trim()',
+    "    if ($fx_t -eq '' -or $fx_t.StartsWith([string][char]35)) { continue }",
+    '    if ($fx_t.StartsWith(' +
+      psStr('export ') +
+      ') -or $fx_t.StartsWith(' +
+      psStr('export\t') +
+      ')) { $fx_t = $fx_t.Substring(7).Trim() }',
+    '    $fx_eq = $fx_t.IndexOf([char]61)',
+    '    if ($fx_eq -lt 1) { [Console]::Error.WriteLine(' +
+      psStr('fauxnix: source: only NAME=VALUE lines are supported') +
+      '); $script:fx_exit = 1; continue }',
+    '    $fx_n = $fx_t.Substring(0, $fx_eq)',
+    "    if ($fx_n -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { [Console]::Error.WriteLine('bash: source: ' + $fx_n + ': not a valid identifier'); $script:fx_exit = 1; continue }",
+    '    $fx_v = $fx_t.Substring($fx_eq + 1)',
+    '    if ($fx_v.Length -ge 2 -and (($fx_v[0] -eq ' +
+      q('"') +
+      ' -and $fx_v[$fx_v.Length-1] -eq ' +
+      q('"') +
+      ') -or ($fx_v[0] -eq ' +
+      q("'") +
+      ' -and $fx_v[$fx_v.Length-1] -eq ' +
+      q("'") +
+      '))) { $fx_v = $fx_v.Substring(1, $fx_v.Length - 2) }',
+    "    Set-Item -LiteralPath ('Env:\\' + $fx_n) -Value $fx_v",
+    "    $env:FAUXNIX_SETVARS = ((@($env:FAUXNIX_SETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne $fx_n }) + $fx_n) -join ';')",
+    "    $env:FAUXNIX_UNSETVARS = (@($env:FAUXNIX_UNSETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne $fx_n }) -join ';')",
+    '    fx-arrdrop $fx_n',
+    '    $fx_sv = @(); foreach ($fx_pair in @($env:FAUXNIX_SETVALS -split [string][char]10)) { $fx_eq2 = $fx_pair.IndexOf([char]61); if ($fx_eq2 -lt 1) { continue }; if ($fx_pair.Substring(0, $fx_eq2) -cne $fx_n) { $fx_sv += $fx_pair } }',
+    '    $fx_sv += ($fx_n + [string][char]61 + (fx-svenc $fx_v)); $env:FAUXNIX_SETVALS = ($fx_sv -join [string][char]10)',
+    '  }',
+    '}',
+  ].join('\n');
 };
 
 const evalCmd: Handler = () => {
