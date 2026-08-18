@@ -127,8 +127,9 @@ describe('parser', () => {
     expect(() => parse('cat <<EOF')).toThrow(/heredoc/);
   });
 
-  it('rejects backticks', () => {
-    expect(() => parse('echo `date`')).toThrow(/backtick/);
+  it('parses backticks as command substitution', () => {
+    const cmd = parse('echo `date +%Y`').segments[0].pipeline.commands[0];
+    expect(cmd.args[0].some((p) => p.kind === 'CmdSub' && p.cmd === 'date +%Y')).toBe(true);
   });
 
   it('rejects tokens after the closing ]]', () => {
