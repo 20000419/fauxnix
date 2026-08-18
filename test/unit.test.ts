@@ -100,6 +100,16 @@ describe('parser', () => {
     expect(cmd.args[1]).toEqual([{ kind: 'Var', name: 'Y', index: '@', length: true }]);
   });
 
+  it('parses if/then/else/fi as one compound command', () => {
+    const list = parse('if true; then echo x; else echo y; fi');
+    expect(list.segments).toHaveLength(1);
+    const c = list.segments[0].pipeline.commands[0];
+    expect(c.kind).toBe('If');
+    if (c.kind !== 'If') return;
+    expect(c.then.segments).toHaveLength(1);
+    expect(c.else?.segments).toHaveLength(1);
+  });
+
   it('parses ${name[index]} subscripts', () => {
     const cmd = parse('echo ${BASH_REMATCH[1]} ${PATH[0]} ${x[@]}').segments[0].pipeline.commands[0];
     expect(cmd.args[0]).toEqual([{ kind: 'Var', name: 'BASH_REMATCH', index: '1' }]);

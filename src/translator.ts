@@ -4,6 +4,7 @@ import {
   FauxnixParseError,
   Redirect,
   SimpleCommand,
+  IfCommand,
   Word,
   WordPart,
   isUnquotedLiteral,
@@ -58,15 +59,13 @@ export function paramExpr(
 }
 
 /** Map a bash $VAR name to a PowerShell expression (usable inside $(...)). */
-<<<<<<< HEAD
 export function varExpr(
   name: string,
   index?: string,
   param?: { op: ':-' | ':=' | ':+' | ':?' | '-' | '+' | '?'; word: string },
+  length = false,
 ): string {
   if (param) return paramExpr(name, param.op, param.word);
-=======
-export function varExpr(name: string, index?: string, length = false): string {
   if (length) {
     if (index === '@' || index === '*') {
       return '@(fx-arrload ' + psStr(name) + ').Count';
@@ -80,7 +79,6 @@ export function varExpr(name: string, index?: string, length = false): string {
       ')) { \'\' } else { $fx_pv })).Length'
     );
   }
->>>>>>> pr/107
   // Indexed reads always go through fx-subget → fx-arrload → fx-scalar0 so
   // ${PWD[0]} keeps the special mapping and ${bash_rematch[0]} stays
   // case-exact (a `$env:name` fallback would alias BASH_REMATCH on Windows).
@@ -181,11 +179,8 @@ export function exprOfWord(w: Word, opts?: { preserveCmdSub?: boolean }): string
 
   // single bare variable → bare expression
   if (expanded.length === 1 && expanded[0].kind === 'Var') {
-<<<<<<< HEAD
-    return varExpr(expanded[0].name, expanded[0].index, expanded[0].param);
-=======
-    return varExpr(expanded[0].name, expanded[0].index, expanded[0].length === true);
->>>>>>> pr/107
+    const v = expanded[0];
+    return varExpr(v.name, v.index, v.param, v.length === true);
   }
   // Bare `$(...)` must not sit inside a PS expandable string: the
   // substitution body contains `"` / `$_` that would break interpolation.
@@ -213,11 +208,7 @@ export function exprOfWord(w: Word, opts?: { preserveCmdSub?: boolean }): string
         for (const q of p.parts) emitPart(q, true);
         break;
       case 'Var':
-<<<<<<< HEAD
-        out += '$(' + varExpr(p.name, p.index, p.param) + ')';
-=======
-        out += '$(' + varExpr(p.name, p.index, p.length === true) + ')';
->>>>>>> pr/107
+        out += '$(' + varExpr(p.name, p.index, p.param, p.length === true) + ')';
         break;
       case 'CmdSub':
         out += '$(' + translateCmdSub(p.cmd, quoted || opts?.preserveCmdSub === true) + ')';
@@ -773,13 +764,46 @@ export interface PipelineParts {
  * multi-command pipelines become generated functions chained with `|`
  * (PS 5.1 forbids parenthesized expressions as non-first pipeline elements).
  */
-export function translatePipelineBody(p: { commands: SimpleCommand[] }): PipelineParts {
+function translateListInline(list: CommandList): string {
+  const chunks: string[] = [];
+  for (const seg of list.segments) {
+    const { defs, call } = translatePipelineBody(seg.pipeline);
+    const body = (defs ? defs + '\n' : '') + call;
+    if (seg.op === '&&') {
+      chunks.push('if ($script:fx_exit -eq 0) {\n' + body + '\n}');
+    } else if (seg.op === '||') {
+      chunks.push('if ($script:fx_exit -ne 0) {\n' + body + '\n}');
+    } else {
+      chunks.push(body);
+    }
+  }
+  return chunks.join('\n');
+}
+
+function translateIf(cmd: IfCommand): string {
+  const lines = [translateListInline(cmd.test), 'if ($script:fx_exit -eq 0) {'];
+  for (const l of translateListInline(cmd.then).split('\n')) lines.push(l ? '  ' + l : l);
+  if (cmd.else) {
+    lines.push('} else {');
+    for (const l of translateListInline(cmd.else).split('\n')) lines.push(l ? '  ' + l : l);
+    lines.push('}');
+  } else {
+    lines.push('}');
+  }
+  return lines.join('\n');
+}
+
+export function translatePipelineBody(p: {
+  commands: Array<SimpleCommand | IfCommand>;
+}): PipelineParts {
   const bodies: string[] = [];
   for (let i = 0; i < p.commands.length; i++) {
-    const hasStdin = i > 0 || p.commands[i].redirects.some((r) => r.op === '<');
+    const c = p.commands[i];
+    const hasStdin = i > 0 || c.redirects.some((r) => r.op === '<');
     const position: PipelineCtx['position'] =
       i === 0 ? 'first' : i === p.commands.length - 1 ? 'last' : 'middle';
-    bodies.push(translateSimple(p.commands[i], position, hasStdin));
+    if (c.kind === 'If') bodies.push(translateIf(c));
+    else bodies.push(translateSimple(c, position, hasStdin));
   }
 
   if (bodies.length === 1) {

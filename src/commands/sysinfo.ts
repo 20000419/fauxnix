@@ -11,11 +11,8 @@ import {
   translateCmdSub,
   normalizeLiteralPath,
   pathExpr,
-<<<<<<< HEAD
   paramExpr,
-=======
   varExpr,
->>>>>>> pr/107
 } from '../translator.js';
 import { handlers as textIoHandlers } from './text-io.js';
 
@@ -1492,13 +1489,11 @@ function kshExprOfWord(w: Word): string {
   }
   if (tilde && expanded.length === 0) return '(fx-home)';
   if (!tilde && expanded.length === 1 && expanded[0].kind === 'Var') {
-<<<<<<< HEAD
     if (expanded[0].param) {
       return paramExpr(expanded[0].name, expanded[0].param.op, expanded[0].param.word);
-=======
+    }
     if (expanded[0].length) {
-      return varExpr(expanded[0].name, expanded[0].index, true);
->>>>>>> pr/107
+      return varExpr(expanded[0].name, expanded[0].index, undefined, true);
     }
     if (expanded[0].index !== undefined) {
       return '(fx-subget ' + psStr(expanded[0].name) + ' ' + psStr(expanded[0].index) + ')';
