@@ -41,17 +41,20 @@ fauxnix = `bash` MCP tool, keeps their model choice free.
   (Command Line section, agent fast-track). Bot requirements handled: permitted
   emoji set (📇 TypeScript 🏠 Local 🪟 Windows — do NOT reuse the 🖥️ category icon
   as a platform tag) and a Glama score badge in the required format.
-  ⏳ **Blocked on: Glama listing** — sign in at https://glama.ai/mcp/servers,
-  click "Add Server", submit `https://github.com/20000419/fauxnix` (their checks
-  need the server to start and answer MCP introspection — `fauxnix mcp` does).
-  Once verified, the badge in PR #12337 renders and the PR can merge.
+  ✅ **Glama approved & listed** (2026-08-18): server page live at
+  https://glama.ai/mcp/servers/20000419/fauxnix, badge renders ("A — Grade").
+  Remaining for full quality score: author claim + Dockerfile via Glama admin
+  page (checks gate search listing), then the glama-badge-check condition on the
+  PR is fully met. `glama.json` (maintainers) added to repo root.
 - **awesome-claude-code** (hesreallyhim/awesome-claude-code) — **DO NOT submit
   yet**: CONTRIBUTING requires the project to be ≥14 days old (with post-day-one
   commits) OR ≥100 stars. We're day 1. Calendar reminder: submit after
   2026-08-30. (A first attempt was aborted on their permission gate before any
   PR landed — no cleanup needed.)
 - **Smithery** (smithery.ai) — `npx @smithery/cli register` flow
-- **Glama** — see above; the awesome PR depends on it
+- **Glama** — approved & listed (see above); pending: claim + Dockerfile checks.
+  Score page gaps: no Glama release yet (blocks tool-quality scoring), profile
+  25%, no recent usage.
 - **PulseMCP**, **mcp.so** — web submit forms
 
 ## Tier 2 — community hubs (announce once, answer questions)
