@@ -299,6 +299,15 @@ function readDollar(input: string, i: number): { part: WordPart; next: number } 
     return { part: { kind: 'Var', name }, next: end + 1 };
   }
 
+  // $((...)) is arithmetic expansion, not command substitution of a
+  // parenthesized body. Today it was parsed as $( (expr) ) and became an
+  // empty/confusing command. Reject loudly until word-level arith lands.
+  if (input[j] === '(' && j + 1 < n && input[j + 1] === '(') {
+    throw new FauxnixParseError(
+      'fauxnix: $((...)) arithmetic expansion is not supported; compute the value in the agent or compare with [[ $n -eq m ]]',
+    );
+  }
+
   // $(cmd substitution) — captured with balanced parens; the translator
   // recursively translates this text before embedding it.
   if (input[j] === '(') {
