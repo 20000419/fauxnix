@@ -10,7 +10,7 @@ import {
   varExpr,
   wrapScript,
 } from '../src/translator.js';
-import { parseWords, psStr } from '../src/registry.js';
+import { lookup, parseWords, psStr } from '../src/registry.js';
 import { decodeOutput, encodeCommand, normalizeHostNewlines } from '../src/encoding.js';
 import { normalizeStderr } from '../src/errors.js';
 import '../src/commands/install-all.js';
@@ -86,6 +86,10 @@ describe('parser', () => {
     expect(cmd.args[0]).toEqual([{ kind: 'Var', name: 'BASH_REMATCH', index: '1' }]);
     expect(cmd.args[1]).toEqual([{ kind: 'Var', name: 'PATH', index: '0' }]);
     expect(cmd.args[2]).toEqual([{ kind: 'Var', name: 'x', index: '@' }]);
+  });
+
+  it('registers command as a builtin', () => {
+    expect(lookup('command')).toBeTypeOf('function');
   });
 
   it('detects [@] splat through surrounding quotes', () => {
