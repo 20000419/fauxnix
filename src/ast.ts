@@ -7,11 +7,11 @@
  *   - redirections:         > >> 2> 2>> &> 2>&1 1>&2 <
  *   - quoting:              'literal'  "interp $VAR $(cmd)"
  *   - variables:            $VAR ${VAR} ${VAR[n]} plus special cases ($HOME $USER $PATH ...)
- *   - command substitution: $(...) (recursively translated)
+ *   - command substitution: $(...) and `...` (recursively translated)
  *   - env assignment prefix: VAR=value cmd
  *
  * Explicitly unsupported (parser throws a helpful FauxnixError):
- *   heredocs, backticks, subshells (...), background &, control flow
+ *   heredocs, subshells (...), background &, control flow
  *   (if/for/while), globs inside quotes, process substitution <(...).
  */
 
