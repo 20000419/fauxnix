@@ -52,9 +52,11 @@ fauxnix = `bash` MCP tool, keeps their model choice free.
   2026-08-30. (A first attempt was aborted on their permission gate before any
   PR landed — no cleanup needed.)
 - **Smithery** (smithery.ai) — `npx @smithery/cli register` flow
-- **Glama** — approved & listed (see above); pending: claim + Dockerfile checks.
-  Score page gaps: no Glama release yet (blocks tool-quality scoring), profile
-  25%, no recent usage.
+- **Glama** — ✅ **fully evaluated 2026-08-18**: Server Coherence A, Tool
+  Definition Quality A (bash 4.6/5.0, session 4.3, translate 4.2), Maintenance
+  A, profile 100%, active usage recorded. Score + card badges render. Docker
+  checks pass (Debian build via mcp-proxy; bash tool answers with the honest
+  platform error there — execution is Windows-only by design).
 - **PulseMCP**, **mcp.so** — web submit forms
 
 ## Tier 2 — community hubs (announce once, answer questions)

@@ -4,6 +4,7 @@
 [![npm version](https://img.shields.io/npm/v/fauxnix-cli.svg)](https://www.npmjs.com/package/fauxnix-cli)
 [![npm downloads](https://img.shields.io/npm/dt/fauxnix-cli.svg)](https://www.npmjs.com/package/fauxnix-cli)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![20000419/fauxnix MCP server](https://glama.ai/mcp/servers/20000419/fauxnix/badges/score.svg)](https://glama.ai/mcp/servers/20000419/fauxnix)
 
 **Run Linux-style commands on Windows — natively, deterministically, with no VM and no WSL.**
 
