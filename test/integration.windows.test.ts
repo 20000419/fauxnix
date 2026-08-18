@@ -31,7 +31,9 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     session = new FauxnixSession();
     // seed the session cwd like a real shell login directory
     await session.run(translateCommandList(parseCommand('cd "' + dir + '"')));
-  });
+    // cold runner disks can take >10s (default hookTimeout) to spawn the first
+    // PowerShell session — seen as a false red on CI twice
+  }, 60000);
 
   afterAll(async () => {
     await session.dispose();
