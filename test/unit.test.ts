@@ -94,6 +94,12 @@ describe('parser', () => {
     expect(cmd.args[2]).toEqual([{ kind: 'Var', name: 'Z', param: { op: ':?', word: 'err' } }]);
   });
 
+  it('parses ${#name} and ${#name[@]}', () => {
+    const cmd = parse('echo ${#X} ${#Y[@]}').segments[0].pipeline.commands[0];
+    expect(cmd.args[0]).toEqual([{ kind: 'Var', name: 'X', length: true }]);
+    expect(cmd.args[1]).toEqual([{ kind: 'Var', name: 'Y', index: '@', length: true }]);
+  });
+
   it('parses ${name[index]} subscripts', () => {
     const cmd = parse('echo ${BASH_REMATCH[1]} ${PATH[0]} ${x[@]}').segments[0].pipeline.commands[0];
     expect(cmd.args[0]).toEqual([{ kind: 'Var', name: 'BASH_REMATCH', index: '1' }]);

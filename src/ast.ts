@@ -64,6 +64,7 @@ export type WordPart =
   | { kind: 'Text'; text: string; escaped?: boolean }
   | { kind: 'SingleQuoted'; text: string }
   | { kind: 'DoubleQuoted'; parts: WordPart[] }
+<<<<<<< HEAD
   | {
       kind: 'Var';
       name: string;
@@ -71,6 +72,9 @@ export type WordPart =
       /** `${name:-word}` / `${name:+word}` / `${name:?word}` (and non-colon). */
       param?: { op: ':-' | ':=' | ':+' | ':?' | '-' | '+' | '?'; word: string };
     }
+=======
+  | { kind: 'Var'; name: string; index?: string; length?: boolean }
+>>>>>>> pr/107
   | { kind: 'CmdSub'; cmd: string };
 
 export function wordToString(w: Word): string {

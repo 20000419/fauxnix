@@ -714,6 +714,7 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect((await run('uname -r')).stdout.trim()).toBe('6.8.0-fauxnix');
   });
 
+<<<<<<< HEAD
   it('command -v finds builtins and missing names', async () => {
     expect((await run('command -v echo')).stdout.trim()).toBe('/usr/bin/echo');
     expect((await run('command -v definitely_not_a_cmd_xyz')).exitCode).toBe(1);
@@ -748,6 +749,12 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     const miss = await run('unset X; echo ${X:?missing}');
     expect(miss.exitCode).toBe(1);
     expect(miss.stderr).toMatch(/X: missing/);
+=======
+  it('${#name} is string length and ${#name[@]} is element count', async () => {
+    expect((await run('X=abcd; echo ${#X}; unset X')).stdout.trim()).toBe('4');
+    expect((await run('[[ abc =~ ^a(.)c$ ]]; echo ${#BASH_REMATCH[@]}')).stdout.trim()).toBe('2');
+    expect((await run('unset Z; echo ${#Z}')).stdout.trim()).toBe('0');
+>>>>>>> pr/107
   });
 
   it('date format tokens', async () => {
