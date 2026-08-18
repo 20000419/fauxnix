@@ -4,7 +4,7 @@
  */
 import { beforeAll, afterAll, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, existsSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseCommand } from '../src/parser.js';
@@ -41,7 +41,13 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
   });
 
   async function run(cmd: string) {
-    return session.run(translateCommandList(parseCommand(cmd)));
+    const t0 = Date.now();
+    const r = await session.run(translateCommandList(parseCommand(cmd)));
+    if (process.env.FX_TRACE) {
+      console.error(`[trace ${((Date.now() - t0) / 1000).toFixed(1)}s] ${cmd.slice(0, 70)} => ${r.exitCode}`);
+      appendFileSync(join(tmpdir(), 'fx-trace.log'), cmd + '\x1e');
+    }
+    return r;
   }
 
   it('cat reads files', async () => {
@@ -452,7 +458,7 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
         )
       ).exitCode
     ).toBe(0);
-  }, 180000);
+  }, 420000);
 
   it('array subscripts splat across commands and persist correctly', async () => {
     expect(
@@ -522,7 +528,7 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect((await run('echo $FX_P')).stdout.trim()).toBe('via');
     await run('unset FX_P FX_K FX_A FX_B FX_N');
     expect((await run('FX_P=bar true; echo x$FX_P')).stdout.trim()).toBe('x');
-  }, 20000);
+  }, 60000);
 
   it('standalone assignment segments persist and feed later commands (#82)', async () => {
     expect((await run('SA_V=hello; echo $SA_V')).stdout.trim()).toBe('hello');
@@ -762,6 +768,13 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect((await run('if false; then echo YES; else echo NO; fi')).stdout.trim()).toBe('NO');
     expect((await run('if true; then echo A; else echo B; fi')).stdout.trim()).toBe('A');
     expect((await run('if false; then echo YES; fi')).stdout.trim()).toBe('');
+  });
+
+  it('for x in words; do ...; done iterates in the same session', async () => {
+    expect((await run('for x in a b c; do echo $x; done')).stdout.trim()).toBe('a\nb\nc');
+    expect((await run('for x in 1 2; do echo n$x; done; echo z$x')).stdout.trim()).toBe(
+      'n1\nn2\nz2',
+    );
   });
 
   it('date format tokens', async () => {

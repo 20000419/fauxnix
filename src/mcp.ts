@@ -46,7 +46,7 @@ Output is formatted to look like GNU/Linux tooling (ls -l, ps aux, df -h ...), e
 
 Supported: pipes (|), && / || / ;, redirections (> >> 2> 2>&1 < /dev/null), variables ($VAR $HOME ~), command substitution $(...), and ${registeredNames().length}+ coreutils-style commands (${registeredNames().slice(0, 18).join(', ')}...).
 Unknown commands (git, node, npm, python, cargo...) are passed through and executed natively with argv-style quoting.
-Not supported: heredocs, for/while, background jobs. if/then/else/fi conditionals are supported.
+Not supported: heredocs, while/until/case, background jobs. if/then/else/fi and for-in loops are supported.
 
 CWD, environment variables, export/unset and cd persist across calls within this session — but prefer COMBINING related commands in one call with ; or && (e.g. 'cd src && ls | wc -l'); each call is a fresh translation+process, so batching is faster than many tiny calls.
 Exit codes follow bash conventions (0 ok, 1 fail, 2 usage/serious, 127 command not found, 124 timeout).

@@ -5,6 +5,7 @@ import {
   Redirect,
   SimpleCommand,
   IfCommand,
+  ForCommand,
   Word,
   WordPart,
   isUnquotedLiteral,
@@ -781,20 +782,48 @@ function translateListInline(list: CommandList): string {
 }
 
 function translateIf(cmd: IfCommand): string {
-  const lines = [translateListInline(cmd.test), 'if ($script:fx_exit -eq 0) {'];
+  // Branch bodies reset fx_exit first: the compound's exit status must come
+  // from the taken branch's last command (bash semantics), not leak the test's
+  // failure — `if false; then A; else B; fi` exits 0 in bash.
+  const lines = [translateListInline(cmd.test), 'if ($script:fx_exit -eq 0) {', '  $script:fx_exit = 0'];
   for (const l of translateListInline(cmd.then).split('\n')) lines.push(l ? '  ' + l : l);
+  lines.push('} else {', '  $script:fx_exit = 0');
   if (cmd.else) {
-    lines.push('} else {');
     for (const l of translateListInline(cmd.else).split('\n')) lines.push(l ? '  ' + l : l);
-    lines.push('}');
-  } else {
-    lines.push('}');
   }
+  lines.push('}');
+  return lines.join('\n');
+}
+
+function translateFor(cmd: ForCommand): string {
+  const n = cmd.name.replace(/'/g, "''");
+  const lines = [
+    '$fx_for = ' + argListExpr(cmd.words),
+    'foreach ($fx_it in @($fx_for)) {',
+    "  Set-Item -LiteralPath ('Env:\\' + '" + n + "') -Value ([string]$fx_it)",
+    "  $env:FAUXNIX_SETVARS = ((@($env:FAUXNIX_SETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne '" +
+      n +
+      "' }) + '" +
+      n +
+      "') -join ';')",
+    "  $env:FAUXNIX_UNSETVARS = (@($env:FAUXNIX_UNSETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne '" +
+      n +
+      "' }) -join ';')",
+    '  fx-arrdrop ' + psStr(cmd.name),
+    "  $fx_sv = @(); foreach ($fx_pair in @($env:FAUXNIX_SETVALS -split [string][char]10)) { $fx_eq = $fx_pair.IndexOf([char]61); if ($fx_eq -lt 1) { continue }; if ($fx_pair.Substring(0, $fx_eq) -cne '" +
+      n +
+      "') { $fx_sv += $fx_pair } }",
+    "  $fx_sv += ('" +
+      n +
+      "' + [string][char]61 + (fx-svenc ([string]$fx_it))); $env:FAUXNIX_SETVALS = ($fx_sv -join [string][char]10)",
+  ];
+  for (const l of translateListInline(cmd.body).split('\n')) lines.push(l ? '  ' + l : l);
+  lines.push('}');
   return lines.join('\n');
 }
 
 export function translatePipelineBody(p: {
-  commands: Array<SimpleCommand | IfCommand>;
+  commands: Array<SimpleCommand | IfCommand | ForCommand>;
 }): PipelineParts {
   const bodies: string[] = [];
   for (let i = 0; i < p.commands.length; i++) {
@@ -803,6 +832,7 @@ export function translatePipelineBody(p: {
     const position: PipelineCtx['position'] =
       i === 0 ? 'first' : i === p.commands.length - 1 ? 'last' : 'middle';
     if (c.kind === 'If') bodies.push(translateIf(c));
+    else if (c.kind === 'For') bodies.push(translateFor(c));
     else bodies.push(translateSimple(c, position, hasStdin));
   }
 

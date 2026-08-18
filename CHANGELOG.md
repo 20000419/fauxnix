@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.5.0 — 2026-08-18
+
+Wave 2 "agent script surface" (RFC #111, by r3wretrhy; integration merge):
+
+- `if/then/else/fi` and `for x in words; do ...; done` as compound commands,
+  one PowerShell process per segment; `elif`/C-style `for`/`while` fail loudly
+- Parameter expansions: `${name:-word}` `:+` `:?` (and non-colon forms),
+  `${#name}` / `${#name[@]}` counts
+- Backtick command substitution `` `cmd` `` (same pipeline as `$(...)`)
+- `command -v` (+ bare `command NAME` no-alias run), `read`/`read -r` from
+  pipelines into session vars, dotenv-style `source` (NAME=VALUE files)
+- `set -e/-u/-x` now refuses loudly (exit 2) instead of silently ignoring
+- `${arr[@]}` in command position with an empty array promotes the next word
+  (bash parity)
+- Docs: README known-deviations updated for the new supported surface
+  (+ `command -v` builtin-path deviation noted)
+
 ## v0.4.2 — 2026-08-18
 
 - Glama/Linux-host readiness (audit follow-up):

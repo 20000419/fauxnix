@@ -110,6 +110,15 @@ describe('parser', () => {
     expect(c.else?.segments).toHaveLength(1);
   });
 
+  it('parses for name in words; do ...; done', () => {
+    const list = parse('for x in a b c; do echo $x; done');
+    const c = list.segments[0].pipeline.commands[0];
+    expect(c.kind).toBe('For');
+    if (c.kind !== 'For') return;
+    expect(c.name).toBe('x');
+    expect(c.words).toHaveLength(3);
+  });
+
   it('parses ${name[index]} subscripts', () => {
     const cmd = parse('echo ${BASH_REMATCH[1]} ${PATH[0]} ${x[@]}').segments[0].pipeline.commands[0];
     expect(cmd.args[0]).toEqual([{ kind: 'Var', name: 'BASH_REMATCH', index: '1' }]);

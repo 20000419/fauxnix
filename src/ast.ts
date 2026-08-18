@@ -27,7 +27,7 @@ export interface ListSegment {
   op: ';' | '&&' | '||';
 }
 
-export type ShellCommand = SimpleCommand | IfCommand;
+export type ShellCommand = SimpleCommand | IfCommand | ForCommand;
 
 export interface Pipeline {
   kind: 'Pipeline';
@@ -39,6 +39,14 @@ export interface IfCommand {
   test: CommandList;
   then: CommandList;
   else?: CommandList;
+  redirects: Redirect[];
+}
+
+export interface ForCommand {
+  kind: 'For';
+  name: string;
+  words: Word[];
+  body: CommandList;
   redirects: Redirect[];
 }
 
