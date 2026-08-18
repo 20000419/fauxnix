@@ -10,7 +10,7 @@ import {
   varExpr,
   wrapScript,
 } from '../src/translator.js';
-import { parseWords, psStr } from '../src/registry.js';
+import { lookup, parseWords, psStr } from '../src/registry.js';
 import { decodeOutput, encodeCommand, normalizeHostNewlines } from '../src/encoding.js';
 import { normalizeStderr } from '../src/errors.js';
 import '../src/commands/install-all.js';
@@ -94,6 +94,10 @@ describe('parser', () => {
     expect(cmd.args[2]).toEqual([{ kind: 'Var', name: 'x', index: '@' }]);
   });
 
+  it('registers command as a builtin', () => {
+    expect(lookup('command')).toBeTypeOf('function');
+  });
+
   it('detects [@] splat through surrounding quotes', () => {
     const cmd = parse('printf x pre"${a[@]}"post').segments[0].pipeline.commands[0];
     expect(splatSpec(cmd.args[1])).toEqual({ name: 'a', prefix: 'pre', suffix: 'post' });
@@ -102,6 +106,15 @@ describe('parser', () => {
   it('does not splat quoted ${name[*]}', () => {
     const cmd = parse('printf x "${a[*]}"').segments[0].pipeline.commands[0];
     expect(splatSpec(cmd.args[1])).toBeNull();
+  });
+
+  it('promotes the next word when a command-position [@] is empty', () => {
+    const empty = translateCommandList(parse('${X[@]}'))[0].script;
+    expect(empty).toContain('if ($fx_cw.Count -eq 0)');
+    expect(empty).not.toContain("bash: : command not found");
+    const one = translateCommandList(parse('${X[@]} printf %s hi'))[0].script;
+    expect(one).toContain('fx-printf');
+    expect(one).toContain('[object[]]');
   });
 
   it('splats unquoted ${name[*]}', () => {
