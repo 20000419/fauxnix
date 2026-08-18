@@ -720,6 +720,17 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect((await run('command echo hi')).stdout.trim()).toBe('hi');
   });
 
+  it('${name:-word} and ${name:+word} follow bash empty/unset rules', async () => {
+    expect((await run('unset X; echo ${X:-def}')).stdout.trim()).toBe('def');
+    expect((await run('X=; echo ${X:-def}; unset X')).stdout.trim()).toBe('def');
+    expect((await run('X=hi; echo ${X:-def}; unset X')).stdout.trim()).toBe('hi');
+    expect((await run('X=hi; echo ${X:+on}; unset X')).stdout.trim()).toBe('on');
+    expect((await run('unset X; echo [${X:+on}]')).stdout.trim()).toBe('[]');
+    const miss = await run('unset X; echo ${X:?missing}');
+    expect(miss.exitCode).toBe(1);
+    expect(miss.stderr).toMatch(/X: missing/);
+  });
+
   it('date format tokens', async () => {
     expect((await run('date +%Y')).stdout).toMatch(/^\d{4}/);
   });
