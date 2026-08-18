@@ -720,6 +720,12 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect((await run('command echo hi')).stdout.trim()).toBe('hi');
   });
 
+  it('source reads NAME=VALUE files into the session', async () => {
+    writeFileSync(join(dir, 'dotenv.env'), 'FOO=bar\n# c\nexport BAZ=qux\nQUOT=\"hi\"\n', 'utf8');
+    expect((await run('source dotenv.env; echo $FOO $BAZ $QUOT')).stdout.trim()).toBe('bar qux hi');
+    await run('unset FOO BAZ QUOT');
+  });
+
   it('date format tokens', async () => {
     expect((await run('date +%Y')).stdout).toMatch(/^\d{4}/);
   });
