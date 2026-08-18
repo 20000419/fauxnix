@@ -711,6 +711,13 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect((await run('uname -r')).stdout.trim()).toBe('6.8.0-fauxnix');
   });
 
+  it('if/then/else/fi follows the test exit code', async () => {
+    expect((await run('if true; then echo YES; fi')).stdout.trim()).toBe('YES');
+    expect((await run('if false; then echo YES; else echo NO; fi')).stdout.trim()).toBe('NO');
+    expect((await run('if true; then echo A; else echo B; fi')).stdout.trim()).toBe('A');
+    expect((await run('if false; then echo YES; fi')).stdout.trim()).toBe('');
+  });
+
   it('date format tokens', async () => {
     expect((await run('date +%Y')).stdout).toMatch(/^\d{4}/);
   });

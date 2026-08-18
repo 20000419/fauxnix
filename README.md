@@ -193,7 +193,7 @@ fauxnix optimizes for the commands agents actually run. Documented deviations:
   word expansion precedes the temporary environment).
 - `yes` is capped at 65,536 lines — PS 5.1 pipelines cannot signal upstream producers to stop, so
   an unbounded `yes | head` would hang.
-- `tail -f`, `source`, `eval`, `alias`, heredocs, backticks, shell control flow (`if`/`for`/`while`)
+- `tail -f`, `source`, `eval`, `alias`, heredocs, backticks, `for`/`while` (if/then/fi is supported)
   and background `&` are rejected with actionable error messages instead of misbehaving.
 - `chmod` maps only the read-only bit; exec bits are no-ops on Windows. `chown` is a silent no-op
   (as in Git Bash).

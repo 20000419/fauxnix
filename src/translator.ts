@@ -4,6 +4,8 @@ import {
   FauxnixParseError,
   Redirect,
   SimpleCommand,
+  IfCommand,
+  CommandList,
   Word,
   WordPart,
   isUnquotedLiteral,
@@ -660,13 +662,46 @@ export interface PipelineParts {
  * multi-command pipelines become generated functions chained with `|`
  * (PS 5.1 forbids parenthesized expressions as non-first pipeline elements).
  */
-export function translatePipelineBody(p: { commands: SimpleCommand[] }): PipelineParts {
+function translateListInline(list: CommandList): string {
+  const chunks: string[] = [];
+  for (const seg of list.segments) {
+    const { defs, call } = translatePipelineBody(seg.pipeline);
+    const body = (defs ? defs + '\n' : '') + call;
+    if (seg.op === '&&') {
+      chunks.push('if ($script:fx_exit -eq 0) {\n' + body + '\n}');
+    } else if (seg.op === '||') {
+      chunks.push('if ($script:fx_exit -ne 0) {\n' + body + '\n}');
+    } else {
+      chunks.push(body);
+    }
+  }
+  return chunks.join('\n');
+}
+
+function translateIf(cmd: IfCommand): string {
+  const lines = [translateListInline(cmd.test), 'if ($script:fx_exit -eq 0) {'];
+  for (const l of translateListInline(cmd.then).split('\n')) lines.push(l ? '  ' + l : l);
+  if (cmd.else) {
+    lines.push('} else {');
+    for (const l of translateListInline(cmd.else).split('\n')) lines.push(l ? '  ' + l : l);
+    lines.push('}');
+  } else {
+    lines.push('}');
+  }
+  return lines.join('\n');
+}
+
+export function translatePipelineBody(p: {
+  commands: Array<SimpleCommand | IfCommand>;
+}): PipelineParts {
   const bodies: string[] = [];
   for (let i = 0; i < p.commands.length; i++) {
-    const hasStdin = i > 0 || p.commands[i].redirects.some((r) => r.op === '<');
+    const c = p.commands[i];
+    const hasStdin = i > 0 || c.redirects.some((r) => r.op === '<');
     const position: PipelineCtx['position'] =
       i === 0 ? 'first' : i === p.commands.length - 1 ? 'last' : 'middle';
-    bodies.push(translateSimple(p.commands[i], position, hasStdin));
+    if (c.kind === 'If') bodies.push(translateIf(c));
+    else bodies.push(translateSimple(c, position, hasStdin));
   }
 
   if (bodies.length === 1) {
