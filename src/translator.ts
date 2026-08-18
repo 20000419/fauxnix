@@ -273,6 +273,13 @@ export function translateCmdSub(cmdText: string, keepNl = false): string {
 /* Simple command translation                                          */
 /* ------------------------------------------------------------------ */
 
+function indentBlock(s: string): string {
+  return s
+    .split('\n')
+    .map((l) => (l ? '  ' + l : l))
+    .join('\n');
+}
+
 export function translateSimple(
   cmd: SimpleCommand,
   position: PipelineCtx['position'],
@@ -297,20 +304,51 @@ export function translateSimple(
   let body: string;
   if (nameSplat) {
     const invoke = '& $fx_cmd @fx_na';
-    body = [
+    const hasAffix = !!(nameSplat.prefix || nameSplat.suffix);
+    const promoted =
+      cmd.args.length === 0
+        ? ''
+        : translateSimple(
+            {
+              kind: 'SimpleCommand',
+              assignments: [],
+              name: cmd.args[0],
+              args: cmd.args.slice(1),
+              redirects: cmd.redirects,
+            },
+            position,
+            hasStdin,
+          );
+    const emptyCmdLines: string[] = [
       '$fx_cw = @(fx-arrload ' + psStr(nameSplat.name) + ')',
-      'if ($fx_cw.Count -eq 0) { $fx_cw = @(' + psStr(nameSplat.prefix + nameSplat.suffix) + ') }',
-      'else { $fx_cw[0] = ' +
-        psStr(nameSplat.prefix) +
-        ' + $fx_cw[0]; $fx_cw[$fx_cw.Count-1] = $fx_cw[$fx_cw.Count-1] + ' +
-        psStr(nameSplat.suffix) +
-        ' }',
-      '$fx_cmd = [string]$fx_cw[0]',
-      '$fx_na = ' + argListExpr(cmd.args),
-      'if ($fx_cw.Count -gt 1) { $fx_na = @($fx_cw[1..($fx_cw.Count - 1)]) + $fx_na }',
-      (hasStdin ? '($input | ' + invoke + ')' : invoke) + ' | ForEach-Object { [string]$_ }',
-      'if ($LASTEXITCODE -gt 0) { $script:fx_exit = $LASTEXITCODE } elseif ($LASTEXITCODE -lt 0) { $script:fx_exit = 1 }',
-    ].join('\n');
+    ];
+    if (hasAffix) {
+      emptyCmdLines.push(
+        'if ($fx_cw.Count -eq 0) { $fx_cw = @(' +
+          psStr(nameSplat.prefix + nameSplat.suffix) +
+          ') } else { $fx_cw[0] = ' +
+          psStr(nameSplat.prefix) +
+          ' + $fx_cw[0]; $fx_cw[$fx_cw.Count-1] = $fx_cw[$fx_cw.Count-1] + ' +
+          psStr(nameSplat.suffix) +
+          ' }',
+      );
+    }
+    emptyCmdLines.push(
+      'if ($fx_cw.Count -eq 0) {',
+      // No words left → bash null command (exit 0). Remaining words are
+      // known at compile time, so reuse translateSimple (handlers, not `&`).
+      promoted ? indentBlock(promoted) : '  ',
+      '} else {',
+      '  $fx_na = [object[]]@(' + argListExpr(cmd.args) + ')',
+      '  $fx_cmd = [string]$fx_cw[0]',
+      '  if ($fx_cw.Count -gt 1) { $fx_na = @($fx_cw[1..($fx_cw.Count - 1)]) + $fx_na }',
+      '  ' +
+        (hasStdin ? '($input | ' + invoke + ')' : invoke) +
+        ' | ForEach-Object { [string]$_ }',
+      '  if ($LASTEXITCODE -gt 0) { $script:fx_exit = $LASTEXITCODE } elseif ($LASTEXITCODE -lt 0) { $script:fx_exit = 1 }',
+      '}',
+    );
+    body = emptyCmdLines.join('\n');
   } else if (nameLit !== null) {
     const handler = lookup(nameLit);
     if (handler && !(nameLit === '[[' && !isUnquotedLiteral(cmd.name, '[['))) {

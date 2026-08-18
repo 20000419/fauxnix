@@ -474,6 +474,9 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     writeFileSync(join(dir, 'b'), 'Y', 'utf8');
     expect((await run('[[ abc =~ ^a(.)c$ ]]; cat "${BASH_REMATCH[@]}"')).stdout.trim()).toBe('X\nY');
     await run('unset BASH_REMATCH');
+    expect((await run('unset X; ${X[@]}')).exitCode).toBe(0);
+    expect((await run('unset X; ${X[@]} echo ok')).stdout.trim()).toBe('ok');
+    expect((await run('unset X; ${X[@]} printf %s hi')).stdout).toBe('hi');
   }, 60000);
 
   it('&& and || short-circuit like bash', async () => {
@@ -709,6 +712,12 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
 
   it('uname reports fauxnix kernel marker', async () => {
     expect((await run('uname -r')).stdout.trim()).toBe('6.8.0-fauxnix');
+  });
+
+  it('command -v finds builtins and missing names', async () => {
+    expect((await run('command -v echo')).stdout.trim()).toBe('/usr/bin/echo');
+    expect((await run('command -v definitely_not_a_cmd_xyz')).exitCode).toBe(1);
+    expect((await run('command echo hi')).stdout.trim()).toBe('hi');
   });
 
   it('read -r stores a line from a pipe into the session', async () => {
