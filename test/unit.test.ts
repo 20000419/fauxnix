@@ -81,6 +81,44 @@ describe('parser', () => {
     expect(exprOfWord(a.assignments[0].value, { preserveCmdSub: true })).not.toContain("-join ' '");
   });
 
+  it('set -e is a loud usage error, not a silent no-op', () => {
+    const script = translateCommandList(parse('set -e'))[0].script;
+    expect(script).toMatch(/set -e\/-u\/-x is not supported/);
+    expect(script).toContain('$script:fx_exit = 2');
+  });
+
+  it('parses ${name:-word} parameter defaults', () => {
+    const cmd = parse('echo ${X:-def} ${Y:+on} ${Z:?err}').segments[0].pipeline.commands[0];
+    expect(cmd.args[0]).toEqual([{ kind: 'Var', name: 'X', param: { op: ':-', word: 'def' } }]);
+    expect(cmd.args[1]).toEqual([{ kind: 'Var', name: 'Y', param: { op: ':+', word: 'on' } }]);
+    expect(cmd.args[2]).toEqual([{ kind: 'Var', name: 'Z', param: { op: ':?', word: 'err' } }]);
+  });
+
+  it('parses ${#name} and ${#name[@]}', () => {
+    const cmd = parse('echo ${#X} ${#Y[@]}').segments[0].pipeline.commands[0];
+    expect(cmd.args[0]).toEqual([{ kind: 'Var', name: 'X', length: true }]);
+    expect(cmd.args[1]).toEqual([{ kind: 'Var', name: 'Y', index: '@', length: true }]);
+  });
+
+  it('parses if/then/else/fi as one compound command', () => {
+    const list = parse('if true; then echo x; else echo y; fi');
+    expect(list.segments).toHaveLength(1);
+    const c = list.segments[0].pipeline.commands[0];
+    expect(c.kind).toBe('If');
+    if (c.kind !== 'If') return;
+    expect(c.then.segments).toHaveLength(1);
+    expect(c.else?.segments).toHaveLength(1);
+  });
+
+  it('parses for name in words; do ...; done', () => {
+    const list = parse('for x in a b c; do echo $x; done');
+    const c = list.segments[0].pipeline.commands[0];
+    expect(c.kind).toBe('For');
+    if (c.kind !== 'For') return;
+    expect(c.name).toBe('x');
+    expect(c.words).toHaveLength(3);
+  });
+
   it('parses ${name[index]} subscripts', () => {
     const cmd = parse('echo ${BASH_REMATCH[1]} ${PATH[0]} ${x[@]}').segments[0].pipeline.commands[0];
     expect(cmd.args[0]).toEqual([{ kind: 'Var', name: 'BASH_REMATCH', index: '1' }]);
@@ -127,8 +165,9 @@ describe('parser', () => {
     expect(() => parse('cat <<EOF')).toThrow(/heredoc/);
   });
 
-  it('rejects backticks', () => {
-    expect(() => parse('echo `date`')).toThrow(/backtick/);
+  it('parses backticks as command substitution', () => {
+    const cmd = parse('echo `date +%Y`').segments[0].pipeline.commands[0];
+    expect(cmd.args[0].some((p) => p.kind === 'CmdSub' && p.cmd === 'date +%Y')).toBe(true);
   });
 
   it('rejects tokens after the closing ]]', () => {

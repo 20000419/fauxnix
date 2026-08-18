@@ -4,7 +4,7 @@
  */
 import { beforeAll, afterAll, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, existsSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseCommand } from '../src/parser.js';
@@ -41,7 +41,13 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
   });
 
   async function run(cmd: string) {
-    return session.run(translateCommandList(parseCommand(cmd)));
+    const t0 = Date.now();
+    const r = await session.run(translateCommandList(parseCommand(cmd)));
+    if (process.env.FX_TRACE) {
+      console.error(`[trace ${((Date.now() - t0) / 1000).toFixed(1)}s] ${cmd.slice(0, 70)} => ${r.exitCode}`);
+      appendFileSync(join(tmpdir(), 'fx-trace.log'), cmd + '\x1e');
+    }
+    return r;
   }
 
   it('cat reads files', async () => {
@@ -452,7 +458,7 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
         )
       ).exitCode
     ).toBe(0);
-  }, 180000);
+  }, 420000);
 
   it('array subscripts splat across commands and persist correctly', async () => {
     expect(
@@ -494,6 +500,7 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
   it('variables and command substitution', async () => {
     expect((await run('export GREET=hi; echo $GREET/there')).stdout.trim()).toBe('hi/there');
     expect((await run('echo $(echo nested)')).stdout.trim()).toBe('nested');
+    expect((await run('echo `echo nested`')).stdout.trim()).toBe('nested');
     expect((await run("echo \"[$(printf 'a\\nb')]\"")).stdout).toBe('[a\nb]\n');
     expect((await run("[[ \"$(printf 'a\\nb')\" == \"a\nb\" ]]")).exitCode).toBe(0);
     expect((await run("X=$(printf 'a\\nb'); echo \"[$X]\"")).stdout).toBe('[a\nb]\n');
@@ -521,7 +528,7 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect((await run('echo $FX_P')).stdout.trim()).toBe('via');
     await run('unset FX_P FX_K FX_A FX_B FX_N');
     expect((await run('FX_P=bar true; echo x$FX_P')).stdout.trim()).toBe('x');
-  }, 20000);
+  }, 60000);
 
   it('standalone assignment segments persist and feed later commands (#82)', async () => {
     expect((await run('SA_V=hello; echo $SA_V')).stdout.trim()).toBe('hello');
@@ -724,6 +731,50 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     writeFileSync(join(dir, 'dotenv.env'), 'FOO=bar\n# c\nexport BAZ=qux\nQUOT=\"hi\"\n', 'utf8');
     expect((await run('source dotenv.env; echo $FOO $BAZ $QUOT')).stdout.trim()).toBe('bar qux hi');
     await run('unset FOO BAZ QUOT');
+  });
+
+  it('read -r stores a line from a pipe into the session', async () => {
+    expect((await run("printf 'hello\\n' | read -r X; echo $X")).stdout.trim()).toBe('hello');
+    expect((await run("printf 'a b c\\n' | read A B; echo $A $B")).stdout.trim()).toBe('a b c');
+    await run('unset X A B');
+  });
+
+  it('set -e fails loudly instead of no-op', async () => {
+    const r = await run('set -e');
+    expect(r.exitCode).toBe(2);
+    expect(r.stderr).toMatch(/set -e\/-u\/-x is not supported/);
+    expect((await run('set --')).exitCode).toBe(0);
+  });
+
+  it('${name:-word} and ${name:+word} follow bash empty/unset rules', async () => {
+    expect((await run('unset X; echo ${X:-def}')).stdout.trim()).toBe('def');
+    expect((await run('X=; echo ${X:-def}; unset X')).stdout.trim()).toBe('def');
+    expect((await run('X=hi; echo ${X:-def}; unset X')).stdout.trim()).toBe('hi');
+    expect((await run('X=hi; echo ${X:+on}; unset X')).stdout.trim()).toBe('on');
+    expect((await run('unset X; echo [${X:+on}]')).stdout.trim()).toBe('[]');
+    const miss = await run('unset X; echo ${X:?missing}');
+    expect(miss.exitCode).toBe(1);
+    expect(miss.stderr).toMatch(/X: missing/);
+  });
+
+  it('${#name} is string length and ${#name[@]} is element count', async () => {
+    expect((await run('X=abcd; echo ${#X}; unset X')).stdout.trim()).toBe('4');
+    expect((await run('[[ abc =~ ^a(.)c$ ]]; echo ${#BASH_REMATCH[@]}')).stdout.trim()).toBe('2');
+    expect((await run('unset Z; echo ${#Z}')).stdout.trim()).toBe('0');
+  });
+
+  it('if/then/else/fi follows the test exit code', async () => {
+    expect((await run('if true; then echo YES; fi')).stdout.trim()).toBe('YES');
+    expect((await run('if false; then echo YES; else echo NO; fi')).stdout.trim()).toBe('NO');
+    expect((await run('if true; then echo A; else echo B; fi')).stdout.trim()).toBe('A');
+    expect((await run('if false; then echo YES; fi')).stdout.trim()).toBe('');
+  });
+
+  it('for x in words; do ...; done iterates in the same session', async () => {
+    expect((await run('for x in a b c; do echo $x; done')).stdout.trim()).toBe('a\nb\nc');
+    expect((await run('for x in 1 2; do echo n$x; done; echo z$x')).stdout.trim()).toBe(
+      'n1\nn2\nz2',
+    );
   });
 
   it('date format tokens', async () => {

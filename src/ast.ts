@@ -7,12 +7,12 @@
  *   - redirections:         > >> 2> 2>> &> 2>&1 1>&2 <
  *   - quoting:              'literal'  "interp $VAR $(cmd)"
  *   - variables:            $VAR ${VAR} ${VAR[n]} plus special cases ($HOME $USER $PATH ...)
- *   - command substitution: $(...) (recursively translated)
+ *   - command substitution: $(...) and `...` (recursively translated)
  *   - env assignment prefix: VAR=value cmd
  *
  * Explicitly unsupported (parser throws a helpful FauxnixError):
- *   heredocs, backticks, subshells (...), background &, control flow
- *   (if/for/while), globs inside quotes, process substitution <(...).
+ *   heredocs, subshells (...), background &, while/until/case,
+ *   globs inside quotes, process substitution <(...).
  */
 
 export interface CommandList {
@@ -27,9 +27,27 @@ export interface ListSegment {
   op: ';' | '&&' | '||';
 }
 
+export type ShellCommand = SimpleCommand | IfCommand | ForCommand;
+
 export interface Pipeline {
   kind: 'Pipeline';
-  commands: SimpleCommand[];
+  commands: ShellCommand[];
+}
+
+export interface IfCommand {
+  kind: 'If';
+  test: CommandList;
+  then: CommandList;
+  else?: CommandList;
+  redirects: Redirect[];
+}
+
+export interface ForCommand {
+  kind: 'For';
+  name: string;
+  words: Word[];
+  body: CommandList;
+  redirects: Redirect[];
 }
 
 export interface SimpleCommand {
@@ -64,7 +82,15 @@ export type WordPart =
   | { kind: 'Text'; text: string; escaped?: boolean }
   | { kind: 'SingleQuoted'; text: string }
   | { kind: 'DoubleQuoted'; parts: WordPart[] }
-  | { kind: 'Var'; name: string; index?: string }
+  | {
+      kind: 'Var';
+      name: string;
+      index?: string;
+      /** `${name:-word}` / `${name:+word}` / `${name:?word}` (and non-colon). */
+      param?: { op: ':-' | ':=' | ':+' | ':?' | '-' | '+' | '?'; word: string };
+      /** `${#name}` / `${#name[@]}` — string/array length expansion. */
+      length?: boolean;
+    }
   | { kind: 'CmdSub'; cmd: string };
 
 export function wordToString(w: Word): string {

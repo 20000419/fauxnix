@@ -7,6 +7,9 @@ import {
   Redirect,
   RedirectOp,
   SimpleCommand,
+  IfCommand,
+  ForCommand,
+  ShellCommand,
   Word,
   WordPart,
   isUnquotedLiteral,
@@ -163,6 +166,16 @@ export function tokenize(input: string): Token[] {
             continue;
           }
         }
+        if (c === '`') {
+          const v = readBacktick(input, i);
+          if (buf) {
+            parts.push({ kind: 'Text', text: buf });
+            buf = '';
+          }
+          parts.push(v.part);
+          i = v.next;
+          continue;
+        }
         buf += c;
         i++;
       }
@@ -189,9 +202,11 @@ export function tokenize(input: string): Token[] {
     }
 
     if (ch === '`') {
-      throw new FauxnixParseError(
-        'fauxnix: backticks are not supported. Use $(...) command substitution instead.',
-      );
+      const v = readBacktick(input, i);
+      beginWordPart();
+      cur.push(v.part);
+      i = v.next;
+      continue;
     }
 
     // escape outside quotes — keep the escape so [[ =~ ]] / == can
@@ -229,6 +244,23 @@ function isNameChar(c: string): boolean {
   return /[A-Za-z0-9_]/.test(c);
 }
 
+/** Parse `cmd` as command substitution (same AST as $(cmd)). */
+function readBacktick(input: string, i: number): { part: WordPart; next: number } {
+  if (input[i] !== '`') throw new FauxnixParseError('fauxnix: expected backtick');
+  let k = i + 1;
+  while (k < input.length) {
+    if (input[k] === '\\' && k + 1 < input.length) {
+      k += 2;
+      continue;
+    }
+    if (input[k] === '`') {
+      return { part: { kind: 'CmdSub', cmd: input.slice(i + 1, k) }, next: k + 1 };
+    }
+    k++;
+  }
+  throw new FauxnixParseError('fauxnix: unclosed backtick');
+}
+
 /** Parse $VAR, ${VAR}, $(cmd substitution). Returns null when not a valid dollar construct. */
 function readDollar(input: string, i: number): { part: WordPart; next: number } | null {
   const n = input.length;
@@ -245,8 +277,23 @@ function readDollar(input: string, i: number): { part: WordPart; next: number } 
     if (sub) {
       return { part: { kind: 'Var', name: sub[1], index: sub[2] }, next: end + 1 };
     }
+    const pm = name.match(/^([A-Za-z_][A-Za-z0-9_]*)(:?[-+?])(.*)$/);
+    if (pm) {
+      const op = pm[2] as ':-' | ':+' | ':?' | '-' | '+' | '?';
+      return {
+        part: { kind: 'Var', name: pm[1], param: { op, word: pm[3] } },
+        next: end + 1,
+      };
+    }
+    const hash = name.match(/^#([A-Za-z_][A-Za-z0-9_]*)(\[([0-9]+|@|\*)\])?$/);
+    if (hash) {
+      return {
+        part: { kind: 'Var', name: hash[1], index: hash[3], length: true },
+        next: end + 1,
+      };
+    }
     if (!name || !isNameStart(name[0]) || !name.split('').every(isNameChar)) {
-      // ${VAR:-default} etc. — unsupported, kept as raw text
+      // ${VAR:=default} etc. still raw text
       return { part: { kind: 'Text', text: input.slice(i, end + 1) }, next: end + 1 };
     }
     return { part: { kind: 'Var', name }, next: end + 1 };
@@ -540,9 +587,22 @@ export function parseCommand(input: string): CommandList {
   };
 
   const parsePipeline = (): Pipeline => {
-    const commands: SimpleCommand[] = [];
+    const commands: ShellCommand[] = [];
     for (;;) {
-      commands.push(parseSimple());
+      const kw = peekKw();
+      if (kw === 'if') {
+        if (commands.length > 0) {
+          throw new FauxnixParseError('fauxnix: if in a pipeline is not supported');
+        }
+        commands.push(parseIf());
+      } else if (kw === 'for') {
+        if (commands.length > 0) {
+          throw new FauxnixParseError('fauxnix: for in a pipeline is not supported');
+        }
+        commands.push(parseFor());
+      } else {
+        commands.push(parseSimple());
+      }
       const t = peek();
       if (t.type === 'OP' && t.op === '|') {
         next();
@@ -551,6 +611,107 @@ export function parseCommand(input: string): CommandList {
       break;
     }
     return { kind: 'Pipeline', commands };
+  };
+
+  const peekKw = (): string | null => {
+    const t = peek();
+    if (t.type !== 'WORD' || !t.parts) return null;
+    const s = wordToString(t.parts);
+    if (!isUnquotedLiteral(t.parts, s)) return null;
+    if (
+      s === 'if' ||
+      s === 'then' ||
+      s === 'else' ||
+      s === 'elif' ||
+      s === 'fi' ||
+      s === 'for' ||
+      s === 'in' ||
+      s === 'do' ||
+      s === 'done' ||
+      s === 'while'
+    ) {
+      return s;
+    }
+    return null;
+  };
+
+  const expectKw = (k: string): void => {
+    if (peekKw() !== k) {
+      throw new FauxnixParseError('fauxnix: expected `' + k + "'");
+    }
+    next();
+  };
+
+  const parseListUntil = (stops: string[]): CommandList => {
+    const stop = new Set(stops);
+    const segments: ListSegment[] = [];
+    let op: ';' | '&&' | '||' = ';';
+    const isListSep = (o?: string) => o === ';' || o === '\n';
+    while (peek().type === 'OP' && isListSep(peek().op)) next();
+    while (peek().type !== 'EOF') {
+      const kw = peekKw();
+      if (kw && stop.has(kw)) break;
+      const pipeline = parsePipeline();
+      segments.push({ pipeline, op });
+      const t = peek();
+      if (t.type === 'OP' && (t.op === '&&' || t.op === '||' || isListSep(t.op))) {
+        op = t.op === '\n' ? ';' : (t.op as '&&' | '||' | ';');
+        next();
+        while (peek().type === 'OP' && isListSep(peek().op)) next();
+      } else {
+        break;
+      }
+    }
+    if (segments.length === 0) {
+      throw new FauxnixParseError('fauxnix: empty command');
+    }
+    return { kind: 'CommandList', segments };
+  };
+
+  const parseIf = (): IfCommand => {
+    expectKw('if');
+    const test = parseListUntil(['then']);
+    expectKw('then');
+    const thenL = parseListUntil(['else', 'elif', 'fi']);
+    let elseL: CommandList | undefined;
+    if (peekKw() === 'elif') {
+      throw new FauxnixParseError('fauxnix: elif is not supported yet; use else + if');
+    }
+    if (peekKw() === 'else') {
+      next();
+      elseL = parseListUntil(['fi']);
+    }
+    expectKw('fi');
+    return { kind: 'If', test, then: thenL, else: elseL, redirects: [] };
+  };
+
+  const parseFor = (): ForCommand => {
+    expectKw('for');
+    const nt = peek();
+    if (nt.type !== 'WORD' || !nt.parts) {
+      throw new FauxnixParseError('fauxnix: `for` expected a name');
+    }
+    const name = wordToString(nt.parts);
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || !isUnquotedLiteral(nt.parts, name)) {
+      throw new FauxnixParseError('fauxnix: `for` name must be an identifier');
+    }
+    next();
+    expectKw('in');
+    const words: Word[] = [];
+    for (;;) {
+      while (peek().type === 'OP' && (peek().op === ';' || peek().op === '\n')) next();
+      if (peekKw() === 'do') break;
+      const t = peek();
+      if (t.type !== 'WORD' || !t.parts) {
+        throw new FauxnixParseError("fauxnix: `for` expected `do`");
+      }
+      words.push(t.parts);
+      next();
+    }
+    expectKw('do');
+    const body = parseListUntil(['done']);
+    expectKw('done');
+    return { kind: 'For', name, words, body, redirects: [] };
   };
 
   const parseSimple = (): SimpleCommand => {

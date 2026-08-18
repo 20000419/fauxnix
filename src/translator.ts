@@ -4,6 +4,8 @@ import {
   FauxnixParseError,
   Redirect,
   SimpleCommand,
+  IfCommand,
+  ForCommand,
   Word,
   WordPart,
   isUnquotedLiteral,
@@ -15,8 +17,69 @@ import { PipelineCtx, lookup, psStr } from './registry.js';
 /* Variable mapping                                                    */
 /* ------------------------------------------------------------------ */
 
+function paramWordExpr(word: string): string {
+  if (word.startsWith('$') && /^\$[A-Za-z_][A-Za-z0-9_]*$/.test(word)) {
+    return varExpr(word.slice(1));
+  }
+  return psStr(word);
+}
+
+/** `${name:-word}` and friends using case-exact fx-scalar0. */
+export function paramExpr(
+  name: string,
+  op: ':-' | ':=' | ':+' | ':?' | '-' | '+' | '?',
+  word: string,
+): string {
+  const alt = paramWordExpr(word);
+  const get = '(fx-scalar0 ' + psStr(name) + ')';
+  const empty = '($null -eq $fx_pv -or [string]$fx_pv -eq \'\')';
+  const unset = '($null -eq $fx_pv)';
+  if (op === ':-') {
+    return '$( $fx_pv = ' + get + '; if (' + empty + ') { ' + alt + ' } else { $fx_pv } )';
+  }
+  if (op === '-') {
+    return '$( $fx_pv = ' + get + '; if (' + unset + ') { ' + alt + ' } else { $fx_pv } )';
+  }
+  if (op === ':+') {
+    return '$( $fx_pv = ' + get + '; if (' + empty + ') { \'\' } else { ' + alt + ' } )';
+  }
+  if (op === '+') {
+    return '$( $fx_pv = ' + get + '; if (' + unset + ') { \'\' } else { ' + alt + ' } )';
+  }
+  const msg = word === '' ? name + ': parameter null or not set' : name + ': ' + word;
+  const cond = op === ':?' ? empty : unset;
+  return (
+    '$( $fx_pv = ' +
+    get +
+    '; if (' +
+    cond +
+    ') { [Console]::Error.WriteLine(' +
+    psStr('bash: ' + msg) +
+    '); $script:fx_exit = 1; \'\' } else { $fx_pv } )'
+  );
+}
+
 /** Map a bash $VAR name to a PowerShell expression (usable inside $(...)). */
-export function varExpr(name: string, index?: string): string {
+export function varExpr(
+  name: string,
+  index?: string,
+  param?: { op: ':-' | ':=' | ':+' | ':?' | '-' | '+' | '?'; word: string },
+  length = false,
+): string {
+  if (param) return paramExpr(name, param.op, param.word);
+  if (length) {
+    if (index === '@' || index === '*') {
+      return '@(fx-arrload ' + psStr(name) + ').Count';
+    }
+    if (index !== undefined) {
+      return '([string](fx-subget ' + psStr(name) + ' ' + psStr(index) + ')).Length';
+    }
+    return (
+      '([string]$(if ($null -eq ($fx_pv = fx-scalar0 ' +
+      psStr(name) +
+      ')) { \'\' } else { $fx_pv })).Length'
+    );
+  }
   // Indexed reads always go through fx-subget → fx-arrload → fx-scalar0 so
   // ${PWD[0]} keeps the special mapping and ${bash_rematch[0]} stays
   // case-exact (a `$env:name` fallback would alias BASH_REMATCH on Windows).
@@ -117,7 +180,8 @@ export function exprOfWord(w: Word, opts?: { preserveCmdSub?: boolean }): string
 
   // single bare variable → bare expression
   if (expanded.length === 1 && expanded[0].kind === 'Var') {
-    return varExpr(expanded[0].name, expanded[0].index);
+    const v = expanded[0];
+    return varExpr(v.name, v.index, v.param, v.length === true);
   }
   // Bare `$(...)` must not sit inside a PS expandable string: the
   // substitution body contains `"` / `$_` that would break interpolation.
@@ -145,7 +209,7 @@ export function exprOfWord(w: Word, opts?: { preserveCmdSub?: boolean }): string
         for (const q of p.parts) emitPart(q, true);
         break;
       case 'Var':
-        out += '$(' + varExpr(p.name, p.index) + ')';
+        out += '$(' + varExpr(p.name, p.index, p.param, p.length === true) + ')';
         break;
       case 'CmdSub':
         out += '$(' + translateCmdSub(p.cmd, quoted || opts?.preserveCmdSub === true) + ')';
@@ -199,7 +263,10 @@ export function splatSpec(w: Word): { name: string; prefix: string; suffix: stri
   let suffix = '';
   let seen = false;
   for (const { part: p, quoted } of parts) {
-    const splat = p.kind === 'Var' && (p.index === '@' || (p.index === '*' && !quoted));
+    const splat =
+      p.kind === 'Var' &&
+      !p.length &&
+      (p.index === '@' || (p.index === '*' && !quoted));
     if (splat) {
       if (seen) return null;
       seen = true;
@@ -698,13 +765,75 @@ export interface PipelineParts {
  * multi-command pipelines become generated functions chained with `|`
  * (PS 5.1 forbids parenthesized expressions as non-first pipeline elements).
  */
-export function translatePipelineBody(p: { commands: SimpleCommand[] }): PipelineParts {
+function translateListInline(list: CommandList): string {
+  const chunks: string[] = [];
+  for (const seg of list.segments) {
+    const { defs, call } = translatePipelineBody(seg.pipeline);
+    const body = (defs ? defs + '\n' : '') + call;
+    if (seg.op === '&&') {
+      chunks.push('if ($script:fx_exit -eq 0) {\n' + body + '\n}');
+    } else if (seg.op === '||') {
+      chunks.push('if ($script:fx_exit -ne 0) {\n' + body + '\n}');
+    } else {
+      chunks.push(body);
+    }
+  }
+  return chunks.join('\n');
+}
+
+function translateIf(cmd: IfCommand): string {
+  // Branch bodies reset fx_exit first: the compound's exit status must come
+  // from the taken branch's last command (bash semantics), not leak the test's
+  // failure — `if false; then A; else B; fi` exits 0 in bash.
+  const lines = [translateListInline(cmd.test), 'if ($script:fx_exit -eq 0) {', '  $script:fx_exit = 0'];
+  for (const l of translateListInline(cmd.then).split('\n')) lines.push(l ? '  ' + l : l);
+  lines.push('} else {', '  $script:fx_exit = 0');
+  if (cmd.else) {
+    for (const l of translateListInline(cmd.else).split('\n')) lines.push(l ? '  ' + l : l);
+  }
+  lines.push('}');
+  return lines.join('\n');
+}
+
+function translateFor(cmd: ForCommand): string {
+  const n = cmd.name.replace(/'/g, "''");
+  const lines = [
+    '$fx_for = ' + argListExpr(cmd.words),
+    'foreach ($fx_it in @($fx_for)) {',
+    "  Set-Item -LiteralPath ('Env:\\' + '" + n + "') -Value ([string]$fx_it)",
+    "  $env:FAUXNIX_SETVARS = ((@($env:FAUXNIX_SETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne '" +
+      n +
+      "' }) + '" +
+      n +
+      "') -join ';')",
+    "  $env:FAUXNIX_UNSETVARS = (@($env:FAUXNIX_UNSETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne '" +
+      n +
+      "' }) -join ';')",
+    '  fx-arrdrop ' + psStr(cmd.name),
+    "  $fx_sv = @(); foreach ($fx_pair in @($env:FAUXNIX_SETVALS -split [string][char]10)) { $fx_eq = $fx_pair.IndexOf([char]61); if ($fx_eq -lt 1) { continue }; if ($fx_pair.Substring(0, $fx_eq) -cne '" +
+      n +
+      "') { $fx_sv += $fx_pair } }",
+    "  $fx_sv += ('" +
+      n +
+      "' + [string][char]61 + (fx-svenc ([string]$fx_it))); $env:FAUXNIX_SETVALS = ($fx_sv -join [string][char]10)",
+  ];
+  for (const l of translateListInline(cmd.body).split('\n')) lines.push(l ? '  ' + l : l);
+  lines.push('}');
+  return lines.join('\n');
+}
+
+export function translatePipelineBody(p: {
+  commands: Array<SimpleCommand | IfCommand | ForCommand>;
+}): PipelineParts {
   const bodies: string[] = [];
   for (let i = 0; i < p.commands.length; i++) {
-    const hasStdin = i > 0 || p.commands[i].redirects.some((r) => r.op === '<');
+    const c = p.commands[i];
+    const hasStdin = i > 0 || c.redirects.some((r) => r.op === '<');
     const position: PipelineCtx['position'] =
       i === 0 ? 'first' : i === p.commands.length - 1 ? 'last' : 'middle';
-    bodies.push(translateSimple(p.commands[i], position, hasStdin));
+    if (c.kind === 'If') bodies.push(translateIf(c));
+    else if (c.kind === 'For') bodies.push(translateFor(c));
+    else bodies.push(translateSimple(c, position, hasStdin));
   }
 
   if (bodies.length === 1) {
