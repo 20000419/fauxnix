@@ -711,6 +711,12 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect((await run('uname -r')).stdout.trim()).toBe('6.8.0-fauxnix');
   });
 
+  it('read -r stores a line from a pipe into the session', async () => {
+    expect((await run("printf 'hello\\n' | read -r X; echo $X")).stdout.trim()).toBe('hello');
+    expect((await run("printf 'a b c\\n' | read A B; echo $A $B")).stdout.trim()).toBe('a b c');
+    await run('unset X A B');
+  });
+
   it('date format tokens', async () => {
     expect((await run('date +%Y')).stdout).toMatch(/^\d{4}/);
   });
