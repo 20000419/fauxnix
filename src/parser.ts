@@ -163,6 +163,16 @@ export function tokenize(input: string): Token[] {
             continue;
           }
         }
+        if (c === '`') {
+          const v = readBacktick(input, i);
+          if (buf) {
+            parts.push({ kind: 'Text', text: buf });
+            buf = '';
+          }
+          parts.push(v.part);
+          i = v.next;
+          continue;
+        }
         buf += c;
         i++;
       }
@@ -189,9 +199,11 @@ export function tokenize(input: string): Token[] {
     }
 
     if (ch === '`') {
-      throw new FauxnixParseError(
-        'fauxnix: backticks are not supported. Use $(...) command substitution instead.',
-      );
+      const v = readBacktick(input, i);
+      beginWordPart();
+      cur.push(v.part);
+      i = v.next;
+      continue;
     }
 
     // escape outside quotes — keep the escape so [[ =~ ]] / == can
@@ -227,6 +239,23 @@ function isNameStart(c: string): boolean {
 }
 function isNameChar(c: string): boolean {
   return /[A-Za-z0-9_]/.test(c);
+}
+
+/** Parse `cmd` as command substitution (same AST as $(cmd)). */
+function readBacktick(input: string, i: number): { part: WordPart; next: number } {
+  if (input[i] !== '`') throw new FauxnixParseError('fauxnix: expected backtick');
+  let k = i + 1;
+  while (k < input.length) {
+    if (input[k] === '\\' && k + 1 < input.length) {
+      k += 2;
+      continue;
+    }
+    if (input[k] === '`') {
+      return { part: { kind: 'CmdSub', cmd: input.slice(i + 1, k) }, next: k + 1 };
+    }
+    k++;
+  }
+  throw new FauxnixParseError('fauxnix: unclosed backtick');
 }
 
 /** Parse $VAR, ${VAR}, $(cmd substitution). Returns null when not a valid dollar construct. */
