@@ -8,6 +8,7 @@ import {
   RedirectOp,
   SimpleCommand,
   IfCommand,
+  ForCommand,
   ShellCommand,
   Word,
   WordPart,
@@ -579,6 +580,11 @@ export function parseCommand(input: string): CommandList {
           throw new FauxnixParseError('fauxnix: if in a pipeline is not supported');
         }
         commands.push(parseIf());
+      } else if (kw === 'for') {
+        if (commands.length > 0) {
+          throw new FauxnixParseError('fauxnix: for in a pipeline is not supported');
+        }
+        commands.push(parseFor());
       } else {
         commands.push(parseSimple());
       }
@@ -662,6 +668,35 @@ export function parseCommand(input: string): CommandList {
     }
     expectKw('fi');
     return { kind: 'If', test, then: thenL, else: elseL, redirects: [] };
+  };
+
+  const parseFor = (): ForCommand => {
+    expectKw('for');
+    const nt = peek();
+    if (nt.type !== 'WORD' || !nt.parts) {
+      throw new FauxnixParseError('fauxnix: `for` expected a name');
+    }
+    const name = wordToString(nt.parts);
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || !isUnquotedLiteral(nt.parts, name)) {
+      throw new FauxnixParseError('fauxnix: `for` name must be an identifier');
+    }
+    next();
+    expectKw('in');
+    const words: Word[] = [];
+    for (;;) {
+      while (peek().type === 'OP' && (peek().op === ';' || peek().op === '\n')) next();
+      if (peekKw() === 'do') break;
+      const t = peek();
+      if (t.type !== 'WORD' || !t.parts) {
+        throw new FauxnixParseError("fauxnix: `for` expected `do`");
+      }
+      words.push(t.parts);
+      next();
+    }
+    expectKw('do');
+    const body = parseListUntil(['done']);
+    expectKw('done');
+    return { kind: 'For', name, words, body, redirects: [] };
   };
 
   const parseSimple = (): SimpleCommand => {

@@ -9,6 +9,7 @@
  *   - variables:            $VAR ${VAR} ${VAR[n]} plus special cases ($HOME $USER $PATH ...)
  *   - command substitution: $(...) and `...` (recursively translated)
  *   - env assignment prefix: VAR=value cmd
+ *   - if/then/else/fi and for name in words; do ...; done
  *
  * Explicitly unsupported (parser throws a helpful FauxnixError):
  *   heredocs, subshells (...), background &,
@@ -27,7 +28,7 @@ export interface ListSegment {
   op: ';' | '&&' | '||';
 }
 
-export type ShellCommand = SimpleCommand | IfCommand;
+export type ShellCommand = SimpleCommand | IfCommand | ForCommand;
 
 export interface Pipeline {
   kind: 'Pipeline';
@@ -39,6 +40,14 @@ export interface IfCommand {
   test: CommandList;
   then: CommandList;
   else?: CommandList;
+  redirects: Redirect[];
+}
+
+export interface ForCommand {
+  kind: 'For';
+  name: string;
+  words: Word[];
+  body: CommandList;
   redirects: Redirect[];
 }
 

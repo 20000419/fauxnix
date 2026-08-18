@@ -728,6 +728,12 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect((await run('if false; then echo YES; fi')).stdout.trim()).toBe('');
   });
 
+  it('for x in words; do ...; done iterates in the same session', async () => {
+    expect((await run('for x in a b c; do echo $x; done')).stdout.trim()).toBe('a\nb\nc');
+    expect((await run('for x in 1 2; do echo n$x; done; echo z$x')).stdout.trim()).toBe(
+      'n1\nn2\nz2',
+    );
+  });
 
   it('date format tokens', async () => {
     expect((await run('date +%Y')).stdout).toMatch(/^\d{4}/);
