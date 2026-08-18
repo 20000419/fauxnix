@@ -711,6 +711,13 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect((await run('uname -r')).stdout.trim()).toBe('6.8.0-fauxnix');
   });
 
+  it('set -e fails loudly instead of no-op', async () => {
+    const r = await run('set -e');
+    expect(r.exitCode).toBe(2);
+    expect(r.stderr).toMatch(/set -e\/-u\/-x is not supported/);
+    expect((await run('set --')).exitCode).toBe(0);
+  });
+
   it('date format tokens', async () => {
     expect((await run('date +%Y')).stdout).toMatch(/^\d{4}/);
   });
