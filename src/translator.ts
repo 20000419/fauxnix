@@ -4,6 +4,8 @@ import {
   FauxnixParseError,
   Redirect,
   SimpleCommand,
+  ForCommand,
+  CommandList,
   Word,
   WordPart,
   isUnquotedLiteral,
@@ -660,13 +662,60 @@ export interface PipelineParts {
  * multi-command pipelines become generated functions chained with `|`
  * (PS 5.1 forbids parenthesized expressions as non-first pipeline elements).
  */
-export function translatePipelineBody(p: { commands: SimpleCommand[] }): PipelineParts {
+function translateListInline(list: CommandList): string {
+  const chunks: string[] = [];
+  for (const seg of list.segments) {
+    const { defs, call } = translatePipelineBody(seg.pipeline);
+    const body = (defs ? defs + '\n' : '') + call;
+    if (seg.op === '&&') {
+      chunks.push('if ($script:fx_exit -eq 0) {\n' + body + '\n}');
+    } else if (seg.op === '||') {
+      chunks.push('if ($script:fx_exit -ne 0) {\n' + body + '\n}');
+    } else {
+      chunks.push(body);
+    }
+  }
+  return chunks.join('\n');
+}
+
+function translateFor(cmd: ForCommand): string {
+  const n = cmd.name.replace(/'/g, "''");
+  const lines = [
+    '$fx_for = ' + argListExpr(cmd.words),
+    'foreach ($fx_it in @($fx_for)) {',
+    "  Set-Item -LiteralPath ('Env:\\' + '" + n + "') -Value ([string]$fx_it)",
+    "  $env:FAUXNIX_SETVARS = ((@($env:FAUXNIX_SETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne '" +
+      n +
+      "' }) + '" +
+      n +
+      "') -join ';')",
+    "  $env:FAUXNIX_UNSETVARS = (@($env:FAUXNIX_UNSETVARS -split ';' | Where-Object { $_ -ne '' -and $_ -cne '" +
+      n +
+      "' }) -join ';')",
+    '  fx-arrdrop ' + psStr(cmd.name),
+    "  $fx_sv = @(); foreach ($fx_pair in @($env:FAUXNIX_SETVALS -split [string][char]10)) { $fx_eq = $fx_pair.IndexOf([char]61); if ($fx_eq -lt 1) { continue }; if ($fx_pair.Substring(0, $fx_eq) -cne '" +
+      n +
+      "') { $fx_sv += $fx_pair } }",
+    "  $fx_sv += ('" +
+      n +
+      "' + [string][char]61 + (fx-svenc ([string]$fx_it))); $env:FAUXNIX_SETVALS = ($fx_sv -join [string][char]10)",
+  ];
+  for (const l of translateListInline(cmd.body).split('\n')) lines.push(l ? '  ' + l : l);
+  lines.push('}');
+  return lines.join('\n');
+}
+
+export function translatePipelineBody(p: {
+  commands: Array<SimpleCommand | ForCommand>;
+}): PipelineParts {
   const bodies: string[] = [];
   for (let i = 0; i < p.commands.length; i++) {
-    const hasStdin = i > 0 || p.commands[i].redirects.some((r) => r.op === '<');
+    const c = p.commands[i];
+    const hasStdin = i > 0 || c.redirects.some((r) => r.op === '<');
     const position: PipelineCtx['position'] =
       i === 0 ? 'first' : i === p.commands.length - 1 ? 'last' : 'middle';
-    bodies.push(translateSimple(p.commands[i], position, hasStdin));
+    if (c.kind === 'For') bodies.push(translateFor(c));
+    else bodies.push(translateSimple(c, position, hasStdin));
   }
 
   if (bodies.length === 1) {

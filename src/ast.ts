@@ -11,8 +11,9 @@
  *   - env assignment prefix: VAR=value cmd
  *
  * Explicitly unsupported (parser throws a helpful FauxnixError):
- *   heredocs, backticks, subshells (...), background &, control flow
- *   (if/for/while), globs inside quotes, process substitution <(...).
+ *   heredocs, backticks, subshells (...), background &,
+ *   if/while/case (for/in/do/done is supported), globs inside quotes,
+ *   process substitution <(...).
  */
 
 export interface CommandList {
@@ -27,9 +28,19 @@ export interface ListSegment {
   op: ';' | '&&' | '||';
 }
 
+export type ShellCommand = SimpleCommand | ForCommand;
+
 export interface Pipeline {
   kind: 'Pipeline';
-  commands: SimpleCommand[];
+  commands: ShellCommand[];
+}
+
+export interface ForCommand {
+  kind: 'For';
+  name: string;
+  words: Word[];
+  body: CommandList;
+  redirects: Redirect[];
 }
 
 export interface SimpleCommand {
