@@ -64,7 +64,13 @@ export type WordPart =
   | { kind: 'Text'; text: string; escaped?: boolean }
   | { kind: 'SingleQuoted'; text: string }
   | { kind: 'DoubleQuoted'; parts: WordPart[] }
-  | { kind: 'Var'; name: string; index?: string }
+  | {
+      kind: 'Var';
+      name: string;
+      index?: string;
+      /** `${name:-word}` / `${name:+word}` / `${name:?word}` (and non-colon). */
+      param?: { op: ':-' | ':=' | ':+' | ':?' | '-' | '+' | '?'; word: string };
+    }
   | { kind: 'CmdSub'; cmd: string };
 
 export function wordToString(w: Word): string {

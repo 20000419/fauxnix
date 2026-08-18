@@ -15,8 +15,55 @@ import { PipelineCtx, lookup, psStr } from './registry.js';
 /* Variable mapping                                                    */
 /* ------------------------------------------------------------------ */
 
+function paramWordExpr(word: string): string {
+  if (word.startsWith('$') && /^\$[A-Za-z_][A-Za-z0-9_]*$/.test(word)) {
+    return varExpr(word.slice(1));
+  }
+  return psStr(word);
+}
+
+/** `${name:-word}` and friends using case-exact fx-scalar0. */
+export function paramExpr(
+  name: string,
+  op: ':-' | ':=' | ':+' | ':?' | '-' | '+' | '?',
+  word: string,
+): string {
+  const alt = paramWordExpr(word);
+  const get = '(fx-scalar0 ' + psStr(name) + ')';
+  const empty = '($null -eq $fx_pv -or [string]$fx_pv -eq \'\')';
+  const unset = '($null -eq $fx_pv)';
+  if (op === ':-') {
+    return '$( $fx_pv = ' + get + '; if (' + empty + ') { ' + alt + ' } else { $fx_pv } )';
+  }
+  if (op === '-') {
+    return '$( $fx_pv = ' + get + '; if (' + unset + ') { ' + alt + ' } else { $fx_pv } )';
+  }
+  if (op === ':+') {
+    return '$( $fx_pv = ' + get + '; if (' + empty + ') { \'\' } else { ' + alt + ' } )';
+  }
+  if (op === '+') {
+    return '$( $fx_pv = ' + get + '; if (' + unset + ') { \'\' } else { ' + alt + ' } )';
+  }
+  const msg = word === '' ? name + ': parameter null or not set' : name + ': ' + word;
+  const cond = op === ':?' ? empty : unset;
+  return (
+    '$( $fx_pv = ' +
+    get +
+    '; if (' +
+    cond +
+    ') { [Console]::Error.WriteLine(' +
+    psStr('bash: ' + msg) +
+    '); $script:fx_exit = 1; \'\' } else { $fx_pv } )'
+  );
+}
+
 /** Map a bash $VAR name to a PowerShell expression (usable inside $(...)). */
-export function varExpr(name: string, index?: string): string {
+export function varExpr(
+  name: string,
+  index?: string,
+  param?: { op: ':-' | ':=' | ':+' | ':?' | '-' | '+' | '?'; word: string },
+): string {
+  if (param) return paramExpr(name, param.op, param.word);
   // Indexed reads always go through fx-subget → fx-arrload → fx-scalar0 so
   // ${PWD[0]} keeps the special mapping and ${bash_rematch[0]} stays
   // case-exact (a `$env:name` fallback would alias BASH_REMATCH on Windows).
@@ -117,7 +164,7 @@ export function exprOfWord(w: Word, opts?: { preserveCmdSub?: boolean }): string
 
   // single bare variable → bare expression
   if (expanded.length === 1 && expanded[0].kind === 'Var') {
-    return varExpr(expanded[0].name, expanded[0].index);
+    return varExpr(expanded[0].name, expanded[0].index, expanded[0].param);
   }
   // Bare `$(...)` must not sit inside a PS expandable string: the
   // substitution body contains `"` / `$_` that would break interpolation.
@@ -145,7 +192,7 @@ export function exprOfWord(w: Word, opts?: { preserveCmdSub?: boolean }): string
         for (const q of p.parts) emitPart(q, true);
         break;
       case 'Var':
-        out += '$(' + varExpr(p.name, p.index) + ')';
+        out += '$(' + varExpr(p.name, p.index, p.param) + ')';
         break;
       case 'CmdSub':
         out += '$(' + translateCmdSub(p.cmd, quoted || opts?.preserveCmdSub === true) + ')';

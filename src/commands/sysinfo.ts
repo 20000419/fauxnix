@@ -11,6 +11,7 @@ import {
   translateCmdSub,
   normalizeLiteralPath,
   pathExpr,
+  paramExpr,
 } from '../translator.js';
 import { handlers as textIoHandlers } from './text-io.js';
 
@@ -1435,6 +1436,9 @@ function kshExprOfWord(w: Word): string {
   }
   if (tilde && expanded.length === 0) return '(fx-home)';
   if (!tilde && expanded.length === 1 && expanded[0].kind === 'Var') {
+    if (expanded[0].param) {
+      return paramExpr(expanded[0].name, expanded[0].param.op, expanded[0].param.word);
+    }
     if (expanded[0].index !== undefined) {
       return '(fx-subget ' + psStr(expanded[0].name) + ' ' + psStr(expanded[0].index) + ')';
     }
@@ -1459,7 +1463,9 @@ function kshExprOfWord(w: Word): string {
         break;
       case 'Var':
         out +=
-          p.index !== undefined
+          p.param
+            ? '$(' + paramExpr(p.name, p.param.op, p.param.word) + ')'
+            : p.index !== undefined
             ? '$(fx-subget ' + psStr(p.name) + ' ' + psStr(p.index) + ')'
             : '$(fx-envget ' + psStr(p.name) + ')';
         break;

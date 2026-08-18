@@ -245,8 +245,16 @@ function readDollar(input: string, i: number): { part: WordPart; next: number } 
     if (sub) {
       return { part: { kind: 'Var', name: sub[1], index: sub[2] }, next: end + 1 };
     }
+    const pm = name.match(/^([A-Za-z_][A-Za-z0-9_]*)(:?[-+?])(.*)$/);
+    if (pm) {
+      const op = pm[2] as ':-' | ':+' | ':?' | '-' | '+' | '?';
+      return {
+        part: { kind: 'Var', name: pm[1], param: { op, word: pm[3] } },
+        next: end + 1,
+      };
+    }
     if (!name || !isNameStart(name[0]) || !name.split('').every(isNameChar)) {
-      // ${VAR:-default} etc. — unsupported, kept as raw text
+      // ${VAR:=default} etc. still raw text
       return { part: { kind: 'Text', text: input.slice(i, end + 1) }, next: end + 1 };
     }
     return { part: { kind: 'Var', name }, next: end + 1 };
