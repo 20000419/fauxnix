@@ -4,7 +4,7 @@
 
 **HN title:** Show HN: Fauxnix – bash for AI agents on Windows, no WSL (measured the PS tax first)
 
-**Alt title:** We benchmarked DeepSeek-V4-Pro writing PowerShell: 2.5× slower, 24 error events
+**Alt title:** We benchmarked DeepSeek-V4-Pro writing PowerShell: 2.5× slower, 14 error events (vs 0 in bash mode)
 
 ---
 
