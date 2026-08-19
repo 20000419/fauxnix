@@ -9,10 +9,12 @@ import {
   translateCommandList,
   varExpr,
   wrapScript,
+  hostBootstrapScript,
 } from '../src/translator.js';
 import { lookup, parseWords, psStr } from '../src/registry.js';
 import { decodeOutput, encodeCommand, normalizeHostNewlines } from '../src/encoding.js';
 import { normalizeStderr } from '../src/errors.js';
+import { decodeHostResponse, encodeHostRequest } from '../src/ps-host.js';
 import '../src/commands/install-all.js';
 
 /* ---------------------------- parser ---------------------------- */
@@ -421,6 +423,24 @@ describe('translator', () => {
     expect(s).toContain('[Environment]::CurrentDirectory');
   });
 
+  it('host-mode wrapScript does not exit and skips helper re-emit', () => {
+    const s = wrapScript('echo ${X[@]}', { mode: 'host' });
+    expect(s).not.toContain('exit $script:fx_exit');
+    expect(s).toContain('$script:fx_exit = 0');
+    expect(s).toContain('[Environment]::CurrentDirectory');
+    expect(s).not.toContain('function fx-arrload');
+    expect(s).not.toContain('function fx-csub');
+  });
+
+  it('host bootstrap loads helpers and speaks JSON lines without exit', () => {
+    const boot = hostBootstrapScript();
+    expect(boot).toContain('function fx-arrload');
+    expect(boot).toContain('function fx-csub');
+    expect(boot).toContain('{"ready":true}');
+    expect(boot).toContain('ConvertFrom-Json');
+    expect(boot).not.toContain('exit $script:fx_exit');
+  });
+
   it('omits unused wrapScript helpers on a body that calls none of them', () => {
     const s = wrapScript('x');
     expect(s).not.toContain('function fx-arrload');
@@ -529,6 +549,32 @@ describe('encoding', () => {
 
   it('encodes -EncodedCommand as UTF-16LE base64', () => {
     expect(Buffer.from(encodeCommand('dir'), 'base64').toString('utf16le')).toBe('dir');
+  });
+});
+
+describe('persistent PowerShell host protocol', () => {
+  it('round-trips script bytes and env unsets through JSON lines', () => {
+    const script = 'Write-Output "hi"\n$script:fx_exit = 0';
+    const line = encodeHostRequest('abc', script, { FAUXNIX_STDIN_FILE: '', FAUXNIX_CWD: 'D:\\tmp' });
+    expect(line).not.toContain('\n');
+    const parsed = JSON.parse(line) as { id: string; scriptB64: string; env: Record<string, string> };
+    expect(parsed.id).toBe('abc');
+    expect(Buffer.from(parsed.scriptB64, 'base64').toString('utf8')).toBe(script);
+    expect(parsed.env.FAUXNIX_STDIN_FILE).toBe('');
+    expect(parsed.env.FAUXNIX_CWD).toBe('D:\\tmp');
+  });
+
+  it('decodes base64 stdout/stderr and the ready handshake', () => {
+    const stdoutB64 = Buffer.from('hi\n', 'utf8').toString('base64');
+    const stderrB64 = Buffer.from('err', 'utf8').toString('base64');
+    const msg = decodeHostResponse(
+      JSON.stringify({ id: 'abc', stdoutB64, stderrB64, exitCode: 2 }),
+    );
+    expect(msg.id).toBe('abc');
+    expect(msg.stdout.toString('utf8')).toBe('hi\n');
+    expect(msg.stderr.toString('utf8')).toBe('err');
+    expect(msg.exitCode).toBe(2);
+    expect(decodeHostResponse('{"ready":true}').ready).toBe(true);
   });
 });
 
