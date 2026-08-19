@@ -814,4 +814,44 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     const r = await run('yes | head -3');
     expect(r.stdout.split(/\r?\n/).filter((l) => l === 'y').length).toBe(3);
   }, 30000);
+
+  it('15x echo hi on a warm host is far below the 1.25s spawn baseline', async () => {
+    const extra = new FauxnixSession();
+    try {
+      const warm = await extra.run(translateCommandList(parseCommand('echo hi')));
+      expect(warm.stdout.trim()).toBe('hi');
+      const times: number[] = [];
+      for (let i = 0; i < 15; i++) {
+        const t0 = Date.now();
+        const r = await extra.run(translateCommandList(parseCommand('echo hi')));
+        times.push(Date.now() - t0);
+        expect(r.exitCode).toBe(0);
+        expect(r.stdout.trim()).toBe('hi');
+      }
+      const sorted = [...times].sort((a, b) => a - b);
+      const p50 = sorted[Math.floor(sorted.length / 2)]!;
+      const mean = times.reduce((a, b) => a + b, 0) / times.length;
+      // Maintainer baseline after #114: 1.25s/cmd, dominated by powershell.exe spawn.
+      // A persistent host must beat that by a lot, not 5%.
+      expect(p50).toBeLessThan(250);
+      expect(mean).toBeLessThan(400);
+      expect(Math.max(...times)).toBeLessThan(1250);
+    } finally {
+      await extra.dispose();
+    }
+  }, 60000);
+
+  it('executor timeout 124 leaves the same session usable', async () => {
+    const extra = new FauxnixSession();
+    try {
+      const r = await extra.run(translateCommandList(parseCommand('sleep 5')), { timeoutMs: 800 });
+      expect(r.exitCode).toBe(124);
+      expect(r.stderr).toMatch(/timed out/);
+      const next = await extra.run(translateCommandList(parseCommand('echo after-timeout')));
+      expect(next.exitCode).toBe(0);
+      expect(next.stdout.trim()).toBe('after-timeout');
+    } finally {
+      await extra.dispose();
+    }
+  }, 30000);
 });

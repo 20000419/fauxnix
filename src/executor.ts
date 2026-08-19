@@ -1,12 +1,12 @@
-import { spawn, ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { promises as fs, readFileSync, writeFileSync, existsSync, openSync, closeSync, writeSync } from 'node:fs';
+import { promises as fs, readFileSync, existsSync, openSync, closeSync, writeSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Redirect } from './ast.js';
-import { SegmentPlan, normalizeLiteralPath } from './translator.js';
-import { decodeOutput, encodeCommand, normalizeHostNewlines, resolveNativePref } from './encoding.js';
+import { SegmentPlan, normalizeLiteralPath, wrapScript } from './translator.js';
+import { decodeOutput, normalizeHostNewlines, resolveNativePref } from './encoding.js';
 import { normalizeStderr } from './errors.js';
+import { PowerShellHost, PS_MISSING_MESSAGE } from './ps-host.js';
 
 export interface ExecResult {
   stdout: string;
@@ -21,7 +21,6 @@ export interface ExecOptions {
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000;
-const PS_ARGS = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass'];
 
 /** Resolve /dev/null and POSIX-ish literal targets to real Windows paths. */
 function winTarget(target: string): string {
@@ -178,15 +177,22 @@ export class FauxnixSession {
   env: Record<string, string> = {};
   /** Exit code of the previous segment — powers bash's `$?`. */
   prevExit: number | null = null;
-  private cwdFile: string;
-  private envFile: string;
-  private scriptFile: string;
+  private cwdFile!: string;
+  private envFile!: string;
+  private scriptFile!: string;
+  private hostFile!: string;
+  private host: PowerShellHost | null = null;
+  private runLock: Promise<unknown> = Promise.resolve();
 
   constructor() {
-    const id = randomUUID().slice(0, 8);
+    this.bindFiles(randomUUID().slice(0, 8));
+  }
+
+  private bindFiles(id: string): void {
     this.cwdFile = path.join(os.tmpdir(), 'fauxnix-' + id + '-cwd.txt');
     this.envFile = path.join(os.tmpdir(), 'fauxnix-' + id + '-env.json');
     this.scriptFile = path.join(os.tmpdir(), 'fauxnix-' + id + '-script.ps1');
+    this.hostFile = path.join(os.tmpdir(), 'fauxnix-' + id + '-host.ps1');
   }
 
   private syncFromDisk(): void {
@@ -208,12 +214,28 @@ export class FauxnixSession {
     }
   }
 
+  private ensureHost(): PowerShellHost {
+    if (!this.host) {
+      this.host = new PowerShellHost(this.hostFile, () => this.childEnv());
+    }
+    return this.host;
+  }
+
   async dispose(): Promise<void> {
+    if (this.host) {
+      await this.host.stop();
+      this.host = null;
+    }
+    this.cwd = null;
+    this.env = {};
+    this.prevExit = null;
     await Promise.allSettled([
       fs.rm(this.cwdFile, { force: true }),
       fs.rm(this.envFile, { force: true }),
       fs.rm(this.scriptFile, { force: true }),
+      fs.rm(this.hostFile, { force: true }),
     ]);
+    this.bindFiles(randomUUID().slice(0, 8));
   }
 
   /** env for the child powershell process. */
@@ -236,13 +258,15 @@ export class FauxnixSession {
   }
 
   run(plans: SegmentPlan[], opts: ExecOptions = {}): Promise<ExecResult> {
-    return runPlans(plans, this, opts, () => this.syncFromDisk(), this.scriptFile);
+    const done = this.runLock.then(() =>
+      runPlans(plans, this, opts, () => this.syncFromDisk(), () => this.ensureHost()),
+    );
+    this.runLock = done.then(
+      () => undefined,
+      () => undefined,
+    );
+    return done;
   }
-}
-
-interface RunningChild {
-  proc: ChildProcess;
-  killed: boolean;
 }
 
 async function runPlans(
@@ -250,7 +274,7 @@ async function runPlans(
   session: FauxnixSession,
   opts: ExecOptions,
   afterSegment: () => void,
-  scriptFile: string,
+  ensureHost: () => PowerShellHost,
 ): Promise<ExecResult> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   let stdout = '';
@@ -343,59 +367,24 @@ async function runPlans(
       continue;
     }
 
-    const encoded = encodeCommand(plan.script);
+    const encoded = wrapScript(plan.body, { mode: 'host' });
+    const inv = await ensureHost().invoke(
+      encoded,
+      {
+        FAUXNIX_CWD: currentDir,
+        FAUXNIX_PREV_EXIT: session.prevExit === null ? '' : String(session.prevExit),
+        FAUXNIX_STDIN_FILE: red.stdinFile || '',
+      },
+      timeoutMs,
+    );
 
-    // -EncodedCommand is capped by the ~32K command-line limit; heavy
-    // pipelines fall back to a UTF-8 BOM temp script (PS 5.1 honors the BOM
-    // regardless of the console codepage, so non-ASCII stays intact).
-    let psArgs: string[];
-    if (encoded.length > 28000) {
-      writeFileSync(scriptFile, '\ufeff' + plan.script, 'utf8');
-      psArgs = [...PS_ARGS, '-File', scriptFile];
-    } else {
-      psArgs = [...PS_ARGS, '-EncodedCommand', encoded];
+    if (inv.spawnError === 'ENOENT') {
+      stderr += inv.stderr.toString('utf8') || PS_MISSING_MESSAGE;
+      exitCode = 127;
+      session.prevExit = exitCode;
+      chainOk = false;
+      continue;
     }
-
-    const child = spawn('powershell.exe', psArgs, {
-      env: session.childEnv(currentDir, red.stdinFile),
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
-    const running: RunningChild = { proc: child, killed: false };
-
-    const outBufs: Buffer[] = [];
-    const errBufs: Buffer[] = [];
-    child.stdout!.on('data', (d: Buffer) => outBufs.push(d));
-    child.stderr!.on('data', (d: Buffer) => errBufs.push(d));
-    child.stdin!.end();
-
-    const timer = setTimeout(() => {
-      running.killed = true;
-      // Node-native termination — no external kill process, nothing injectable.
-      // Grandchildren of a timed-out script may survive; the `kill -9`/`pkill`
-      // builtins remain available for explicit Windows tree kills.
-      try {
-        child.kill();
-      } catch {
-        /* best effort */
-      }
-    }, timeoutMs);
-
-    const code = await new Promise<number | null>((resolve) => {
-      child.on('error', (e) => {
-        if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
-          stderr +=
-            'fauxnix: powershell.exe not found — fauxnix executes bash via native Windows PowerShell 5.1+.\n' +
-            'This host has no PowerShell on PATH (typical for Linux containers/sandboxes).\n' +
-            'Run fauxnix on Windows, or install PowerShell and make powershell.exe reachable on PATH.\n';
-        } else {
-          stderr += 'fauxnix: failed to start powershell.exe: ' + e.message + '\n';
-        }
-        resolve(127);
-      });
-      child.on('close', (c) => resolve(running.killed ? 124 : (c ?? 0)));
-    });
-    clearTimeout(timer);
 
     afterSegment();
 
@@ -403,12 +392,10 @@ async function runPlans(
     // GNU line discipline: the PS host terminates Write-Output lines with
     // CRLF. Exact writers (fx-write / printf / echo -n) must keep embedded
     // CR so `printf 'a\r\nb' > out` stays 4 bytes.
-    let segOut = normalizeHostNewlines(decodeOutput(Buffer.concat(outBufs), decodePref));
-    let segErr = normalizeHostNewlines(
-      normalizeStderr(decodeOutput(Buffer.concat(errBufs), decodePref)),
-    );
+    let segOut = normalizeHostNewlines(decodeOutput(inv.stdout, decodePref));
+    let segErr = normalizeHostNewlines(normalizeStderr(decodeOutput(inv.stderr, decodePref)));
 
-    if (running.killed) {
+    if (inv.timedOut) {
       segErr += '\nbash: command timed out after ' + Math.round(timeoutMs / 1000) + 's';
     }
 
@@ -451,7 +438,7 @@ async function runPlans(
 
     stdout += segOut;
     stderr += segErr;
-    exitCode = code ?? 0;
+    exitCode = inv.timedOut ? 124 : inv.exitCode;
     session.prevExit = exitCode;
     chainOk = exitCode === 0;
     // Only inherit cwd from a segment that actually ran and whose

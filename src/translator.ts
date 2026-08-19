@@ -860,8 +860,10 @@ export function translatePipelineBody(p: {
 
 export interface SegmentPlan {
   op: ';' | '&&' | '||';
-  /** Complete PowerShell script for one powershell.exe invocation. */
+  /** Spawn-mode wrapScript (CLI/MCP `translate`, one-shot powershell.exe). */
   script: string;
+  /** Pipeline body before wrapScript — executor host mode re-wraps this. */
+  body: string;
   /** All redirects collected from this segment (executor handles them). */
   redirects: Redirect[];
 }
@@ -886,7 +888,7 @@ export function translateCommandList(list: CommandList): SegmentPlan[] {
         call +
         ' }';
     }
-    plans.push({ op: seg.op, script: wrapScript(body), redirects });
+    plans.push({ op: seg.op, script: wrapScript(body), body, redirects });
   }
   return plans;
 }
@@ -950,20 +952,17 @@ function wrapHelpersNeeded(body: string): Set<WrapHelper> {
   return needed;
 }
 
-/**
- * Wrap a pipeline body with the Fauxnix executor contract:
- * UTF-8 everywhere, bash-style exit codes, cwd/env persistence channels.
- * Only the fx- helpers the body actually calls are emitted — the full
- * catalog is ~170 lines and was paid on every `echo hi`.
- */
-export function wrapScript(body: string): string {
-  const needed = wrapHelpersNeeded(body);
-  const lines = [
+export type WrapMode = 'spawn' | 'host';
+
+export interface WrapScriptOptions {
+  /** spawn (default): one-shot process, `exit` at the end. host: no `exit`, no helper re-emit. */
+  mode?: WrapMode;
+}
+
+function wrapEncodingPreamble(): string[] {
+  return [
     '$ErrorActionPreference = "Continue"',
     "$ProgressPreference = 'SilentlyContinue'",
-    '$fx_exit = 0',
-    '$fx_prev = 0',
-    'if ($env:FAUXNIX_PREV_EXIT) { try { $fx_prev = [int]$env:FAUXNIX_PREV_EXIT } catch { $fx_prev = 0 } }',
     // single console-encoding knob in PS 5.1: ansi mode decodes GBK-native
     // admin tools correctly, utf8 mode decodes UTF-8-native dev tools
     // (see encoding.ts — file reads sniff per file and are always right)
@@ -974,6 +973,14 @@ export function wrapScript(body: string): string {
     '  try { chcp 65001 > $null } catch {}',
     '}',
     '$OutputEncoding = [System.Text.Encoding]::UTF8',
+  ];
+}
+
+function wrapCwdPreamble(): string[] {
+  return [
+    '$script:fx_exit = 0',
+    '$fx_prev = 0',
+    'if ($env:FAUXNIX_PREV_EXIT) { try { $fx_prev = [int]$env:FAUXNIX_PREV_EXIT } catch { $fx_prev = 0 } }',
     'if ($env:FAUXNIX_CWD) { try { Set-Location -LiteralPath $env:FAUXNIX_CWD } catch {} }',
     // capture AFTER the session cwd is applied — OLDPWD must refer to the
     // shell's previous directory, not the host process' startup directory
@@ -982,6 +989,45 @@ export function wrapScript(body: string): string {
     // process working directory, NOT the PS location — keep them in sync.
     'try { [Environment]::CurrentDirectory = (Get-Location).ProviderPath } catch {}',
   ];
+}
+
+function wrapBodyAndPersist(body: string, exitProcess: boolean): string[] {
+  const lines = [
+    'try {',
+    ...body.split('\n').map((l) => '  ' + l),
+    '} catch [System.Management.Automation.CommandNotFoundException] {',
+    "  [Console]::Error.WriteLine('bash: ' + $_.Exception.TargetName + ': command not found')",
+    '  $script:fx_exit = 127',
+    '} catch {',
+    '  [Console]::Error.WriteLine(($_.Exception.Message).Split("`n")[0])',
+    '  $script:fx_exit = 1',
+    '}',
+    '# persist session cwd and environment for the next segment',
+    'try { [IO.File]::WriteAllText($env:FAUXNIX_CWD_FILE, (Get-Location).Path) } catch {}',
+    'if ((Get-Location).Path -ne $fx_oldcwd) { $env:FAUXNIX_OLDPWD = $fx_oldcwd }',
+    'try {',
+    '  $envObj = @{}',
+    '  Get-ChildItem Env: | ForEach-Object { $envObj[$_.Name] = $_.Value }',
+    '  [IO.File]::WriteAllText($env:FAUXNIX_ENV_FILE, (ConvertTo-Json $envObj -Compress))',
+    '} catch {}',
+  ];
+  if (exitProcess) lines.push('exit $script:fx_exit');
+  return lines;
+}
+
+/**
+ * Wrap a pipeline body with the Fauxnix executor contract:
+ * UTF-8 everywhere, bash-style exit codes, cwd/env persistence channels.
+ * Spawn mode emits only the fx- helpers the body actually calls. Host mode
+ * assumes the resident process already loaded the catalog and must not `exit`.
+ */
+export function wrapScript(body: string, opts: WrapScriptOptions = {}): string {
+  const mode = opts.mode ?? 'spawn';
+  const needed = mode === 'host' ? new Set<WrapHelper>() : wrapHelpersNeeded(body);
+  const lines =
+    mode === 'host'
+      ? wrapCwdPreamble()
+      : [...wrapEncodingPreamble(), ...wrapCwdPreamble()];
   const helpers: Record<WrapHelper, string[]> = {
     'fx-readlines': [
       'function fx-readlines($p) {',
@@ -1162,28 +1208,105 @@ export function wrapScript(body: string): string {
       '}',
     ],
   };
+  cachedWrapHelpers = helpers;
   for (const name of WRAP_HELPER_ORDER) {
     if (needed.has(name)) lines.push(...helpers[name]);
   }
-  lines.push(
-    'try {',
-    ...body.split('\n').map((l) => '  ' + l),
-    '} catch [System.Management.Automation.CommandNotFoundException] {',
-    "  [Console]::Error.WriteLine('bash: ' + $_.Exception.TargetName + ': command not found')",
-    '  $script:fx_exit = 127',
-    '} catch {',
-    '  [Console]::Error.WriteLine(($_.Exception.Message).Split("`n")[0])',
-    '  $script:fx_exit = 1',
-    '}',
-    '# persist session cwd and environment for the next segment',
-    'try { [IO.File]::WriteAllText($env:FAUXNIX_CWD_FILE, (Get-Location).Path) } catch {}',
-    'if ((Get-Location).Path -ne $fx_oldcwd) { $env:FAUXNIX_OLDPWD = $fx_oldcwd }',
-    'try {',
-    '  $envObj = @{}',
-    '  Get-ChildItem Env: | ForEach-Object { $envObj[$_.Name] = $_.Value }',
-    '  [IO.File]::WriteAllText($env:FAUXNIX_ENV_FILE, (ConvertTo-Json $envObj -Compress))',
-    '} catch {}',
-    'exit $script:fx_exit',
-  );
+  lines.push(...wrapBodyAndPersist(body, mode === 'spawn'));
   return lines.join('\n');
 }
+
+let cachedWrapHelpers: Record<WrapHelper, string[]> | null = null;
+
+function wrapHelperCatalog(): Record<WrapHelper, string[]> {
+  if (!cachedWrapHelpers) wrapScript('');
+  return cachedWrapHelpers!;
+}
+
+/**
+ * Resident-host bootstrap: encoding + full fx-* catalog + JSON-line RPC loop.
+ * Loaded once via `powershell.exe -File`. Must never `exit` a successful frame.
+ */
+export function hostBootstrapScript(): string {
+  const helpers = wrapHelperCatalog();
+  const helperLines: string[] = [];
+  for (const name of WRAP_HELPER_ORDER) helperLines.push(...helpers[name]);
+  return [
+    ...wrapEncodingPreamble(),
+    '$script:fx_exit = 0',
+    ...helperLines,
+    HOST_RPC_LOOP,
+  ].join('\n');
+}
+
+/** Raw UTF-8 JSON lines on stdin/stdout; command streams captured per frame. */
+const HOST_RPC_LOOP = `
+$fx_utf8 = New-Object System.Text.UTF8Encoding $false
+$fx_in = [Console]::OpenStandardInput()
+$fx_out = [Console]::OpenStandardOutput()
+$fx_reader = New-Object System.IO.StreamReader($fx_in, $fx_utf8, $true, 8192, $true)
+$fx_proto = New-Object System.IO.StreamWriter($fx_out, $fx_utf8, 8192, $true)
+$fx_proto.NewLine = [string][char]10
+$fx_proto.AutoFlush = $true
+$fx_proto.WriteLine('{"ready":true}')
+while ($true) {
+  $fx_line = $fx_reader.ReadLine()
+  if ($null -eq $fx_line) { break }
+  if ($fx_line -eq '') { continue }
+  $fx_id = ''
+  $fx_msOut = $null
+  $fx_msErr = $null
+  $fx_outW = $null
+  $fx_errW = $null
+  $fx_oldOut = [Console]::Out
+  $fx_oldErr = [Console]::Error
+  try {
+    $fx_req = $fx_line | ConvertFrom-Json
+    $fx_id = [string]$fx_req.id
+    if ($fx_req.env) {
+      foreach ($fx_p in $fx_req.env.PSObject.Properties) {
+        $fx_en = [string]$fx_p.Name
+        $fx_ev = [string]$fx_p.Value
+        if ($fx_ev -eq '') {
+          Remove-Item -LiteralPath ('Env:\\' + $fx_en) -ErrorAction SilentlyContinue
+        } else {
+          Set-Item -LiteralPath ('Env:\\' + $fx_en) -Value $fx_ev
+        }
+      }
+    }
+    $fx_script = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([string]$fx_req.scriptB64))
+    $fx_msOut = New-Object System.IO.MemoryStream
+    $fx_msErr = New-Object System.IO.MemoryStream
+    $fx_outW = New-Object System.IO.StreamWriter($fx_msOut, $fx_utf8, 1024, $true)
+    $fx_errW = New-Object System.IO.StreamWriter($fx_msErr, $fx_utf8, 1024, $true)
+    $fx_outW.NewLine = [string][char]13 + [string][char]10
+    $fx_errW.NewLine = [string][char]13 + [string][char]10
+    $fx_outW.AutoFlush = $true
+    $fx_errW.AutoFlush = $true
+    [Console]::SetOut($fx_outW)
+    [Console]::SetError($fx_errW)
+    $script:fx_exit = 0
+    $fx_sb = [scriptblock]::Create($fx_script)
+    & $fx_sb | ForEach-Object { [Console]::Out.WriteLine([string]$_) }
+  } catch [System.Management.Automation.CommandNotFoundException] {
+    [Console]::Error.WriteLine('bash: ' + $_.Exception.TargetName + ': command not found')
+    $script:fx_exit = 127
+  } catch {
+    [Console]::Error.WriteLine(($_.Exception.Message).Split([string][char]10)[0])
+    $script:fx_exit = 1
+  } finally {
+    try { if ($null -ne $fx_outW) { $fx_outW.Flush() } } catch {}
+    try { if ($null -ne $fx_errW) { $fx_errW.Flush() } } catch {}
+    try { [Console]::SetOut($fx_oldOut) } catch {}
+    try { [Console]::SetError($fx_oldErr) } catch {}
+  }
+  $fx_outB64 = ''
+  $fx_errB64 = ''
+  if ($null -ne $fx_msOut) { $fx_outB64 = [Convert]::ToBase64String($fx_msOut.ToArray()) }
+  if ($null -ne $fx_msErr) { $fx_errB64 = [Convert]::ToBase64String($fx_msErr.ToArray()) }
+  $fx_code = 0
+  try { $fx_code = [int]$script:fx_exit } catch { $fx_code = 1 }
+  $fx_res = @{ id = $fx_id; stdoutB64 = $fx_outB64; stderrB64 = $fx_errB64; exitCode = $fx_code }
+  $fx_proto.WriteLine(($fx_res | ConvertTo-Json -Compress))
+}
+`.trim();
