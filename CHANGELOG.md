@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.6.0 — 2026-08-19
+
+- **Persistent PowerShell host per session** (#115, RFC in
+  docs/rfc-persistent-powershell-host.md): one resident powershell.exe per
+  FauxnixSession speaking JSON-lines frames — session-mode latency drops from
+  ~1.1s to **~0.03s per warm command (measured 15×)**; the full test suite
+  runs ~3× faster as a side effect
+  - Timeout kills the host (exit 124) and the next command cold-starts a
+    fresh one; host death mid-frame fails that frame without retrying
+  - `fauxnix translate` still prints the spawn-style script and never starts
+    a host; MCP warm tool calls measure 0.01-0.04s end to end
+  - One-shot CLI keeps working but pays host boot (~+0.2s); agents batch via
+    MCP/CLI session paths and see the full win
 ## v0.5.1 — 2026-08-19
 
 - `$((...))` word-level arithmetic expansion now rejects loudly with an
