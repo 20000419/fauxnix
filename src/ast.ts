@@ -12,7 +12,8 @@
  *
  * Explicitly unsupported (parser throws a helpful FauxnixError):
  *   heredocs, subshells (...), background &, while/until/case,
- *   globs inside quotes, process substitution <(...).
+ *   word-level $((...)) arithmetic expansion, globs inside quotes,
+ *   process substitution <(...).
  */
 
 export interface CommandList {

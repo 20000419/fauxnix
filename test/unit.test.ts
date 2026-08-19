@@ -165,6 +165,16 @@ describe('parser', () => {
     expect(() => parse('cat <<EOF')).toThrow(/heredoc/);
   });
 
+  it('rejects word-level $((...)) instead of treating it as $( (expr) )', () => {
+    expect(() => parse('echo $((1+1))')).toThrow(FauxnixParseError);
+    expect(() => parse('echo $((1+1))')).toThrow(/\$\(\(\.\.\.\)\) arithmetic expansion is not supported/);
+    expect(() => parse('X=$((x+1))')).toThrow(/arithmetic expansion/);
+    expect(() => parse('echo "$((1+1))"')).toThrow(/arithmetic expansion/);
+    expect(() => parse('echo ok; echo $((x+1))')).toThrow(/arithmetic expansion/);
+    // space after $( is command substitution of a subshell, not arith
+    expect(() => parse('echo $( (true) )')).not.toThrow(/arithmetic expansion/);
+  });
+
   it('parses backticks as command substitution', () => {
     const cmd = parse('echo `date +%Y`').segments[0].pipeline.commands[0];
     expect(cmd.args[0].some((p) => p.kind === 'CmdSub' && p.cmd === 'date +%Y')).toBe(true);
