@@ -12,7 +12,10 @@ Cross-trained LLMs are dramatically worse at PowerShell than bash — same model
 same tasks, 2–3× the tool calls and error storms that burn context and time.
 We measured it, then built the fix: **fauxnix**, an MCP `bash` tool that
 deterministically translates bash to native PowerShell. No WSL, no VM, no bash
-toolchain — `npm install -g fauxnix-cli`.
+toolchain — `npm install -g fauxnix-cli`. And since v0.6.0's persistent
+PowerShell host, warm tool calls answer in **0.01–0.04s** (15× faster than
+respawning a shell per command) — same ballpark as any built-in Bash tool,
+without shipping one.
 
 ## The measurement
 
