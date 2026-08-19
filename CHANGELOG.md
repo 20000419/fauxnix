@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.5.1 — 2026-08-19
+
+- `$((...))` word-level arithmetic expansion now rejects loudly with an
+  actionable message (was: parsed as `$( (expr) )` and became a confusing
+  empty-command error). Spaced `$( (cmd) )` keeps command-substitution
+  semantics (#113)
+- `wrapScript` emits only the fx- helpers a body actually calls (explicit
+  dependency graph, transitive closure) instead of the full ~170-line catalog
+  on every command (#114). Measured effect on simple-command wall time is
+  ~zero (spawn cost dominates); the win is smaller scripts through
+  -EncodedCommand and cleaner generated output
 ## v0.5.0 — 2026-08-18
 
 Wave 2 "agent script surface" (RFC #111, by r3wretrhy; integration merge):
