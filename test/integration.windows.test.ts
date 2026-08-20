@@ -815,6 +815,20 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect(r.stdout.split(/\r?\n/).filter((l) => l === 'y').length).toBe(3);
   }, 30000);
 
+  it('word-level $((...)) evaluates through fx-arith', async () => {
+    expect((await run('echo $((1+1))')).stdout.trim()).toBe('2');
+    expect((await run('x=3; echo $((x+1))')).stdout.trim()).toBe('4');
+    expect((await run('x=3; echo $(($x+1))')).stdout.trim()).toBe('4');
+    expect((await run('echo "$((2*3))"')).stdout.trim()).toBe('6');
+    expect((await run('echo $(())')).stdout.trim()).toBe('0');
+    const step = await run('i=3; i=$((i+1)); echo $i');
+    expect(step.exitCode).toBe(0);
+    expect(step.stdout.trim()).toBe('4');
+    const bad = await run('echo $((1+))');
+    expect(bad.exitCode).toBe(1);
+    expect(bad.stderr).toMatch(/integer expression expected/);
+  });
+
   it('15x echo hi on a warm host is far below the 1.25s spawn baseline', async () => {
     const extra = new FauxnixSession();
     try {

@@ -261,7 +261,32 @@ function readBacktick(input: string, i: number): { part: WordPart; next: number 
   throw new FauxnixParseError('fauxnix: unclosed backtick');
 }
 
-/** Parse $VAR, ${VAR}, $(cmd substitution). Returns null when not a valid dollar construct. */
+/** Expand `$…` constructs that appear inside `$((…))`. */
+function readArithParts(input: string): WordPart[] {
+  const parts: WordPart[] = [];
+  let buf = '';
+  let i = 0;
+  while (i < input.length) {
+    if (input[i] === '$') {
+      const v = readDollar(input, i);
+      if (v) {
+        if (buf) {
+          parts.push({ kind: 'Text', text: buf });
+          buf = '';
+        }
+        parts.push(v.part);
+        i = v.next;
+        continue;
+      }
+    }
+    buf += input[i];
+    i++;
+  }
+  if (buf) parts.push({ kind: 'Text', text: buf });
+  return parts;
+}
+
+/** Parse $VAR, ${VAR}, $(cmd substitution), $((arith)). Returns null when not a valid dollar construct. */
 function readDollar(input: string, i: number): { part: WordPart; next: number } | null {
   const n = input.length;
   if (input[i] !== '$') return null;
@@ -299,13 +324,38 @@ function readDollar(input: string, i: number): { part: WordPart; next: number } 
     return { part: { kind: 'Var', name }, next: end + 1 };
   }
 
-  // $((...)) is arithmetic expansion, not command substitution of a
-  // parenthesized body. Today it was parsed as $( (expr) ) and became an
-  // empty/confusing command. Reject loudly until word-level arith lands.
+  // $((...)) arithmetic expansion — distinct from `$( (cmd) )` (space after
+  // the first paren is command substitution of a grouped body).
   if (input[j] === '(' && j + 1 < n && input[j + 1] === '(') {
-    throw new FauxnixParseError(
-      'fauxnix: $((...)) arithmetic expansion is not supported; compute the value in the agent or compare with [[ $n -eq m ]]',
-    );
+    let depth = 0;
+    let k = j;
+    while (k < n) {
+      const c = input[k];
+      if (c === "'" || c === '"') {
+        const q = c;
+        k++;
+        while (k < n && input[k] !== q) {
+          if (input[k] === '\\') k++;
+          k++;
+        }
+        k++;
+        continue;
+      }
+      if (c === '(') depth++;
+      else if (c === ')') {
+        depth--;
+        if (depth === 0) {
+          k++;
+          break;
+        }
+      }
+      k++;
+    }
+    if (depth !== 0) throw new FauxnixParseError('fauxnix: unclosed $(( ))');
+    return {
+      part: { kind: 'Arith', parts: readArithParts(input.slice(j + 2, k - 2)) },
+      next: k,
+    };
   }
 
   // $(cmd substitution) — captured with balanced parens; the translator

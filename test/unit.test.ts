@@ -167,14 +167,20 @@ describe('parser', () => {
     expect(() => parse('cat <<EOF')).toThrow(/heredoc/);
   });
 
-  it('rejects word-level $((...)) instead of treating it as $( (expr) )', () => {
-    expect(() => parse('echo $((1+1))')).toThrow(FauxnixParseError);
-    expect(() => parse('echo $((1+1))')).toThrow(/\$\(\(\.\.\.\)\) arithmetic expansion is not supported/);
-    expect(() => parse('X=$((x+1))')).toThrow(/arithmetic expansion/);
-    expect(() => parse('echo "$((1+1))"')).toThrow(/arithmetic expansion/);
-    expect(() => parse('echo ok; echo $((x+1))')).toThrow(/arithmetic expansion/);
-    // space after $( is command substitution of a subshell, not arith
-    expect(() => parse('echo $( (true) )')).not.toThrow(/arithmetic expansion/);
+  it('parses word-level $((...)) as Arith, not $( (expr) )', () => {
+    const cmd = parse('echo $((1+1))').segments[0].pipeline.commands[0];
+    expect(cmd.kind).toBe('SimpleCommand');
+    if (cmd.kind !== 'SimpleCommand') return;
+    expect(cmd.args[0].some((p) => p.kind === 'Arith')).toBe(true);
+    expect(wordToString(cmd.args[0])).toBe('$((1+1))');
+    const quoted = parse('echo "$((x+1))"').segments[0].pipeline.commands[0];
+    if (quoted.kind !== 'SimpleCommand') return;
+    const dq = quoted.args[0].find((p) => p.kind === 'DoubleQuoted');
+    expect(dq && dq.kind === 'DoubleQuoted' && dq.parts.some((p) => p.kind === 'Arith')).toBe(true);
+    expect(() => parse('X=$((x+1))')).not.toThrow();
+    expect(() => parse('echo $((1+1')).toThrow(/unclosed/);
+    // space after $( is command substitution of a grouped body, not arith
+    expect(() => parse('echo $( (true) )')).not.toThrow(/unclosed/);
   });
 
   it('parses backticks as command substitution', () => {
@@ -461,6 +467,10 @@ describe('translator', () => {
     expect(csub).toContain('function fx-csub');
     const stdin = translateCommandList(parse('wc -l < f.txt'))[0].script;
     expect(stdin).toContain('function fx-readlines');
+    const arith = translateCommandList(parse('echo $((1+1))'))[0];
+    expect(arith.body).toContain('fx-arith');
+    expect(arith.script).toContain('function fx-arith');
+    expect(echo).not.toContain('function fx-arith');
   });
 
   it('feeds stdin for < redirects', () => {
