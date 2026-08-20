@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.7.0 — 2026-08-20
+
+First roadmap wave (docs/rfc-roadmap-to-1.0.md): A2, part of A1, B1.
+
+- Word-level `$((...))` arithmetic expansion — implemented on the existing
+  fx-arith engine (replaces the #113 loud-reject); differential-checked
+  byte-identical with real bash on precedence, truncating division, modulo,
+  power, negatives, quoted embedding, and assignment-through-arith (#119)
+- `elif` chains — desugared to nested if (else + if), innermost clause
+  closes `fi` (#120)
+- MCP host prewarm — powershell.exe boots during initialize (and after
+  session reset), hiding the cold start: first tool call measured
+  1.12s -> 0.137s (#121)
+
+139/139 tests green.
 ## v0.6.0 — 2026-08-19
 
 - **Persistent PowerShell host per session** (#115, RFC in
