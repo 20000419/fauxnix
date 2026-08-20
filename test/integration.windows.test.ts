@@ -840,6 +840,21 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect(bad.stderr).toMatch(/integer expression expected/);
   });
 
+  it('prewarm hides host boot from the first echo hi', async () => {
+    const extra = new FauxnixSession();
+    try {
+      await extra.prewarm();
+      const t0 = Date.now();
+      const r = await extra.run(translateCommandList(parseCommand('echo hi')));
+      const ms = Date.now() - t0;
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout.trim()).toBe('hi');
+      expect(ms).toBeLessThan(400);
+    } finally {
+      await extra.dispose();
+    }
+  }, 30000);
+
   it('15x echo hi on a warm host is far below the 1.25s spawn baseline', async () => {
     const extra = new FauxnixSession();
     try {
