@@ -770,6 +770,17 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect((await run('if false; then echo YES; fi')).stdout.trim()).toBe('');
   });
 
+  it('elif takes the first true branch and keeps compound exit status', async () => {
+    expect((await run('if false; then echo A; elif true; then echo B; else echo C; fi')).stdout.trim()).toBe('B');
+    expect((await run('if false; then echo A; elif false; then echo B; else echo C; fi')).stdout.trim()).toBe('C');
+    expect((await run('if false; then echo A; elif false; then echo B; elif true; then echo C; fi')).stdout.trim()).toBe('C');
+    const taken = await run('if false; then false; elif true; then true; fi');
+    expect(taken.exitCode).toBe(0);
+    const missed = await run('if false; then echo A; elif false; then echo B; fi');
+    expect(missed.exitCode).toBe(0);
+    expect(missed.stdout.trim()).toBe('');
+  });
+
   it('for x in words; do ...; done iterates in the same session', async () => {
     expect((await run('for x in a b c; do echo $x; done')).stdout.trim()).toBe('a\nb\nc');
     expect((await run('for x in 1 2; do echo n$x; done; echo z$x')).stdout.trim()).toBe(

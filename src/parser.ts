@@ -727,14 +727,24 @@ export function parseCommand(input: string): CommandList {
     return { kind: 'CommandList', segments };
   };
 
-  const parseIf = (): IfCommand => {
-    expectKw('if');
+  const parseIf = (start: 'if' | 'elif' = 'if'): IfCommand => {
+    expectKw(start);
     const test = parseListUntil(['then']);
     expectKw('then');
     const thenL = parseListUntil(['else', 'elif', 'fi']);
     let elseL: CommandList | undefined;
     if (peekKw() === 'elif') {
-      throw new FauxnixParseError('fauxnix: elif is not supported yet; use else + if');
+      // bash `elif` is `else` + nested `if`; the innermost clause eats `fi`.
+      elseL = {
+        kind: 'CommandList',
+        segments: [
+          {
+            op: ';',
+            pipeline: { kind: 'Pipeline', commands: [parseIf('elif')] },
+          },
+        ],
+      };
+      return { kind: 'If', test, then: thenL, else: elseL, redirects: [] };
     }
     if (peekKw() === 'else') {
       next();

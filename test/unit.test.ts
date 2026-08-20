@@ -112,6 +112,17 @@ describe('parser', () => {
     expect(c.else?.segments).toHaveLength(1);
   });
 
+  it('parses elif as a nested If in the else branch', () => {
+    const list = parse('if false; then echo a; elif true; then echo b; else echo c; fi');
+    const c = list.segments[0].pipeline.commands[0];
+    expect(c.kind).toBe('If');
+    if (c.kind !== 'If') return;
+    const inner = c.else?.segments[0].pipeline.commands[0];
+    expect(inner?.kind).toBe('If');
+    if (inner?.kind !== 'If') return;
+    expect(inner.else?.segments).toHaveLength(1);
+  });
+
   it('parses for name in words; do ...; done', () => {
     const list = parse('for x in a b c; do echo $x; done');
     const c = list.segments[0].pipeline.commands[0];

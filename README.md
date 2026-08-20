@@ -195,7 +195,7 @@ fauxnix optimizes for the commands agents actually run. Documented deviations:
   an unbounded `yes | head` would hang.
 - `tail -f`, `eval`, `alias`, heredocs, `while`/`until`/`case`,
   and background `&` are rejected with actionable error messages instead of misbehaving.
-  (`if/then/else/fi`, `for x in ...`, backtick substitution, `command -v`, pipeline `read`,
+  (`if/then/elif/else/fi`, `for x in ...`, backtick substitution, `command -v`, pipeline `read`,
   dotenv-style `source`, and word-level `$((...))` arithmetic expansion are supported.)
 - `command -v <builtin>` prints `/usr/bin/<name>` where bash prints the bare builtin name;
   exit codes and empty-result semantics match.
