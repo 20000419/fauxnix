@@ -231,6 +231,9 @@ Architecture map: `src/parser.ts` (bash subset → AST) · `src/translator.ts` (
 executor wrapper) · `src/executor.ts` (spawn, redirects, session persistence) ·
 `src/commands/*.ts` (per-command generators) · `src/mcp.ts` (MCP server) · `src/cli.ts`.
 
+Roadmap: [docs/rfc-roadmap-to-1.0.md](docs/rfc-roadmap-to-1.0.md) — tracks, milestones,
+and the RFC process for proposing waves.
+
 ## License
 
 MIT © 20000419
