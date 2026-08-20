@@ -48,7 +48,7 @@ Supported: pipes (|), && / || / ;, redirections (> >> 2> 2>&1 < /dev/null), vari
 Unknown commands (git, node, npm, python, cargo...) are passed through and executed natively with argv-style quoting.
 Not supported: heredocs, while/until/case, word-level \$((...)) arithmetic expansion, background jobs. if/then/else/fi and for-in loops are supported.
 
-CWD, environment variables, export/unset and cd persist across calls within this session — a resident PowerShell 5.1 host is reused, so batching with ; or && is still nicer but many tiny calls no longer each pay a powershell.exe spawn.
+CWD, environment variables, export/unset and cd persist across calls within this session — a resident PowerShell 5.1 host is started when the MCP session begins (and after reset), so the first bash tool call is already warm.
 Exit codes follow bash conventions (0 ok, 1 fail, 2 usage/serious, 127 command not found, 124 timeout).
 
 Platform requirement: the execution backend is native Windows PowerShell 5.1+. On hosts without PowerShell on PATH (e.g. Linux containers/sandboxes), the bash tool returns exit code 127 with an actionable error instead of running the command.`;
@@ -59,6 +59,7 @@ export async function startMcpServer(): Promise<void> {
     { capabilities: { tools: {} } },
   );
   let session = new FauxnixSession();
+  await session.prewarm();
 
   server.tool(
     TOOL_NAME,
@@ -123,6 +124,7 @@ export async function startMcpServer(): Promise<void> {
       if (action === 'reset') {
         await session.dispose();
         session = new FauxnixSession();
+        await session.prewarm();
         return { content: [{ type: 'text', text: 'fauxnix: session reset' }] };
       }
       const envKeys = Object.keys(session.env).sort();
