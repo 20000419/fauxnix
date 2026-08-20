@@ -13,6 +13,8 @@ import {
   pathExpr,
   paramExpr,
   varExpr,
+  arithExpr,
+  setArithHelperPreamble,
 } from '../translator.js';
 import { handlers as textIoHandlers } from './text-io.js';
 
@@ -1470,6 +1472,8 @@ const FX_ENVGET_FN = [
   '}',
 ].join('\n');
 
+setArithHelperPreamble(FX_TNK_FN + '\n' + FX_ENVGET_FN);
+
 /** Like exprOfWord, but $var is an exact-case env lookup (bash, not $env:). */
 function kshExprOfWord(w: Word): string {
   const expanded: WordPart[] = [];
@@ -1488,6 +1492,9 @@ function kshExprOfWord(w: Word): string {
     expanded.push(...w);
   }
   if (tilde && expanded.length === 0) return '(fx-home)';
+  if (!tilde && expanded.length === 1 && expanded[0].kind === 'Arith') {
+    return arithExpr(expanded[0].parts);
+  }
   if (!tilde && expanded.length === 1 && expanded[0].kind === 'Var') {
     if (expanded[0].param) {
       return paramExpr(expanded[0].name, expanded[0].param.op, expanded[0].param.word);
@@ -1528,6 +1535,9 @@ function kshExprOfWord(w: Word): string {
       case 'CmdSub':
         // [[ ]] does not IFS-split, so keep the newline contract.
         out += '$(' + translateCmdSub(p.cmd, true) + ')';
+        break;
+      case 'Arith':
+        out += arithExpr(p.parts);
         break;
     }
   };
