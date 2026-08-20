@@ -770,6 +770,17 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect((await run('if false; then echo YES; fi')).stdout.trim()).toBe('');
   });
 
+  it('elif takes the first true branch and keeps compound exit status', async () => {
+    expect((await run('if false; then echo A; elif true; then echo B; else echo C; fi')).stdout.trim()).toBe('B');
+    expect((await run('if false; then echo A; elif false; then echo B; else echo C; fi')).stdout.trim()).toBe('C');
+    expect((await run('if false; then echo A; elif false; then echo B; elif true; then echo C; fi')).stdout.trim()).toBe('C');
+    const taken = await run('if false; then false; elif true; then true; fi');
+    expect(taken.exitCode).toBe(0);
+    const missed = await run('if false; then echo A; elif false; then echo B; fi');
+    expect(missed.exitCode).toBe(0);
+    expect(missed.stdout.trim()).toBe('');
+  });
+
   it('for x in words; do ...; done iterates in the same session', async () => {
     expect((await run('for x in a b c; do echo $x; done')).stdout.trim()).toBe('a\nb\nc');
     expect((await run('for x in 1 2; do echo n$x; done; echo z$x')).stdout.trim()).toBe(
@@ -813,6 +824,35 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
   it('yes | head terminates (no hang)', async () => {
     const r = await run('yes | head -3');
     expect(r.stdout.split(/\r?\n/).filter((l) => l === 'y').length).toBe(3);
+  }, 30000);
+
+  it('word-level $((...)) evaluates through fx-arith', async () => {
+    expect((await run('echo $((1+1))')).stdout.trim()).toBe('2');
+    expect((await run('x=3; echo $((x+1))')).stdout.trim()).toBe('4');
+    expect((await run('x=3; echo $(($x+1))')).stdout.trim()).toBe('4');
+    expect((await run('echo "$((2*3))"')).stdout.trim()).toBe('6');
+    expect((await run('echo $(())')).stdout.trim()).toBe('0');
+    const step = await run('i=3; i=$((i+1)); echo $i');
+    expect(step.exitCode).toBe(0);
+    expect(step.stdout.trim()).toBe('4');
+    const bad = await run('echo $((1+))');
+    expect(bad.exitCode).toBe(1);
+    expect(bad.stderr).toMatch(/integer expression expected/);
+  });
+
+  it('prewarm hides host boot from the first echo hi', async () => {
+    const extra = new FauxnixSession();
+    try {
+      await extra.prewarm();
+      const t0 = Date.now();
+      const r = await extra.run(translateCommandList(parseCommand('echo hi')));
+      const ms = Date.now() - t0;
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout.trim()).toBe('hi');
+      expect(ms).toBeLessThan(400);
+    } finally {
+      await extra.dispose();
+    }
   }, 30000);
 
   it('15x echo hi on a warm host is far below the 1.25s spawn baseline', async () => {

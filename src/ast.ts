@@ -8,12 +8,12 @@
  *   - quoting:              'literal'  "interp $VAR $(cmd)"
  *   - variables:            $VAR ${VAR} ${VAR[n]} plus special cases ($HOME $USER $PATH ...)
  *   - command substitution: $(...) and `...` (recursively translated)
+ *   - arithmetic expansion: $((...)) (existing fx-arith engine)
  *   - env assignment prefix: VAR=value cmd
  *
  * Explicitly unsupported (parser throws a helpful FauxnixError):
  *   heredocs, subshells (...), background &, while/until/case,
- *   word-level $((...)) arithmetic expansion, globs inside quotes,
- *   process substitution <(...).
+ *   globs inside quotes, process substitution <(...).
  */
 
 export interface CommandList {
@@ -92,7 +92,8 @@ export type WordPart =
       /** `${#name}` / `${#name[@]}` — string/array length expansion. */
       length?: boolean;
     }
-  | { kind: 'CmdSub'; cmd: string };
+  | { kind: 'CmdSub'; cmd: string }
+  | { kind: 'Arith'; parts: WordPart[] };
 
 export function wordToString(w: Word): string {
   return w.map(partToString).join('');
@@ -124,6 +125,8 @@ function partToString(p: WordPart): string {
       return p.index !== undefined ? `\${${p.name}[${p.index}]}` : `$${p.name}`;
     case 'CmdSub':
       return '$(' + p.cmd + ')';
+    case 'Arith':
+      return '$((' + p.parts.map(partToString).join('') + '))';
   }
 }
 

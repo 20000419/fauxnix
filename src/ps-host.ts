@@ -80,6 +80,11 @@ export class PowerShellHost {
     private readonly envFn: () => NodeJS.ProcessEnv,
   ) {}
 
+  /** Start the resident process and wait for the ready handshake (B1 prewarm). */
+  async ready(): Promise<HostInvokeResult | null> {
+    return this.ensureStarted();
+  }
+
   async invoke(script: string, env: HostRequestEnv, timeoutMs: number): Promise<HostInvokeResult> {
     const run = this.invokeLock.then(() => this.invokeSerial(script, env, timeoutMs));
     this.invokeLock = run.then(

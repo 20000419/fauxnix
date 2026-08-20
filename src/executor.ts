@@ -221,6 +221,11 @@ export class FauxnixSession {
     return this.host;
   }
 
+  /** Boot powershell.exe now so the first run() is not the 1.1s cold start. */
+  async prewarm(): Promise<void> {
+    await this.ensureHost().ready();
+  }
+
   async dispose(): Promise<void> {
     if (this.host) {
       await this.host.stop();

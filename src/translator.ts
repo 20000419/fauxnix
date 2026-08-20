@@ -188,6 +188,9 @@ export function exprOfWord(w: Word, opts?: { preserveCmdSub?: boolean }): string
   if (expanded.length === 1 && expanded[0].kind === 'CmdSub') {
     return '$(' + translateCmdSub(expanded[0].cmd, opts?.preserveCmdSub === true) + ')';
   }
+  if (expanded.length === 1 && expanded[0].kind === 'Arith') {
+    return arithExpr(expanded[0].parts);
+  }
 
   const literal = expanded.every((p) => p.kind === 'Text' || p.kind === 'SingleQuoted');
   if (literal) {
@@ -214,9 +217,69 @@ export function exprOfWord(w: Word, opts?: { preserveCmdSub?: boolean }): string
       case 'CmdSub':
         out += '$(' + translateCmdSub(p.cmd, quoted || opts?.preserveCmdSub === true) + ')';
         break;
+      case 'Arith':
+        out += arithExpr(p.parts);
+        break;
     }
   };
   for (const p of expanded) emitPart(p, false);
+  out += '"';
+  return out;
+}
+
+let arithHelperPreamble = '';
+
+/** Registered by sysinfo so wrapScript can emit fx-arith without a circular import. */
+export function setArithHelperPreamble(s: string): void {
+  arithHelperPreamble = s;
+}
+
+function injectArithHelpers(body: string): string {
+  if (!arithHelperPreamble) return body;
+  if (!/\bfx-arith\b/.test(body)) return body;
+  if (/function\s+fx-arith\b/.test(body)) return body;
+  return arithHelperPreamble + '\n' + body;
+}
+
+/** PowerShell expression: evaluate `$((…))` via fx-arith; errors are loud, expansion empty. */
+export function arithExpr(parts: WordPart[]): string {
+  const src = arithSourceExpr(parts);
+  return (
+    '$(try { [string](fx-arith (' +
+    src +
+    ')) } catch { [Console]::Error.WriteLine((\'bash: \' + [string](' +
+    src +
+    ') + \': integer expression expected\')); $script:fx_exit = 1; \'\' })'
+  );
+}
+
+function arithSourceExpr(parts: WordPart[]): string {
+  if (parts.length === 0) return "''";
+  if (parts.every((p) => p.kind === 'Text')) {
+    return psStr(parts.map((p) => p.text).join(''));
+  }
+  let out = '"';
+  const emit = (p: WordPart) => {
+    switch (p.kind) {
+      case 'Text':
+      case 'SingleQuoted':
+        out += escapeDq(p.text);
+        break;
+      case 'DoubleQuoted':
+        for (const q of p.parts) emit(q);
+        break;
+      case 'Var':
+        out += '$(' + varExpr(p.name, p.index, p.param, p.length === true) + ')';
+        break;
+      case 'CmdSub':
+        out += '$(' + translateCmdSub(p.cmd, true) + ')';
+        break;
+      case 'Arith':
+        out += arithExpr(p.parts);
+        break;
+    }
+  };
+  for (const p of parts) emit(p);
   out += '"';
   return out;
 }
@@ -1023,6 +1086,7 @@ function wrapBodyAndPersist(body: string, exitProcess: boolean): string[] {
  */
 export function wrapScript(body: string, opts: WrapScriptOptions = {}): string {
   const mode = opts.mode ?? 'spawn';
+  body = injectArithHelpers(body);
   const needed = mode === 'host' ? new Set<WrapHelper>() : wrapHelpersNeeded(body);
   const lines =
     mode === 'host'
