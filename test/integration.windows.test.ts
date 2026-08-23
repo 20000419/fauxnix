@@ -200,9 +200,32 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
 
   it('head/tail/wc', async () => {
     expect((await run('head -1 fruits.txt')).stdout.trim()).toBe('apple');
+    expect((await run('head --lines=1 fruits.txt')).stdout.trim()).toBe('apple');
     expect((await run('tail -1 fruits.txt')).stdout.trim()).toBe('cherry');
+    expect((await run('tail --lines=1 fruits.txt')).stdout.trim()).toBe('cherry');
     expect((await run('wc -l fruits.txt')).stdout.trim()).toMatch(/4/);
     expect((await run('wc -l < fruits.txt')).stdout.trim()).toBe('4');
+  });
+
+  it('grep -m1 stops after the first match', async () => {
+    const r = await run('grep -m1 apple fruits.txt');
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.trim()).toBe('apple');
+    const all = await run('grep apple fruits.txt');
+    expect(all.stdout.trim().split(/\r?\n/)).toEqual(['apple', 'apple pie']);
+    const viaE = await run('grep -e apple fruits.txt');
+    expect(viaE.exitCode).toBe(0);
+    expect(viaE.stdout.trim().split(/\r?\n/)).toEqual(['apple', 'apple pie']);
+  });
+
+  it('du --max-depth=0 prints only the root', async () => {
+    const deep = await run('du find-depth');
+    const shallow = await run('du --max-depth=0 find-depth');
+    expect(shallow.exitCode).toBe(0);
+    const rows = shallow.stdout.split(/\r?\n/).filter(Boolean);
+    expect(rows.length).toBe(1);
+    expect(rows[0]).toContain('find-depth');
+    expect(deep.stdout.split(/\r?\n/).filter(Boolean).length).toBeGreaterThan(1);
   });
 
   it('echo/printf semantics', async () => {
@@ -1233,6 +1256,23 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect(r.stderr).toContain("invalid option -- 'z'");
     expect(readFileSync(join(dir, 'cp-z-dst.txt'), 'utf8')).toBe('DST\n');
   });
+  it('v2 host truncates stdout at the per-run budget', async () => {
+    const extra = new FauxnixSession();
+    try {
+      await extra.prewarm();
+      const r = await extra.run(translateCommandList(parseCommand('printf AAAAAAAAAA')), {
+        stdoutLimit: 4,
+      });
+      expect(r.truncated).toBe(true);
+      expect(Buffer.byteLength(r.stdout, 'utf8')).toBeLessThanOrEqual(4);
+      const hi = await extra.run(translateCommandList(parseCommand('echo hi')));
+      expect(hi.exitCode).toBe(0);
+      expect(hi.stdout.trim()).toBe('hi');
+    } finally {
+      await extra.dispose();
+    }
+  }, 30000);
+
   it('whitespace-only stdout is preserved', async () => {
     const r = await run("printf '   '");
     expect(r.exitCode).toBe(0);

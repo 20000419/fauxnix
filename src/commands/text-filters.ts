@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { FauxnixParseError, Word, wordToString } from '../ast.js';
-import { Handler, parseWords, psStr } from '../registry.js';
+import { CommandSpec, Handler, parseWords, psStr } from '../registry.js';
 import { argListExpr, exprOfWord, literalOfWord, operandExpr } from '../translator.js';
 
 /* ------------------------------------------------------------------ */
@@ -285,16 +285,30 @@ const grep: Handler = (args) => {
 
   const { flags, operandWords, values, missingValue } = parseWords(
     args,
-    ['A', 'B', 'C'],
-    filterOptionNames,
+    ['A', 'B', 'C', 'm', 'e'],
+    [...filterOptionNames, '--max-count', '--regexp'],
   );
-  const missingFilterOption = missingValue.find((o) => filterOptionNames.includes(o));
+  const missingFilterOption = missingValue.find((o) =>
+    [...filterOptionNames, '-m', '--max-count', '-e', '--regexp'].includes(o),
+  );
   if (missingFilterOption) {
     return (
       '[Console]::Error.WriteLine(' +
       psStr("grep: option '" + missingFilterOption + "' requires an argument") +
       '); $script:fx_exit = 2'
     );
+  }
+  const maxCountRaw = values.get('-m') ?? values.get('--max-count');
+  let maxCount: number | null = null;
+  if (maxCountRaw !== undefined) {
+    if (!/^\d+$/.test(maxCountRaw)) {
+      return (
+        '[Console]::Error.WriteLine(' +
+        psStr("grep: invalid max count '" + maxCountRaw + "'") +
+        '); $script:fx_exit = 2'
+      );
+    }
+    maxCount = parseInt(maxCountRaw, 10);
   }
   const ci = flags.has('i');
   const inv = flags.has('v');
@@ -317,13 +331,15 @@ const grep: Handler = (args) => {
   const ctxA = Math.max(toInt(values.get('-A')), toInt(values.get('-C')));
   const ctxB = Math.max(toInt(values.get('-B')), toInt(values.get('-C')));
 
-  if (operandWords.length === 0) {
+  const ePat = values.get('-e') ?? values.get('--regexp');
+  if (ePat === undefined && operandWords.length === 0) {
     return (
       "[Console]::Error.WriteLine('usage: grep [OPTION]... PATTERN [FILE]...'); $script:fx_exit = 2"
     );
   }
-  const patternWord = operandWords[0];
-  const fileWords = operandWords.slice(1);
+  const patternWord: Word =
+    ePat !== undefined ? [{ kind: 'Text', text: ePat }] : operandWords[0];
+  const fileWords = ePat !== undefined ? operandWords : operandWords.slice(1);
   const patLit = literalOfWord(patternWord);
   let patExpr: string;
   if (fixed || patLit === null) {
@@ -490,10 +506,16 @@ const grep: Handler = (args) => {
 
   // --- per-source scan body ----------------------------------------------
   const scan: string[] = [];
+  if (maxCount !== null) scan.push('$fx_mleft = ' + maxCount);
   if (cntMode) {
     scan.push('$fx_c = 0');
     scan.push('for ($fx_i = 0; $fx_i -lt $fx_ls.Count; $fx_i++) {');
-    scan.push('  if (fx-gmatch $fx_ls[$fx_i]) { $fx_c++ }');
+    if (maxCount !== null) scan.push('  if ($fx_mleft -le 0) { break }');
+    scan.push(
+      '  if (fx-gmatch $fx_ls[$fx_i]) { $fx_c++' +
+        (maxCount !== null ? '; $fx_mleft--; if ($fx_mleft -le 0) { break }' : '') +
+        ' }',
+    );
     scan.push('}');
     scan.push('if ($fx_c -gt 0) { $fx_any = $true }');
     scan.push(
@@ -502,19 +524,23 @@ const grep: Handler = (args) => {
   } else if (listMode) {
     scan.push('$fx_hit1 = $false');
     scan.push('for ($fx_i = 0; $fx_i -lt $fx_ls.Count; $fx_i++) {');
+    if (maxCount !== null) scan.push('  if ($fx_mleft -le 0) { break }');
     scan.push('  if (fx-gmatch $fx_ls[$fx_i]) { $fx_hit1 = $true; break }');
     scan.push('}');
     scan.push('if ($fx_hit1) { $fx_any = $true; $fx_disp }');
   } else if (quiet) {
     scan.push('for ($fx_i = 0; $fx_i -lt $fx_ls.Count; $fx_i++) {');
+    if (maxCount !== null) scan.push('  if ($fx_mleft -le 0) { break }');
     scan.push('  if (fx-gmatch $fx_ls[$fx_i]) { $fx_any = $true; break }');
     scan.push('}');
   } else {
     scan.push('$fx_hits = @()');
     scan.push('for ($fx_i = 0; $fx_i -lt $fx_ls.Count; $fx_i++) {');
+    if (maxCount !== null) scan.push('  if ($fx_mleft -le 0) { break }');
     scan.push('  $fx_l = $fx_ls[$fx_i]');
     scan.push('  if (fx-gmatch $fx_l) {');
     scan.push('    $fx_any = $true');
+    if (maxCount !== null) scan.push('    $fx_mleft--');
     if (onlyMatch && !inv) {
       if (fixed) {
         if (ci) {
@@ -552,6 +578,7 @@ const grep: Handler = (args) => {
     } else if (!onlyMatch) {
       scan.push('    $fx_hits += $fx_i');
     }
+    if (maxCount !== null) scan.push('    if ($fx_mleft -le 0) { break }');
     scan.push('  }');
     scan.push('}');
     if (!onlyMatch) {
@@ -2646,8 +2673,42 @@ const tr: Handler = (args) => {
 
 /* ------------------------------------------------------------------ */
 
+export const specs: CommandSpec[] = [
+  {
+    names: ['grep'],
+    options: [
+      { short: 'i', support: 'implemented' },
+      { short: 'v', support: 'implemented' },
+      { short: 'n', support: 'implemented' },
+      { short: 'c', support: 'implemented' },
+      { short: 'l', support: 'implemented' },
+      { short: 'r', support: 'implemented' },
+      { short: 'R', support: 'implemented' },
+      { short: 'E', support: 'implemented' },
+      { short: 'F', support: 'implemented' },
+      { short: 'w', support: 'implemented' },
+      { short: 'q', support: 'implemented' },
+      { short: 'o', support: 'implemented' },
+      { short: 'h', support: 'implemented' },
+      { short: 'H', support: 'implemented' },
+      { short: 'A', takesValue: true, support: 'implemented' },
+      { short: 'B', takesValue: true, support: 'implemented' },
+      { short: 'C', takesValue: true, support: 'implemented' },
+      { short: 'm', long: '--max-count', takesValue: true, support: 'implemented' },
+      { short: 'e', long: '--regexp', takesValue: true, support: 'implemented' },
+      { long: '--include', takesValue: true, support: 'implemented' },
+      { long: '--exclude', takesValue: true, support: 'implemented' },
+      { long: '--exclude-dir', takesValue: true, support: 'implemented' },
+    ],
+    effects: ['read'],
+    platform: 'windows-ps51',
+    dispatch: 'translated',
+    usageExit: 2,
+    handler: grep,
+  },
+];
+
 export const handlers: Record<string, Handler> = {
-  grep,
   egrep: (args, ctx) => grep([[{ kind: 'Text', text: '-E' }], ...args], ctx), // egrep = grep -E
   sed,
   awk,

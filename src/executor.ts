@@ -466,6 +466,7 @@ async function runPlans(
       },
       remainingMs,
       opts.signal,
+      { stdoutLimit, stderrLimit },
     );
 
     if (inv.spawnError === 'ENOENT' || inv.spawnError === 'START') {

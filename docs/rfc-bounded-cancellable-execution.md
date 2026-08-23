@@ -29,7 +29,7 @@ These are one cluster: framing, limits, cancellation, and lifecycle need an expl
 | PR | Ships | Does not ship |
 |---|---|---|
 | **A (this land)** | RFC; structured MCP results; `extra.signal` cancel by killing the host (same recovery as timeout); one lock for run/reset/dispose; dispose on stdin EOF / SIGINT / SIGTERM; stop `.trim()` of whitespace-only stdout; drain/clear native `stderrChunks` per request; ConvertTo-Json overflow becomes a loud frame error instead of a dead loop | v2 handshake, chunked frames, deterministic native-stderr marker |
-| **B (follow-up)** | `{v:2,type:ready,…}` handshake (still accept v1 `{ready:true}`); chunked stdout/stderr + `end`; `stdoutLimit`/`stderrLimit` + `truncated`; `FAUXNIX_ERR_END:<id>` marker on the OS stderr pipe so native bytes return exactly once | runspace `Stop()` in-flight cancel; Job Object tree kill; Linux/macOS |
+| **B (this land)** | `{v:2,type:ready,…}` handshake (still accept v1 `{ready:true}`); chunked stdout/stderr + `end`; `stdoutLimit`/`stderrLimit` + `truncated`; `FAUXNIX_ERR_END:<id>` marker on the OS stderr pipe so native bytes return exactly once | runspace `Stop()` in-flight cancel; Job Object tree kill; Linux/macOS |
 
 PR-A keeps speaking the v1 host frame:
 

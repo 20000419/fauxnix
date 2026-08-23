@@ -14,7 +14,7 @@ import {
 import { listCommandsJson, lookup, lookupSpec, parseWords, psStr } from '../src/registry.js';
 import { decodeOutput, encodeCommand, normalizeHostNewlines } from '../src/encoding.js';
 import { normalizeStderr } from '../src/errors.js';
-import { decodeHostResponse, encodeHostRequest } from '../src/ps-host.js';
+import { decodeHostResponse, encodeHostRequest, parseHostLine } from '../src/ps-host.js';
 import { bashToolResult, formatBashText } from '../src/mcp.js';
 import '../src/commands/install-all.js';
 
@@ -475,7 +475,9 @@ describe('translator', () => {
     const boot = hostBootstrapScript();
     expect(boot).toContain('function fx-arrload');
     expect(boot).toContain('function fx-csub');
-    expect(boot).toContain('{"ready":true}');
+    expect(boot).toContain('"type":"ready"');
+    expect(boot).toContain('FAUXNIX_ERR_END:');
+    expect(boot).toContain('maxChunkBytes');
     expect(boot).toContain('ConvertFrom-Json');
     expect(boot).toContain('MaxJsonLength');
     expect(boot).not.toContain('exit $script:fx_exit');
@@ -663,6 +665,18 @@ describe('persistent PowerShell host protocol', () => {
     expect(msg.exitCode).toBe(2);
     expect(decodeHostResponse('{"ready":true}').ready).toBe(true);
   });
+
+  it('encodes v2 run frames and parses v2 ready / v1 ready', () => {
+    const line = encodeHostRequest('r1', 'echo', { FAUXNIX_CWD: 'D:\\tmp' }, { v: 2, stdoutLimit: 10, stderrLimit: 4 });
+    const parsed = JSON.parse(line) as { v: number; type: string; stdoutLimit: number };
+    expect(parsed.v).toBe(2);
+    expect(parsed.type).toBe('run');
+    expect(parsed.stdoutLimit).toBe(10);
+    expect(parseHostLine('{"v":2,"type":"ready","capabilities":{"cancel":false}}').v2?.type).toBe(
+      'ready',
+    );
+    expect(parseHostLine('{"ready":true}').v1Ready).toBe(true);
+  });
 });
 
 describe('normalizeStderr', () => {
@@ -707,6 +721,36 @@ describe('tokenize', () => {
   });
 });
 
+describe('bounded output flags (#130)', () => {
+  const bodyOf = (cmd: string): string => translateCommandList(parse(cmd))[0].body;
+
+  it('grep -m / --max-count stop after N matching lines', () => {
+    expect(bodyOf('grep -m1 pat f')).toContain('$fx_mleft = 1');
+    expect(bodyOf('grep --max-count=2 pat f')).toContain('$fx_mleft = 2');
+    expect(bodyOf('grep pat f')).not.toContain('$fx_mleft');
+  });
+
+  it('grep -e / --regexp keep the pattern (not an unknown flag)', () => {
+    expect(bodyOf("grep -e apple fruits.txt")).toContain('fx-gmatch');
+    expect(bodyOf("grep -e apple fruits.txt")).not.toContain('invalid option');
+  });
+
+  it('head --lines and --lines=N set the count (not silently skipped)', () => {
+    expect(bodyOf('head --lines=1 fruits.txt')).toContain('$fx_count = [int](1)');
+    expect(bodyOf('head --lines 3 fruits.txt')).toContain('$fx_count = [int](3)');
+    expect(bodyOf('head fruits.txt')).toContain('$fx_count = [int](10)');
+  });
+
+  it('du --max-depth filters subdirectory rows', () => {
+    expect(bodyOf('du --max-depth=0')).toContain('if ($true)');
+    expect(bodyOf('du --max-depth=0')).not.toContain('$fx_ddepth');
+    expect(bodyOf('du --max-depth=1')).toContain('$fx_ddepth');
+    expect(bodyOf('du --max-depth=1')).toContain('-gt 1');
+    expect(bodyOf('du -s --max-depth=1')).toContain('summarizing conflicts');
+    expect(bodyOf('du .')).not.toContain('$fx_ddepth');
+  });
+});
+
 describe('CommandSpec (#130)', () => {
   const bodyOf = (cmd: string): string => translateCommandList(parse(cmd))[0].body;
 
@@ -745,13 +789,10 @@ describe('CommandSpec (#130)', () => {
     expect(bodyOf('tee out.txt')).toContain('if ($false)');
   });
 
-  it('spec\'d rm fails loud on unknown flags; unspec\'d ls still ignores them', () => {
+  it('spec\'d rm fails loud on unknown flags', () => {
     const rm = bodyOf('rm -z x');
     expect(rm).toContain("invalid option -- ''z''");
     expect(rm).not.toContain('Remove-Item');
-    const ls = bodyOf('ls -Z');
-    expect(ls).not.toContain('invalid option');
-    expect(ls).toContain('Get-ChildItem');
   });
 
   it('rm --verbose matches -v; tee -i is not silently ignored', () => {
@@ -767,10 +808,32 @@ describe('CommandSpec (#130)', () => {
     expect(cp?.spec?.options.some((o) => o.short === 'n' && o.support === 'implemented')).toBe(
       true,
     );
-    expect(rows.find((r) => r.name === 'ls')?.spec).toBeNull();
+    expect(rows.find((r) => r.name === 'ls')?.spec).toBeTruthy();
     expect(lookupSpec('cp')).toBeTruthy();
-    expect(lookupSpec('ls')).toBeUndefined();
+    expect(lookupSpec('ls')).toBeTruthy();
+    expect(lookupSpec('find')).toBeUndefined();
     expect(lookup('tee')).toBeTypeOf('function');
+  });
+});
+
+describe('CommandSpec files leftovers (#130)', () => {
+  const bodyOf = (cmd: string): string => translateCommandList(parse(cmd))[0].body;
+
+  it('ls unknown flags fail loud; --format=long still means -l', () => {
+    expect(bodyOf('ls -Z')).toContain("invalid option -- ''Z''");
+    expect(bodyOf('ls --format=long')).toContain("'{0} 1");
+    expect(bodyOf('ls --recursive')).toContain('not supported by fauxnix');
+  });
+
+  it('chmod -R is unsupported; find stays unspec\'d so -name still compiles', () => {
+    expect(bodyOf('chmod -R 644 x')).toContain('not supported by fauxnix');
+    expect(bodyOf("find . -name '*.ts'")).toContain('-clike');
+    expect(lookupSpec('find')).toBeUndefined();
+  });
+
+  it('mkdir --verbose and ln --symbolic are implemented longs', () => {
+    expect(bodyOf('mkdir --verbose d')).toContain('if ($true)');
+    expect(bodyOf('ln --symbolic a b')).toContain('SymbolicLink');
   });
 });
 

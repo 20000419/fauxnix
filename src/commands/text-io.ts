@@ -455,6 +455,34 @@ const head: Handler = (args, ctx) => {
         continue;
       }
       if (t.startsWith('--')) {
+        const eq = t.indexOf('=');
+        const name = eq >= 0 ? t.slice(0, eq) : t;
+        const inline = eq >= 0 ? t.slice(eq + 1) : null;
+        if (name === '--lines' || name === '--bytes') {
+          let val = inline;
+          if (val === null) {
+            if (i + 1 >= args.length) {
+              return psErrExpr(psStr('head: option requires an argument -- ' + name.slice(2)));
+            }
+            val = wordToString(args[i + 1]);
+            i += 2;
+          } else {
+            i++;
+          }
+          if (name === '--bytes') nBytes = val;
+          else nLines = val;
+          continue;
+        }
+        if (name === '--quiet' || name === '--silent') {
+          quiet = true;
+          i++;
+          continue;
+        }
+        if (name === '--verbose') {
+          verbose = true;
+          i++;
+          continue;
+        }
         i++;
         continue;
       }
@@ -494,6 +522,11 @@ const head: Handler = (args, ctx) => {
   }
   const bytesMode = nBytes !== null;
   const countLit = bytesMode ? nBytes! : nLines !== null ? nLines : '10';
+  if (!/^[+-]?\d+$/.test(countLit)) {
+    return psErrExpr(
+      psStr("head: invalid number of " + (bytesMode ? 'bytes' : 'lines') + ": '" + countLit + "'"),
+    );
+  }
 
   const lines: string[] = [
     PS_GLOB_FN,
@@ -587,6 +620,35 @@ const tail: Handler = (args, ctx) => {
         continue;
       }
       if (t.startsWith('--')) {
+        const eq = t.indexOf('=');
+        const name = eq >= 0 ? t.slice(0, eq) : t;
+        const inline = eq >= 0 ? t.slice(eq + 1) : null;
+        if (name === '--lines' || name === '--bytes') {
+          let val = inline;
+          if (val === null) {
+            if (i + 1 >= args.length) {
+              return psErrExpr(psStr('tail: option requires an argument -- ' + name.slice(2)));
+            }
+            val = wordToString(args[i + 1]);
+            i += 2;
+          } else {
+            i++;
+          }
+          if (name === '--bytes') nBytes = val;
+          else if (val.startsWith('+')) fromLine = val.slice(1);
+          else nLines = val.replace(/^-/, '');
+          continue;
+        }
+        if (name === '--quiet' || name === '--silent') {
+          quiet = true;
+          i++;
+          continue;
+        }
+        if (name === '--verbose') {
+          verbose = true;
+          i++;
+          continue;
+        }
         i++;
         continue;
       }
@@ -1313,13 +1375,26 @@ export const specs: CommandSpec[] = [
     dispatch: 'translated',
     handler: tee,
   },
+  {
+    names: ['head'],
+    options: [
+      { short: 'n', long: '--lines', takesValue: true, support: 'implemented' },
+      { short: 'c', long: '--bytes', takesValue: true, support: 'implemented' },
+      { short: 'q', long: '--quiet', support: 'implemented' },
+      { long: '--silent', support: 'implemented' },
+      { short: 'v', long: '--verbose', support: 'implemented' },
+    ],
+    effects: ['read'],
+    platform: 'windows-ps51',
+    dispatch: 'translated',
+    handler: head,
+  },
 ];
 
 export const handlers: Record<string, Handler> = {
   echo,
   printf,
   cat,
-  head,
   tail,
   wc,
   nl,

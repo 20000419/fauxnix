@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.9.0 — 2026-08-23
+
+Protocol v2 + bounded outputs (#141 #142 #144):
+
+- **Host protocol v2** (#129 PR-B): versioned handshake (v1 still accepted),
+  chunked stdout/stderr frames with per-stream seq, per-run
+  `stdoutLimit`/`stderrLimit` with explicit `truncated` markers, and a
+  native-stderr end marker so bytes from `git`/`npm`/`node` return exactly
+  once — the audit's "native stderr dropped" gap is closed
+- **Bootstrap slimmed**: first frame after prewarm back to **~0.27s** (from
+  0.7s; was 0.137s pre-#138) and prewarm itself to ~0.6s (from ~2s) —
+  closes the #140 regression; warm frames unchanged (~40ms)
+- **Bounded-output family spec'd** (#141): `grep -m`, `head --lines`,
+  `du --max-depth` match GNU (differential 5/5 vs real bash);
+  `docs/command-specs.md` generated from CommandSpec
+- **File-command specs expanded** (#144): ls/mkdir/rmdir/mktemp/ln/readlink/
+  realpath/basename/dirname/stat… — unknown options fail loud (e.g.
+  `ls -Z` is now a usage error)
+
+197 tests.
 ## v0.8.0 — 2026-08-23
 
 Execution-contract wave (#129 PR-A + #130 first families + syntax fail-loud):

@@ -66,8 +66,9 @@ function psArray(words: Word[], fn: (w: Word) => string = operandExpr): string {
 /* ------------------------------------------------------------------ */
 
 const ls: Handler = (args) => {
-  const { flags, longs, operandWords } = parseWords(args);
-  const long = flags.has('l') || longs.has('--format=long') || longs.has('--long');
+  const { flags, longs, values, operandWords } = parseWords(args, [], ['--format']);
+  const long =
+    flags.has('l') || longs.has('--long') || values.get('--format') === 'long';
   const all = flags.has('a') || longs.has('--all');
   const almost = flags.has('A') || longs.has('--almost-all');
   const dirOnly = flags.has('d') || longs.has('--directory');
@@ -230,7 +231,7 @@ const rm: Handler = (args) => {
 const mkdir: Handler = (args) => {
   const { flags, longs, operandWords } = parseWords(args);
   const parents = flags.has('p') || longs.has('--parents');
-  const verbose = flags.has('v');
+  const verbose = flags.has('v') || longs.has('--verbose');
   return [
     '$fx_dirs = ' + psArray(operandWords),
     "if ($fx_dirs.Count -eq 0) { [Console]::Error.WriteLine('mkdir: missing operand'); $script:fx_exit = 1 }",
@@ -279,8 +280,8 @@ const touch: Handler = (args) => {
 };
 
 const mktemp: Handler = (args) => {
-  const { flags } = parseWords(args);
-  const dir = flags.has('d');
+  const { flags, longs } = parseWords(args);
+  const dir = flags.has('d') || longs.has('--directory');
   return [
     'try {',
     '  if (' + (dir ? '$true' : '$false') + ') {',
@@ -299,8 +300,8 @@ const mktemp: Handler = (args) => {
 /* ------------------------------------------------------------------ */
 
 const ln: Handler = (args) => {
-  const { flags, operandWords } = parseWords(args);
-  const sym = flags.has('s');
+  const { flags, longs, operandWords } = parseWords(args);
+  const sym = flags.has('s') || longs.has('--symbolic');
   const kind = sym ? 'SymbolicLink' : 'HardLink';
   const label = sym ? 'symbolic link' : 'hard link';
   return [
@@ -316,8 +317,8 @@ const ln: Handler = (args) => {
 };
 
 const readlink: Handler = (args) => {
-  const { flags, operandWords } = parseWords(args);
-  const canon = flags.has('f');
+  const { flags, longs, operandWords } = parseWords(args);
+  const canon = flags.has('f') || longs.has('--canonicalize');
   return [
     '$fx_p = ' + (operandWords.length ? operandExpr(operandWords[0]) : "''"),
     "if ($fx_p -eq '') { [Console]::Error.WriteLine('readlink: missing operand'); $script:fx_exit = 1 }",
@@ -459,10 +460,41 @@ const file: Handler = (args) => {
 /* ------------------------------------------------------------------ */
 
 const du: Handler = (args) => {
-  const { flags, longs, operandWords } = parseWords(args, [], ['--max-depth']);
+  const { flags, longs, values, missingValue, operandWords } = parseWords(
+    args,
+    ['d'],
+    ['--max-depth'],
+  );
   const sum = flags.has('s') || longs.has('--summarize');
   const human = flags.has('h') || longs.has('--human-readable');
+  if (missingValue.includes('-d') || missingValue.includes('--max-depth')) {
+    return (
+      '[Console]::Error.WriteLine(' +
+      psStr("du: option requires an argument -- 'max-depth'") +
+      '); $script:fx_exit = 1'
+    );
+  }
+  const maxDepthRaw = values.get('-d') ?? values.get('--max-depth');
+  let maxDepth: number | null = null;
+  if (maxDepthRaw !== undefined) {
+    if (!/^\d+$/.test(maxDepthRaw)) {
+      return (
+        '[Console]::Error.WriteLine(' +
+        psStr("du: invalid maximum depth '" + maxDepthRaw + "'") +
+        '); $script:fx_exit = 1'
+      );
+    }
+    maxDepth = parseInt(maxDepthRaw, 10);
+  }
+  if (sum && maxDepth !== null && maxDepth !== 0) {
+    return (
+      '[Console]::Error.WriteLine(' +
+      psStr('du: summarizing conflicts with --max-depth=' + String(maxDepth)) +
+      '); $script:fx_exit = 1'
+    );
+  }
   const targets = operandWords.length ? argListExpr(operandWords) : "@('.')";
+  const onlyRoot = sum || maxDepth === 0;
   return [
     PS_HSIZE_FN,
     'function fx-size($p) {',
@@ -473,7 +505,7 @@ const du: Handler = (args) => {
     '$fx_ts = ' + targets,
     'foreach ($fx_t in $fx_ts) {',
     '  if (-not (Test-Path -LiteralPath $fx_t)) { [Console]::Error.WriteLine("du: cannot access \'" + $fx_t + "\': No such file or directory"); $script:fx_exit = 1; continue }',
-    '  if (' + (sum ? '$true' : '$false') + ') {',
+    '  if (' + (onlyRoot ? '$true' : '$false') + ') {',
     '    $fx_kb = fx-size $fx_t',
     '    if (' + (human ? '$true' : '$false') + ') { "{0}`t{1}" -f (fx-hsize ($fx_kb * 1KB)), $fx_t } else { "{0}`t{1}" -f $fx_kb, $fx_t }',
     '  } else {',
@@ -481,6 +513,11 @@ const du: Handler = (args) => {
     '    foreach ($fx_d in @(Get-ChildItem -LiteralPath $fx_t -Recurse -Force -Directory -ErrorAction SilentlyContinue)) {',
     '      $fx_kb = fx-size $fx_d.FullName',
     "      $fx_rel = './' + $fx_d.FullName.Substring($fx_root.Length).TrimStart('\\').Replace('\\', '/')",
+    maxDepth !== null && maxDepth > 0
+      ? "      $fx_ddepth = @($fx_rel.ToCharArray() | Where-Object { $_ -eq '/' }).Count; if ($fx_ddepth -gt " +
+        maxDepth +
+        ') { continue }'
+      : '',
     '      if (' + (human ? '$true' : '$false') + ') { "{0}`t{1}" -f (fx-hsize ($fx_kb * 1KB)), $fx_rel } else { "{0}`t{1}" -f $fx_kb, $fx_rel }',
     '    }',
     '    $fx_kb = fx-size $fx_t',
@@ -491,8 +528,8 @@ const du: Handler = (args) => {
 };
 
 const df: Handler = (args) => {
-  const { flags } = parseWords(args);
-  const human = flags.has('h') || flags.has('H');
+  const { flags, longs } = parseWords(args);
+  const human = flags.has('h') || flags.has('H') || longs.has('--human-readable');
   return [
     PS_HSIZE_FN,
     '"Filesystem      Size  Used Avail Use% Mounted on"',
@@ -865,9 +902,9 @@ const chown: Handler = () => {
 /* ------------------------------------------------------------------ */
 
 const diff: Handler = (args) => {
-  const { flags, operandWords } = parseWords(args);
-  const unified = flags.has('u') || flags.has('U');
-  const brief = flags.has('q') || flags.has('brief');
+  const { flags, longs, operandWords } = parseWords(args);
+  const unified = flags.has('u') || flags.has('U') || longs.has('--unified');
+  const brief = flags.has('q') || longs.has('--brief');
   void unified;
   return [
     PS_READTEXT_FN,
@@ -1006,6 +1043,68 @@ export const specs: CommandSpec[] = [
     [opt('c', '--no-create')],
     touch,
   ),
+  fileSpec(
+    ['du'],
+    ['read'],
+    [
+      opt('s', '--summarize'),
+      opt('h', '--human-readable'),
+      opt('d', '--max-depth', 'implemented', { takesValue: true }),
+    ],
+    du,
+  ),
+  fileSpec(
+    ['ls', 'll'],
+    ['read'],
+    [
+      opt('l', '--long'),
+      opt(undefined, '--format', 'implemented', { takesValue: true }),
+      opt('a', '--all'),
+      opt('A', '--almost-all'),
+      opt('d', '--directory'),
+      opt('h', '--human-readable'),
+      opt('F', '--classify'),
+      opt('p', undefined),
+      opt('t', undefined),
+      opt('S', undefined),
+      opt('r', undefined),
+      opt('R', '--recursive', 'unsupported', { reason: 'recursive listing' }),
+    ],
+    ls,
+  ),
+  fileSpec(['mkdir'], ['write'], [opt('p', '--parents'), opt('v', '--verbose')], mkdir),
+  fileSpec(['rmdir'], ['delete'], [], rmdir),
+  fileSpec(['mktemp'], ['write'], [opt('d', '--directory')], mktemp),
+  fileSpec(['ln'], ['read', 'write'], [opt('s', '--symbolic')], ln),
+  fileSpec(['readlink'], ['read'], [opt('f', '--canonicalize')], readlink),
+  fileSpec(['realpath'], ['read'], [], realpath),
+  fileSpec(['basename'], ['read'], [], basename),
+  fileSpec(['dirname'], ['read'], [], dirname),
+  fileSpec(
+    ['stat'],
+    ['read'],
+    [
+      opt('c', undefined, 'implemented', { takesValue: true }),
+      opt(undefined, '--format', 'implemented', { takesValue: true }),
+      opt(undefined, '--printf', 'implemented', { takesValue: true }),
+    ],
+    stat,
+  ),
+  fileSpec(['file'], ['read'], [], file),
+  fileSpec(['df'], ['read'], [opt('h', '--human-readable'), opt('H', undefined)], df),
+  fileSpec(
+    ['chmod'],
+    ['write'],
+    [opt('R', '--recursive', 'unsupported', { reason: 'recursive chmod' })],
+    chmod,
+  ),
+  fileSpec(['chown'], ['write'], [], chown),
+  fileSpec(
+    ['diff'],
+    ['read'],
+    [opt('q', '--brief'), opt('u', '--unified'), opt('U', undefined)],
+    diff,
+  ),
 ];
 
 export const handlers: Record<string, Handler> = {
@@ -1021,10 +1120,7 @@ export const handlers: Record<string, Handler> = {
   dirname,
   stat,
   file,
-  du,
   df,
+  du,
   find,
-  chmod,
-  chown,
-  diff,
 };

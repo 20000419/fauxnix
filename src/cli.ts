@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { FauxnixSession } from './executor.js';
 import { parseCommand } from './parser.js';
 import { translateCommandList } from './translator.js';
-import { listCommandsJson, registeredNames } from './registry.js';
+import { listCommandsJson, registeredNames, specsMarkdown } from './registry.js';
 import { encodeCommand } from './encoding.js';
 import { startMcpServer } from './mcp.js';
 import { packageVersion } from './version.js';
@@ -17,6 +17,7 @@ Usage:
   fauxnix mcp                        start the MCP stdio server (for agent harnesses)
   fauxnix list                       list translated commands
   fauxnix list --json                same list as machine-readable capability metadata
+  fauxnix list --markdown            CommandSpec tables (same text as docs/command-specs.md)
   fauxnix check                      verify the local PowerShell environment
   fauxnix --version
 
@@ -39,6 +40,10 @@ export async function runCli(argv: string[]): Promise<void> {
   if (verb === 'list') {
     if (rest[0] === '--json') {
       console.log(JSON.stringify(listCommandsJson(), null, 2));
+      return;
+    }
+    if (rest[0] === '--markdown') {
+      console.log(specsMarkdown());
       return;
     }
     const names = registeredNames();
