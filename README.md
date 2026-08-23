@@ -67,7 +67,9 @@ npm install -g fauxnix-cli
 Or from source:
 
 ```bash
-git clone https://github.com/20000419/fauxnix && cd fauxnix && npm install -g .
+git clone https://github.com/20000419/fauxnix && cd fauxnix
+npm ci
+npm install -g .
 ```
 
 > npm package name is `fauxnix-cli` (the `fauxnix` name on npm belongs to an

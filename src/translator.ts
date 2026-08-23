@@ -816,6 +816,9 @@ export function wrapTempEnv(
 /** Unique suffix for generated stage functions (nested pipelines included). */
 let stageSeq = 0;
 
+/** Unique suffix for generated pipeline wrappers and their local status arrays. */
+let pipelineSeq = 0;
+
 export interface PipelineParts {
   /** Generated function definitions (empty for single commands). */
   defs: string;
@@ -888,6 +891,12 @@ function translateFor(cmd: ForCommand): string {
 export function translatePipelineBody(p: {
   commands: Array<SimpleCommand | IfCommand | ForCommand>;
 }): PipelineParts {
+  // Every pipeline stage needs its own status slot. Handlers deliberately use
+  // `$script:fx_exit` because their helper functions run in child scopes; in a
+  // pipeline that shared flag lets an earlier failure leak into a successful
+  // last stage. Reserve the wrapper id before translating bodies so nested
+  // command substitutions cannot reuse it.
+  const pipelineId = p.commands.length > 1 ? pipelineSeq++ : -1;
   const bodies: string[] = [];
   for (let i = 0; i < p.commands.length; i++) {
     const c = p.commands[i];
@@ -905,16 +914,38 @@ export function translatePipelineBody(p: {
 
   const names: string[] = [];
   const defs: string[] = [];
+  const statusVar = '$fx_pipe_status' + pipelineId;
   for (let i = 0; i < bodies.length; i++) {
     const name = '__fx_s' + stageSeq++;
     names.push(name);
-    const indented = bodies[i]
+    const isolatedBody = bodies[i].split('$script:fx_exit').join(statusVar + '[' + i + ']');
+    const indented = isolatedBody
       .split('\n')
       .map((l) => (l ? '  ' + l : l))
       .join('\n');
     defs.push('function ' + name + ' {\n' + indented + '\n}');
   }
-  return { defs: defs.join('\n'), call: names.join(' | ') };
+  const pipelineName = '__fx_p' + pipelineId;
+  const statuses = bodies.map(() => '0').join(', ');
+  const pipelineCall = names.join(' | ');
+  defs.push(
+    [
+      'function ' + pipelineName + ' {',
+      '  ' + statusVar + ' = @(' + statuses + ')',
+      '  try {',
+      // The wrapper forwards redirect input to stage zero. With no input,
+      // PowerShell still invokes a regular function once, which preserves the
+      // existing no-stdin pipeline behavior on Windows PowerShell 5.1.
+      '    $input | ' + pipelineCall,
+      '  } finally {',
+      // Bash defaults to pipefail off: only the last stage controls the list
+      // status used by a following && / || segment.
+      '    $script:fx_exit = [int]' + statusVar + '[' + (bodies.length - 1) + ']',
+      '  }',
+      '}',
+    ].join('\n'),
+  );
+  return { defs: defs.join('\n'), call: pipelineName };
 }
 
 /* ------------------------------------------------------------------ */

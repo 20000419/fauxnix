@@ -3,6 +3,7 @@
  * PowerShell 5.1. Skipped automatically on non-Windows platforms.
  */
 import { beforeAll, afterAll, describe, expect, it } from 'vitest';
+import { getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, existsSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -28,6 +29,25 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     writeFileSync(join(dir, 'dups.txt'), 'aaa\naaa\nbbb\n', 'utf8');
     mkdirSync(join(dir, 'sub'));
     writeFileSync(join(dir, 'sub', 'b.txt'), 'third line\n', 'utf8');
+    mkdirSync(join(dir, 'grep-tree', 'src'), { recursive: true });
+    mkdirSync(join(dir, 'grep-tree', 'vendor'), { recursive: true });
+    mkdirSync(join(dir, 'grep-tree', 'generated'), { recursive: true });
+    writeFileSync(join(dir, 'grep-tree', 'keep.ts'), 'token keep\n', 'utf8');
+    writeFileSync(join(dir, 'grep-tree', 'notes.md'), 'token notes\n', 'utf8');
+    writeFileSync(join(dir, 'grep-tree', 'skip.test.ts'), 'token test\n', 'utf8');
+    writeFileSync(join(dir, 'grep-tree', 'explicit.txt'), 'token explicit\n', 'utf8');
+    writeFileSync(join(dir, 'grep-tree', 'src', 'nested.ts'), 'token nested\n', 'utf8');
+    writeFileSync(join(dir, 'grep-tree', 'vendor', 'vendor.ts'), 'token vendor\n', 'utf8');
+    writeFileSync(join(dir, 'grep-tree', 'generated', 'generated.md'), 'token generated\n', 'utf8');
+
+    mkdirSync(join(dir, 'find-depth', 'level-one', 'level-two'), { recursive: true });
+    writeFileSync(join(dir, 'find-depth', 'root.txt'), 'root\n', 'utf8');
+    writeFileSync(join(dir, 'find-depth', 'level-one', 'child.txt'), 'child\n', 'utf8');
+    writeFileSync(
+      join(dir, 'find-depth', 'level-one', 'level-two', 'grandchild.txt'),
+      'grandchild\n',
+      'utf8',
+    );
     session = new FauxnixSession();
     // seed the session cwd like a real shell login directory
     await session.run(translateCommandList(parseCommand('cd "' + dir + '"')));
@@ -80,9 +100,80 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect((await run('grep x missing-file')).exitCode).toBe(2);
   });
 
+  it('grep -rn recursively searches instead of treating bundled flags as an include glob', async () => {
+    const r = await run('grep -rn token grep-tree');
+    const stdout = r.stdout.replaceAll('\\', '/');
+    expect(r.exitCode).toBe(0);
+    expect(stdout).toMatch(/grep-tree\/keep\.ts:1:token keep/);
+    expect(stdout).toMatch(/grep-tree\/src\/nested\.ts:1:token nested/);
+  });
+
+  it('grep applies repeated include, exclude, and exclude-dir filters', async () => {
+    const r = await run(
+      "grep -rn --include='*.ts' --include '*.md' --exclude='*.test.ts' --exclude notes.md --exclude-dir=vendor --exclude-dir generated token grep-tree",
+    );
+    const stdout = r.stdout.replaceAll('\\', '/');
+    expect(r.exitCode).toBe(0);
+    expect(stdout).toMatch(/grep-tree\/keep\.ts:1:token keep/);
+    expect(stdout).toMatch(/grep-tree\/src\/nested\.ts:1:token nested/);
+    expect(stdout).not.toContain('notes.md');
+    expect(stdout).not.toContain('skip.test.ts');
+    expect(stdout).not.toContain('/vendor/');
+    expect(stdout).not.toContain('/generated/');
+  });
+
+  it('grep exclusions apply to explicit file and directory operands', async () => {
+    const file = await run(
+      "grep -n --exclude='grep-tree/*.txt' token grep-tree/explicit.txt",
+    );
+    expect(file.exitCode).toBe(1);
+    expect(file.stdout).toBe('');
+    expect(file.stderr).toBe('');
+
+    const directory = await run(
+      "grep -rn --exclude-dir='grep-tree/vendor/' token grep-tree/vendor",
+    );
+    expect(directory.exitCode).toBe(1);
+    expect(directory.stdout).toBe('');
+    expect(directory.stderr).toBe('');
+  });
+
+  it('grep uses the last matching include or exclude rule', async () => {
+    const included = await run(
+      "grep -n --exclude='*.txt' --include=explicit.txt token grep-tree/explicit.txt",
+    );
+    expect(included.exitCode).toBe(0);
+    expect(included.stdout).toContain('token explicit');
+
+    const excluded = await run(
+      "grep -n --include='*.txt' --exclude=explicit.txt token grep-tree/explicit.txt",
+    );
+    expect(excluded.exitCode).toBe(1);
+    expect(excluded.stdout).toBe('');
+  });
+
   it('pipeline: cat | grep | sort', async () => {
     const r = await run('cat fruits.txt | grep -i apple | sort');
     expect(r.stdout.split(/\r?\n/).filter(Boolean)).toEqual(['apple', 'apple pie']);
+  });
+
+  it('pipeline exit status comes from the last stage (pipefail off)', async () => {
+    expect((await run('false | true')).exitCode).toBe(0);
+    expect((await run('true | false')).exitCode).toBe(1);
+  });
+
+  it('pipeline exit status controls following && and || lists', async () => {
+    const andResult = await run('grep NO fruits.txt | head -1 && echo AFTER');
+    expect(andResult.stdout.trim()).toBe('AFTER');
+    expect(andResult.exitCode).toBe(0);
+
+    const ignoredFailure = await run('false | true || echo FALLBACK');
+    expect(ignoredFailure.stdout.trim()).toBe('');
+    expect(ignoredFailure.exitCode).toBe(0);
+
+    const lastStageFailure = await run('true | false || echo FALLBACK');
+    expect(lastStageFailure.stdout.trim()).toBe('FALLBACK');
+    expect(lastStageFailure.exitCode).toBe(0);
   });
 
   it('sed substitution', async () => {
@@ -562,6 +653,46 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect(r.stdout.trim()).toBe('1');
   });
 
+  it('find applies maxdepth and mindepth from root depth zero', async () => {
+    const paths = async (cmd: string) => {
+      const r = await run(cmd);
+      expect(r.exitCode).toBe(0);
+      return r.stdout.split(/\r?\n/).filter(Boolean).sort();
+    };
+
+    expect(await paths('find find-depth -maxdepth 0')).toEqual(['find-depth']);
+    expect(await paths('find find-depth -maxdepth 1')).toEqual([
+      'find-depth',
+      'find-depth/level-one',
+      'find-depth/root.txt',
+    ]);
+    expect(await paths('find find-depth -mindepth 1 -maxdepth 1')).toEqual([
+      'find-depth/level-one',
+      'find-depth/root.txt',
+    ]);
+    expect(await paths('find find-depth -mindepth 2 -maxdepth 2')).toEqual([
+      'find-depth/level-one/child.txt',
+      'find-depth/level-one/level-two',
+    ]);
+    expect(await paths('find find-depth -mindepth 3')).toEqual([
+      'find-depth/level-one/level-two/grandchild.txt',
+    ]);
+  });
+
+  it('find rejects missing and invalid depth arguments', async () => {
+    const missing = await run('find find-depth -maxdepth');
+    expect(missing.exitCode).toBe(1);
+    expect(missing.stderr).toContain("find: missing argument to '-maxdepth'");
+
+    for (const value of ['nope', '-1']) {
+      const invalid = await run(`find find-depth -mindepth ${value}`);
+      expect(invalid.exitCode).toBe(1);
+      expect(invalid.stderr).toContain(
+        `find: expected a non-negative decimal integer argument to -mindepth, but got '${value}'`,
+      );
+    }
+  });
+
   it('stat -c format', async () => {
     const r = await run("stat -c '%s %n' fruits.txt");
     expect(r.stdout.trim()).toMatch(/^30 .*fruits\.txt$/);
@@ -881,6 +1012,45 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     }
   }, 60000);
 
+  it('executor timeout stops later segments before output or side effects', async () => {
+    const extra = new FauxnixSession();
+    const marker = join(dir, 'timeout-later-segment.txt');
+    rmSync(marker, { force: true });
+    try {
+      const r = await extra.run(
+        translateCommandList(
+          parseCommand('sleep 5; echo should-not-run; touch "' + marker + '"'),
+        ),
+        { timeoutMs: 800 },
+      );
+      expect(r.exitCode).toBe(124);
+      expect(r.stderr).toMatch(/timed out/);
+      expect(r.stdout).not.toContain('should-not-run');
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      await extra.dispose();
+      rmSync(marker, { force: true });
+    }
+  }, 30000);
+
+  it('executor timeout is one deadline across all segments', async () => {
+    const extra = new FauxnixSession();
+    try {
+      await extra.prewarm();
+      const r = await extra.run(
+        translateCommandList(
+          parseCommand('sleep 0.8; echo before-deadline; sleep 0.8; echo after-deadline'),
+        ),
+        { timeoutMs: 1200 },
+      );
+      expect(r.exitCode).toBe(124);
+      expect(r.stderr).toMatch(/timed out/);
+      expect(r.stdout.trim()).toBe('before-deadline');
+    } finally {
+      await extra.dispose();
+    }
+  }, 30000);
+
   it('executor timeout 124 leaves the same session usable', async () => {
     const extra = new FauxnixSession();
     try {
@@ -890,6 +1060,46 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
       const next = await extra.run(translateCommandList(parseCommand('echo after-timeout')));
       expect(next.exitCode).toBe(0);
       expect(next.stdout.trim()).toBe('after-timeout');
+    } finally {
+      await extra.dispose();
+    }
+  }, 30000);
+
+  it('adds a default PATHEXT only when no case variant is present', async () => {
+    const extra = new FauxnixSession();
+    const overrides = extra.env as Record<string, string | undefined>;
+    for (const key of Object.keys(process.env)) {
+      if (key.toUpperCase() === 'PATHEXT') overrides[key] = undefined;
+    }
+    try {
+      const fallbackEnv = extra.childEnv();
+      expect(fallbackEnv.PATHEXT).toBe('.COM;.EXE;.BAT;.CMD');
+
+      extra.env.PathExt = '.EXPLICIT';
+      const explicitEnv = extra.childEnv();
+      const pathExtKeys = Object.keys(explicitEnv).filter((key) => key.toUpperCase() === 'PATHEXT');
+      expect(pathExtKeys).toEqual(['PathExt']);
+      expect(explicitEnv.PathExt).toBe('.EXPLICIT');
+    } finally {
+      await extra.dispose();
+    }
+  });
+
+  it('runs an extensionless native executable when the official MCP environment omits PATHEXT', async () => {
+    const inheritedEnv = getDefaultEnvironment();
+    expect(Object.keys(inheritedEnv).some((key) => key.toUpperCase() === 'PATHEXT')).toBe(false);
+
+    const extra = new FauxnixSession();
+    const overrides = extra.env as Record<string, string | undefined>;
+    for (const key of Object.keys(process.env)) {
+      if (key.toUpperCase() === 'PATHEXT') overrides[key] = undefined;
+    }
+    try {
+      await extra.prewarm();
+      const result = await extra.run(translateCommandList(parseCommand('node --version')));
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toMatch(/^v\d+\.\d+\.\d+/m);
+      expect(result.stderr).toBe('');
     } finally {
       await extra.dispose();
     }

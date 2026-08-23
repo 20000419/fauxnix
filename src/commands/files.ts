@@ -532,6 +532,28 @@ const find: Handler = (args) => {
   const wantDelete = preds.includes('-delete');
   const paths = pathWords.length ? argListExpr(pathWords) : "@('.')";
 
+  for (const option of ['-maxdepth', '-mindepth']) {
+    const optionIndex = preds.indexOf(option);
+    if (optionIndex < 0) continue;
+    if (optionIndex + 1 >= preds.length) {
+      return (
+        '[Console]::Error.WriteLine(' +
+        psStr(`find: missing argument to '${option}'`) +
+        '); $script:fx_exit = 1'
+      );
+    }
+    const value = preds[optionIndex + 1];
+    if (!/^\d+$/.test(value)) {
+      return (
+        '[Console]::Error.WriteLine(' +
+        psStr(
+          `find: expected a non-negative decimal integer argument to ${option}, but got '${value}'`,
+        ) +
+        '); $script:fx_exit = 1'
+      );
+    }
+  }
+
   const conditions: string[] = [];
   if (namePat !== null) conditions.push("($fx_i.Name -like '" + likeOf(namePat) + "')");
   if (inamePat !== null)
@@ -554,9 +576,9 @@ const find: Handler = (args) => {
     '  foreach ($fx_i in $fx_all) {',
     "    $fx_rel = $fx_i.FullName.Substring($fx_root.Length).TrimStart('\\').Replace('\\', '/')",
     "    if ($fx_rel -eq '') { $fx_disp = $fx_p } else { $fx_disp = ($fx_p.TrimEnd('/') + '/' + $fx_rel) }",
-    '    $fx_depth = 0; foreach ($fx_c in $fx_rel.ToCharArray()) { if ($fx_c -eq \'/\') { $fx_depth++ } }',
-    '    if ($fx_depth -lt ' + (minDepthS && /^\d+$/.test(minDepthS) ? minDepthS : '0') + ') { continue }',
-    maxDepthS && /^\d+$/.test(maxDepthS) ? '    if ($fx_depth -gt ' + maxDepthS + ') { continue }' : '',
+    '    $fx_depth = 0; if ($fx_rel -ne \'\') { $fx_depth = 1; foreach ($fx_c in $fx_rel.ToCharArray()) { if ($fx_c -eq \'/\') { $fx_depth++ } } }',
+    '    if ($fx_depth -lt ' + (minDepthS ?? '0') + ') { continue }',
+    maxDepthS !== null ? '    if ($fx_depth -gt ' + maxDepthS + ') { continue }' : '',
     '    if (-not (' + cond + ')) { continue }',
     sizeCond ? '    $fx_sz = 0; if (-not $fx_i.PSIsContainer) { try { $fx_sz = $fx_i.Length } catch {} }' : '',
     sizeCond ? '    if (-not (' + sizeCond + ')) { continue }' : '',
