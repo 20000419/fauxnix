@@ -28,6 +28,16 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     writeFileSync(join(dir, 'dups.txt'), 'aaa\naaa\nbbb\n', 'utf8');
     mkdirSync(join(dir, 'sub'));
     writeFileSync(join(dir, 'sub', 'b.txt'), 'third line\n', 'utf8');
+    mkdirSync(join(dir, 'grep-tree', 'src'), { recursive: true });
+    mkdirSync(join(dir, 'grep-tree', 'vendor'), { recursive: true });
+    mkdirSync(join(dir, 'grep-tree', 'generated'), { recursive: true });
+    writeFileSync(join(dir, 'grep-tree', 'keep.ts'), 'token keep\n', 'utf8');
+    writeFileSync(join(dir, 'grep-tree', 'notes.md'), 'token notes\n', 'utf8');
+    writeFileSync(join(dir, 'grep-tree', 'skip.test.ts'), 'token test\n', 'utf8');
+    writeFileSync(join(dir, 'grep-tree', 'explicit.txt'), 'token explicit\n', 'utf8');
+    writeFileSync(join(dir, 'grep-tree', 'src', 'nested.ts'), 'token nested\n', 'utf8');
+    writeFileSync(join(dir, 'grep-tree', 'vendor', 'vendor.ts'), 'token vendor\n', 'utf8');
+    writeFileSync(join(dir, 'grep-tree', 'generated', 'generated.md'), 'token generated\n', 'utf8');
     session = new FauxnixSession();
     // seed the session cwd like a real shell login directory
     await session.run(translateCommandList(parseCommand('cd "' + dir + '"')));
@@ -78,6 +88,58 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect((await run('grep apple fruits.txt')).exitCode).toBe(0);
     expect((await run('grep zz fruits.txt')).exitCode).toBe(1);
     expect((await run('grep x missing-file')).exitCode).toBe(2);
+  });
+
+  it('grep -rn recursively searches instead of treating bundled flags as an include glob', async () => {
+    const r = await run('grep -rn token grep-tree');
+    const stdout = r.stdout.replaceAll('\\', '/');
+    expect(r.exitCode).toBe(0);
+    expect(stdout).toMatch(/grep-tree\/keep\.ts:1:token keep/);
+    expect(stdout).toMatch(/grep-tree\/src\/nested\.ts:1:token nested/);
+  });
+
+  it('grep applies repeated include, exclude, and exclude-dir filters', async () => {
+    const r = await run(
+      "grep -rn --include='*.ts' --include '*.md' --exclude='*.test.ts' --exclude notes.md --exclude-dir=vendor --exclude-dir generated token grep-tree",
+    );
+    const stdout = r.stdout.replaceAll('\\', '/');
+    expect(r.exitCode).toBe(0);
+    expect(stdout).toMatch(/grep-tree\/keep\.ts:1:token keep/);
+    expect(stdout).toMatch(/grep-tree\/src\/nested\.ts:1:token nested/);
+    expect(stdout).not.toContain('notes.md');
+    expect(stdout).not.toContain('skip.test.ts');
+    expect(stdout).not.toContain('/vendor/');
+    expect(stdout).not.toContain('/generated/');
+  });
+
+  it('grep exclusions apply to explicit file and directory operands', async () => {
+    const file = await run(
+      "grep -n --exclude='grep-tree/*.txt' token grep-tree/explicit.txt",
+    );
+    expect(file.exitCode).toBe(1);
+    expect(file.stdout).toBe('');
+    expect(file.stderr).toBe('');
+
+    const directory = await run(
+      "grep -rn --exclude-dir='grep-tree/vendor/' token grep-tree/vendor",
+    );
+    expect(directory.exitCode).toBe(1);
+    expect(directory.stdout).toBe('');
+    expect(directory.stderr).toBe('');
+  });
+
+  it('grep uses the last matching include or exclude rule', async () => {
+    const included = await run(
+      "grep -n --exclude='*.txt' --include=explicit.txt token grep-tree/explicit.txt",
+    );
+    expect(included.exitCode).toBe(0);
+    expect(included.stdout).toContain('token explicit');
+
+    const excluded = await run(
+      "grep -n --include='*.txt' --exclude=explicit.txt token grep-tree/explicit.txt",
+    );
+    expect(excluded.exitCode).toBe(1);
+    expect(excluded.stdout).toBe('');
   });
 
   it('pipeline: cat | grep | sort', async () => {

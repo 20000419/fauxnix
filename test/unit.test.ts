@@ -484,6 +484,38 @@ describe('translator', () => {
     expect(echo).not.toContain('function fx-arith');
   });
 
+  it('keeps grep short flag bundles separate from long-option values', () => {
+    const body = translateCommandList(parse('grep -rn TODO src'))[0].body;
+    expect(body).toContain("$fx_pat = 'TODO'");
+    expect(body).toContain('$fx_fsel = @()');
+    expect(body).toContain("foreach ($fx_o in (@('src')))");
+    expect(body).toContain('$fx_recd = $true');
+  });
+
+  it('preserves repeated grep file filters in command-line order', () => {
+    const body = translateCommandList(
+      parse(
+        "grep -r --include='*.ts' --exclude '*.test.ts' --include=*.tsx --exclude='*.snap' --exclude-dir node_modules --exclude-dir=dist token src",
+      ),
+    )[0].body;
+    const includeTs = body.indexOf("Keep = $true; Glob = '*.ts'");
+    const excludeTest = body.indexOf("Keep = $false; Glob = '*.test.ts'");
+    const includeTsx = body.indexOf("Keep = $true; Glob = '*.tsx'");
+    const excludeSnap = body.indexOf("Keep = $false; Glob = '*.snap'");
+    expect(includeTs).toBeGreaterThan(-1);
+    expect(excludeTest).toBeGreaterThan(includeTs);
+    expect(includeTsx).toBeGreaterThan(excludeTest);
+    expect(excludeSnap).toBeGreaterThan(includeTsx);
+    expect(body).toContain("$fx_excd = @('node_modules', 'dist')");
+    expect(body).toContain("foreach ($fx_o in (@('src')))");
+  });
+
+  it('reports a missing grep file-filter value', () => {
+    const body = translateCommandList(parse('grep token file --exclude-dir'))[0].body;
+    expect(body).toContain("grep: option ''--exclude-dir'' requires an argument");
+    expect(body).toContain('$script:fx_exit = 2');
+  });
+
   it('feeds stdin for < redirects', () => {
     const plan = translateCommandList(parse('wc -l < f.txt'))[0];
     expect(plan.script).toContain('fx-readlines $env:FAUXNIX_STDIN_FILE |');

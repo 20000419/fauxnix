@@ -83,7 +83,7 @@ function textExpr(w: Word): string {
 }
 
 /** Collect EVERY value of a short option (-kN, -k N) — parseWords keeps only the last. */
-function collectShortValues(args: Word[], letter: string, longName?: string): string[] {
+function collectShortValues(args: Word[], letter: string): string[] {
   const out: string[] = [];
   let onlyOps = false;
   for (let i = 0; i < args.length; i++) {
@@ -93,14 +93,42 @@ function collectShortValues(args: Word[], letter: string, longName?: string): st
       continue;
     }
     if (onlyOps) continue;
-    if (longName && t.startsWith(longName + '=')) out.push(t.slice(longName.length + 1));
-    else if (t === '-' + letter) {
+    if (t === '-' + letter) {
       if (i + 1 < args.length) {
         out.push(wordToString(args[i + 1]));
         i++;
       }
     } else if (t.startsWith('-' + letter) && t.length > 2 && !t.startsWith('--')) {
       out.push(t.slice(2));
+    }
+  }
+  return out;
+}
+
+interface LongOptionValue {
+  name: string;
+  value: string;
+}
+
+/** Collect repeated value-taking long options without mistaking short bundles for values. */
+function collectLongValues(args: Word[], names: string[]): LongOptionValue[] {
+  const out: LongOptionValue[] = [];
+  let onlyOps = false;
+  for (let i = 0; i < args.length; i++) {
+    const t = wordToString(args[i]);
+    if (t === '--') {
+      onlyOps = true;
+      continue;
+    }
+    if (onlyOps || !t.startsWith('--')) continue;
+    const eq = t.indexOf('=');
+    const name = eq >= 0 ? t.slice(0, eq) : t;
+    if (!names.includes(name)) continue;
+    if (eq >= 0) {
+      out.push({ name, value: t.slice(eq + 1) });
+    } else if (i + 1 < args.length) {
+      out.push({ name, value: wordToString(args[i + 1]) });
+      i++;
     }
   }
   return out;
@@ -248,9 +276,26 @@ function ereToDotNet(re: string): string {
 /* ------------------------------------------------------------------ */
 
 const grep: Handler = (args) => {
-  const includeGlobs = collectShortValues(args, '', '--include');
+  const filterOptionNames = ['--include', '--exclude', '--exclude-dir'];
+  const filterOptions = collectLongValues(args, filterOptionNames);
+  const fileFilterOptions = filterOptions.filter((o) => o.name !== '--exclude-dir');
+  const excludeDirGlobs = filterOptions
+    .filter((o) => o.name === '--exclude-dir')
+    .map((o) => o.value.replace(/[\\/]+$/, ''));
 
-  const { flags, operandWords, values } = parseWords(args, ['A', 'B', 'C']);
+  const { flags, operandWords, values, missingValue } = parseWords(
+    args,
+    ['A', 'B', 'C'],
+    filterOptionNames,
+  );
+  const missingFilterOption = missingValue.find((o) => filterOptionNames.includes(o));
+  if (missingFilterOption) {
+    return (
+      '[Console]::Error.WriteLine(' +
+      psStr("grep: option '" + missingFilterOption + "' requires an argument") +
+      '); $script:fx_exit = 2'
+    );
+  }
   const ci = flags.has('i');
   const inv = flags.has('v');
   const num = flags.has('n');
@@ -339,11 +384,74 @@ const grep: Handler = (args) => {
   if (fileWords.length > 0) {
     lines.push(PS_GLOB_FN);
     lines.push(
-      '$fx_inc = @(' + includeGlobs.map((g) => psStr(g)).join(', ') + ')',
+      '$fx_fsel = @(' +
+        fileFilterOptions
+          .map(
+            (o) =>
+              '[pscustomobject]@{ Keep = ' +
+              pb(o.name === '--include') +
+              '; Glob = ' +
+              psStr(o.value) +
+              ' }',
+          )
+          .join(', ') +
+        ')',
+      '$fx_excd = @(' + excludeDirGlobs.map((g) => psStr(g)).join(', ') + ')',
       '$fx_srcs = @()',
       '$fx_err = $false',
       '$fx_recd = $false',
     );
+    lines.push('function fx-globmatch($fx_name, $fx_glob, $fx_suffix) {');
+    lines.push("  $fx_n = ([string]$fx_name).Replace('\\', '/')");
+    lines.push("  $fx_p = ([string]$fx_glob).Replace('\\', '/')");
+    lines.push('  if ($fx_n -like $fx_p) { return $true }');
+    lines.push('  if ($fx_suffix) {');
+    lines.push("    $fx_slash = $fx_n.IndexOf('/')");
+    lines.push('    while ($fx_slash -ge 0 -and $fx_slash + 1 -lt $fx_n.Length) {');
+    lines.push('      $fx_n = $fx_n.Substring($fx_slash + 1)');
+    lines.push('      if ($fx_n -like $fx_p) { return $true }');
+    lines.push("      $fx_slash = $fx_n.IndexOf('/')");
+    lines.push('    }');
+    lines.push('  }');
+    lines.push('  return $false');
+    lines.push('}');
+    lines.push('function fx-anyglob($fx_name, $fx_globs, $fx_suffix) {');
+    lines.push(
+      '  foreach ($fx_glob in $fx_globs) { if (fx-globmatch $fx_name $fx_glob $fx_suffix) { return $true } }',
+    );
+    lines.push('  return $false');
+    lines.push('}');
+    lines.push('function fx-filewanted($fx_path, $fx_suffix) {');
+    lines.push('  if ($fx_fsel.Count -eq 0) { return $true }');
+    lines.push(
+      '  $fx_name = if ($fx_suffix) { [string]$fx_path } else { [IO.Path]::GetFileName([string]$fx_path) }',
+    );
+    lines.push('  $fx_keep = -not [bool]$fx_fsel[0].Keep');
+    lines.push(
+      '  foreach ($fx_rule in $fx_fsel) { if (fx-globmatch $fx_name $fx_rule.Glob $fx_suffix) { $fx_keep = [bool]$fx_rule.Keep } }',
+    );
+    lines.push('  return $fx_keep');
+    lines.push('}');
+    if (rec) {
+      lines.push('function fx-walkfiles($fx_root) {');
+      lines.push('  $fx_dirs = New-Object System.Collections.Stack');
+      lines.push('  $fx_dirs.Push([string]$fx_root)');
+      lines.push('  while ($fx_dirs.Count -gt 0) {');
+      lines.push('    $fx_cur = [string]$fx_dirs.Pop()');
+      lines.push(
+        '    foreach ($fx_item in @(Get-ChildItem -LiteralPath $fx_cur -Force -ErrorAction SilentlyContinue)) {',
+      );
+      lines.push('      if ($fx_item.PSIsContainer) {');
+      lines.push(
+        '        if (($fx_item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and -not (fx-anyglob $fx_item.Name $fx_excd $false)) { $fx_dirs.Push($fx_item.FullName) }',
+      );
+      lines.push(
+        '      } elseif (fx-filewanted $fx_item.FullName $false) { $fx_item.FullName }',
+      );
+      lines.push('    }');
+      lines.push('  }');
+      lines.push('}');
+    }
     lines.push('foreach ($fx_o in ' + psArray(fileWords) + ') {');
     lines.push('  foreach ($fx_g in (fx-glob $fx_o)) {');
     lines.push(
@@ -351,22 +459,16 @@ const grep: Handler = (args) => {
     );
     lines.push('    if (Test-Path -LiteralPath $fx_g -PathType Container) {');
     if (rec) {
+      lines.push('      $fx_dir = Get-Item -LiteralPath $fx_g');
+      lines.push('      if (fx-anyglob $fx_g $fx_excd $true) { continue }');
       lines.push('      $fx_recd = $true');
-      lines.push(
-        '      $fx_subs = @(Get-ChildItem -LiteralPath $fx_g -Recurse -Force -File -ErrorAction SilentlyContinue)',
-      );
-      lines.push('      if ($fx_inc.Count -gt 0) {');
-      lines.push(
-        "        $fx_subs = @($fx_subs | Where-Object { $fx_ok = $false; foreach ($fx_gi in $fx_inc) { if ($_.Name -like $fx_gi) { $fx_ok = $true; break } }; $fx_ok })",
-      );
-      lines.push('      }');
-      lines.push('      foreach ($fx_s in $fx_subs) { $fx_srcs += $fx_s.FullName }');
+      lines.push('      $fx_srcs += @(fx-walkfiles $fx_dir.FullName)');
     } else {
       lines.push(
         "      [Console]::Error.WriteLine('grep: ' + $fx_g + ': Is a directory'); $fx_err = $true",
       );
     }
-    lines.push('    } else { $fx_srcs += $fx_g }');
+    lines.push('    } elseif (fx-filewanted $fx_g $true) { $fx_srcs += $fx_g }');
     lines.push('  }');
     lines.push('}');
     lines.push('$fx_pre = $false');
