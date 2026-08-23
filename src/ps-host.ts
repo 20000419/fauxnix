@@ -10,11 +10,16 @@ export const PS_MISSING_MESSAGE =
   'This host has no PowerShell on PATH (typical for Linux containers/sandboxes).\n' +
   'Run fauxnix on Windows, or install PowerShell and make powershell.exe reachable on PATH.\n';
 
+export const DEFAULT_STDOUT_LIMIT = 8_388_608;
+export const DEFAULT_STDERR_LIMIT = 1_048_576;
+
 export interface HostInvokeResult {
   stdout: Buffer;
   stderr: Buffer;
   exitCode: number;
   timedOut: boolean;
+  cancelled: boolean;
+  truncated: boolean;
   spawnError?: 'ENOENT' | 'START';
   spawnMessage?: string;
 }
@@ -85,13 +90,25 @@ export class PowerShellHost {
     return this.ensureStarted();
   }
 
-  async invoke(script: string, env: HostRequestEnv, timeoutMs: number): Promise<HostInvokeResult> {
-    const run = this.invokeLock.then(() => this.invokeSerial(script, env, timeoutMs));
+  async invoke(
+    script: string,
+    env: HostRequestEnv,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<HostInvokeResult> {
+    const run = this.invokeLock.then(() => this.invokeSerial(script, env, timeoutMs, signal));
     this.invokeLock = run.then(
       () => undefined,
       () => undefined,
     );
     return run;
+  }
+
+  drainNativeStderr(): Buffer {
+    if (!this.stderrChunks.length) return Buffer.alloc(0);
+    const b = Buffer.concat(this.stderrChunks);
+    this.stderrChunks = [];
+    return b;
   }
 
   async stop(): Promise<void> {
@@ -119,13 +136,30 @@ export class PowerShellHost {
     });
   }
 
+  private cancelledResult(): HostInvokeResult {
+    return {
+      stdout: Buffer.alloc(0),
+      stderr: Buffer.alloc(0),
+      exitCode: 130,
+      timedOut: false,
+      cancelled: true,
+      truncated: false,
+    };
+  }
+
   private async invokeSerial(
     script: string,
     env: HostRequestEnv,
     timeoutMs: number,
+    signal?: AbortSignal,
   ): Promise<HostInvokeResult> {
+    if (signal?.aborted) {
+      await this.stop();
+      return this.cancelledResult();
+    }
+
     const started = await this.ensureStarted();
-    if (started) return started;
+    if (started) return { ...started, cancelled: false, truncated: false };
 
     const id = 'f' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
     const line = encodeHostRequest(id, script, env);
@@ -138,24 +172,44 @@ export class PowerShellHost {
         stderr: Buffer.from('fauxnix: powershell host exited unexpectedly\n', 'utf8'),
         exitCode: 1,
         timedOut: false,
+        cancelled: false,
+        truncated: false,
         spawnMessage: (e as Error).message,
       };
     }
 
+    let cancelled = false;
+    const onAbort = () => {
+      cancelled = true;
+      void this.stop();
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
     try {
       const raw = await this.nextJsonLine(timeoutMs, id);
       const msg = decodeHostResponse(raw);
+      const native = this.drainNativeStderr();
       return {
         stdout: msg.stdout,
-        stderr: msg.stderr,
+        stderr: native.length ? Buffer.concat([msg.stderr, native]) : msg.stderr,
         exitCode: msg.exitCode,
         timedOut: false,
+        cancelled: false,
+        truncated: false,
       };
     } catch (e) {
       const timedOut = (e as { timedOut?: boolean }).timedOut === true;
       await this.stop();
+      this.drainNativeStderr();
+      if (cancelled || signal?.aborted) return this.cancelledResult();
       if (timedOut) {
-        return { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), exitCode: 124, timedOut: true };
+        return {
+          stdout: Buffer.alloc(0),
+          stderr: Buffer.alloc(0),
+          exitCode: 124,
+          timedOut: true,
+          cancelled: false,
+          truncated: false,
+        };
       }
       if (this.closeErr && (this.closeErr as NodeJS.ErrnoException).code === 'ENOENT') {
         return {
@@ -163,6 +217,8 @@ export class PowerShellHost {
           stderr: Buffer.from(PS_MISSING_MESSAGE, 'utf8'),
           exitCode: 127,
           timedOut: false,
+          cancelled: false,
+          truncated: false,
           spawnError: 'ENOENT',
         };
       }
@@ -177,7 +233,11 @@ export class PowerShellHost {
         ),
         exitCode: code === 0 ? 1 : code,
         timedOut: false,
+        cancelled: false,
+        truncated: false,
       };
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
     }
   }
 
@@ -195,6 +255,8 @@ export class PowerShellHost {
           stderr: Buffer.from(PS_MISSING_MESSAGE, 'utf8'),
           exitCode: 127,
           timedOut: false,
+          cancelled: false,
+          truncated: false,
           spawnError: 'ENOENT',
         };
       }
@@ -206,6 +268,8 @@ export class PowerShellHost {
         ),
         exitCode: 127,
         timedOut: false,
+        cancelled: false,
+        truncated: false,
         spawnError: 'START',
         spawnMessage: err.message,
       };
@@ -234,14 +298,22 @@ export class PowerShellHost {
       windowsHide: true,
     });
     this.proc = child;
-    child.stdout!.on('data', (d: Buffer) => this.onStdout(d));
-    child.stderr!.on('data', (d: Buffer) => this.stderrChunks.push(d));
+    child.stdout!.on('data', (d: Buffer) => {
+      if (this.proc !== child) return;
+      this.onStdout(d);
+    });
+    child.stderr!.on('data', (d: Buffer) => {
+      if (this.proc !== child) return;
+      this.stderrChunks.push(d);
+    });
     child.on('error', (e) => {
+      if (this.proc !== child) return;
       this.closeErr = e;
       this.closed = true;
       this.failWaiters(e);
     });
     child.on('close', (c) => {
+      if (this.proc !== child) return;
       this.closeCode = c;
       this.closed = true;
       this.proc = null;

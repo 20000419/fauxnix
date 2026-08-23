@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
-import { FauxnixSession } from './executor.js';
+import { ExecResult, FauxnixSession } from './executor.js';
 import { parseCommand } from './parser.js';
 import { translateCommandList, wrapScript, translatePipelineBody } from './translator.js';
 import { registeredNames } from './registry.js';
@@ -42,16 +42,46 @@ Unknown commands (git, node, npm, python, cargo...) are passed through and execu
 Not supported: heredocs, while/until/case, background jobs. if/then/elif/else/fi, for-in loops, and word-level \$((...)) arithmetic expansion are supported.
 
 CWD, environment variables, export/unset and cd persist across calls within this session — a resident PowerShell 5.1 host is started when the MCP session begins (and after reset), so the first bash tool call is already warm.
-Exit codes follow bash conventions (0 ok, 1 fail, 2 usage/serious, 127 command not found, 124 timeout).
+Exit codes follow bash conventions (0 ok, 1 fail, 2 usage/serious, 127 command not found, 124 timeout, 130 cancelled). The tool also returns structuredContent (schemaVersion 1) with stdout/stderr/exitCode/timedOut/cancelled/truncated/sessionId.
 
 Platform requirement: the execution backend is native Windows PowerShell 5.1+. On hosts without PowerShell on PATH (e.g. Linux containers/sandboxes), the bash tool returns exit code 127 with an actionable error instead of running the command.`;
+
+export function formatBashText(
+  r: Pick<ExecResult, 'stdout' | 'stderr' | 'exitCode' | 'timedOut' | 'cancelled'>,
+): string {
+  const parts: string[] = [];
+  if (r.stdout.length) parts.push(r.stdout.replace(/\n$/, ''));
+  if (r.stderr.length) parts.push(r.stderr.replace(/\n$/, ''));
+  if (r.cancelled) parts.push('Cancelled');
+  else if (r.timedOut) parts.push('Exit code: 124');
+  else if (r.exitCode !== 0) parts.push('Exit code: ' + r.exitCode);
+  return parts.length ? parts.join('\n') : '(no output)';
+}
+
+export function bashToolResult(r: ExecResult, sessionId: string, infra: boolean) {
+  const structuredContent = {
+    schemaVersion: 1 as const,
+    stdout: r.stdout,
+    stderr: r.stderr,
+    exitCode: r.exitCode,
+    timedOut: r.timedOut,
+    cancelled: r.cancelled,
+    truncated: r.truncated,
+    sessionId,
+  };
+  return {
+    content: [{ type: 'text' as const, text: formatBashText(r) }],
+    structuredContent,
+    ...(infra ? { isError: true as const } : {}),
+  };
+}
 
 export async function startMcpServer(): Promise<void> {
   const server = new McpServer(
     { name: 'fauxnix', version: packageVersion },
     { capabilities: { tools: {} } },
   );
-  let session = new FauxnixSession();
+  const session = new FauxnixSession();
   await session.prewarm();
 
   server.tool(
@@ -68,19 +98,29 @@ export async function startMcpServer(): Promise<void> {
         .describe('Timeout in milliseconds (default 120000)'),
     },
     EXEC_ANNOTATIONS,
-    async ({ command, timeout_ms }) => {
+    async ({ command, timeout_ms }, extra) => {
       try {
         const plans = translateCommandList(parseCommand(command));
-        const result = await session.run(plans, { timeoutMs: timeout_ms });
-        const parts: string[] = [];
-        if (result.stdout.trim()) parts.push(result.stdout.replace(/\n$/, ''));
-        if (result.stderr.trim()) parts.push(result.stderr.replace(/\n$/, ''));
-        if (result.exitCode !== 0) parts.push('Exit code: ' + result.exitCode);
-        const text = parts.length ? parts.join('\n') : '(no output)';
-        return { content: [{ type: 'text', text }] };
+        const result = await session.run(plans, {
+          timeoutMs: timeout_ms,
+          signal: extra.signal,
+        });
+        const infra = result.spawnError === 'ENOENT' || result.spawnError === 'START';
+        return bashToolResult(result, session.id, infra);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        return { content: [{ type: 'text', text: msg }], isError: true };
+        return bashToolResult(
+          {
+            stdout: '',
+            stderr: msg,
+            exitCode: 2,
+            timedOut: false,
+            cancelled: false,
+            truncated: false,
+          },
+          session.id,
+          true,
+        );
       }
     },
   );
@@ -115,21 +155,46 @@ export async function startMcpServer(): Promise<void> {
     SESSION_ANNOTATIONS,
     async ({ action }) => {
       if (action === 'reset') {
-        await session.dispose();
-        session = new FauxnixSession();
-        await session.prewarm();
+        await session.reset();
         return { content: [{ type: 'text', text: 'fauxnix: session reset' }] };
       }
       const envKeys = Object.keys(session.env).sort();
       const text =
         'cwd: ' + (session.cwd ?? '(inherit from server start)') +
         '\nenv keys: ' + (envKeys.length ? envKeys.join(', ') : '(none tracked)') +
+        '\nsession: ' + session.id +
         '\ncommands registered: ' + registeredNames().length;
       return { content: [{ type: 'text', text }] };
     },
   );
 
   const transport = new StdioServerTransport();
+  let shuttingDown = false;
+  const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    await session.dispose();
+    try {
+      await server.close();
+    } catch {
+      /* ignore */
+    }
+  };
+  process.stdin.on('end', () => {
+    void shutdown();
+  });
+  process.stdin.on('close', () => {
+    void shutdown();
+  });
+  process.on('SIGINT', () => {
+    void shutdown();
+  });
+  process.on('SIGTERM', () => {
+    void shutdown();
+  });
+  transport.onclose = () => {
+    void shutdown();
+  };
   await server.connect(transport);
 }
 

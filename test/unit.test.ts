@@ -15,6 +15,7 @@ import { lookup, parseWords, psStr } from '../src/registry.js';
 import { decodeOutput, encodeCommand, normalizeHostNewlines } from '../src/encoding.js';
 import { normalizeStderr } from '../src/errors.js';
 import { decodeHostResponse, encodeHostRequest } from '../src/ps-host.js';
+import { bashToolResult, formatBashText } from '../src/mcp.js';
 import '../src/commands/install-all.js';
 
 /* ---------------------------- parser ---------------------------- */
@@ -455,6 +456,7 @@ describe('translator', () => {
     expect(boot).toContain('function fx-csub');
     expect(boot).toContain('{"ready":true}');
     expect(boot).toContain('ConvertFrom-Json');
+    expect(boot).toContain('MaxJsonLength');
     expect(boot).not.toContain('exit $script:fx_exit');
   });
 
@@ -681,5 +683,48 @@ describe('tokenize', () => {
     const toks = tokenize('a > b 2> c');
     const ops = toks.filter((t) => t.type === 'OP').map((t) => t.op);
     expect(ops).toEqual(['>', '2>']);
+  });
+});
+
+describe('MCP structured results (#129)', () => {
+  it('keeps whitespace-only stdout instead of collapsing to (no output)', () => {
+    expect(
+      formatBashText({
+        stdout: '   ',
+        stderr: '',
+        exitCode: 0,
+        timedOut: false,
+        cancelled: false,
+      }),
+    ).toBe('   ');
+    expect(
+      formatBashText({
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+        timedOut: false,
+        cancelled: false,
+      }),
+    ).toBe('(no output)');
+  });
+
+  it('exposes schemaVersion 1 and does not mark shell exit 1 as a protocol error', () => {
+    const r = bashToolResult(
+      {
+        stdout: 'x',
+        stderr: '',
+        exitCode: 1,
+        timedOut: false,
+        cancelled: false,
+        truncated: false,
+      },
+      'abcd1234',
+      false,
+    );
+    expect(r.structuredContent.schemaVersion).toBe(1);
+    expect(r.structuredContent.sessionId).toBe('abcd1234');
+    expect(r.structuredContent.exitCode).toBe(1);
+    expect(r.content[0].text).toContain('Exit code: 1');
+    expect('isError' in r && r.isError).toBeFalsy();
   });
 });
