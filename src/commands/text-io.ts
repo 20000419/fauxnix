@@ -1,5 +1,5 @@
 import { Word, wordToString } from '../ast.js';
-import { Handler, lookup, parseWords, psStr } from '../registry.js';
+import { CommandSpec, Handler, lookup, parseWords, psStr } from '../registry.js';
 import { argListExpr, exprOfWord, operandExpr } from '../translator.js';
 
 /* ------------------------------------------------------------------ */
@@ -806,8 +806,8 @@ const wc: Handler = (args) => {
 /* ------------------------------------------------------------------ */
 
 const tee: Handler = (args, ctx) => {
-  const { flags, operandWords } = parseWords(args);
-  const append = flags.has('a') || flags.has('append');
+  const { flags, longs, operandWords } = parseWords(args);
+  const append = flags.has('a') || longs.has('--append');
   return [
     PS_WRITE_FN,
     fxTermLine(ctx.position),
@@ -1302,6 +1302,19 @@ const xargs: Handler = (args) => {
 
 /* ------------------------------------------------------------------ */
 
+export const specs: CommandSpec[] = [
+  {
+    names: ['tee'],
+    options: [
+      { short: 'a', long: '--append', support: 'implemented' },
+    ],
+    effects: ['read', 'write'],
+    platform: 'windows-ps51',
+    dispatch: 'translated',
+    handler: tee,
+  },
+];
+
 export const handlers: Record<string, Handler> = {
   echo,
   printf,
@@ -1309,7 +1322,6 @@ export const handlers: Record<string, Handler> = {
   head,
   tail,
   wc,
-  tee,
   nl,
   tac,
   md5sum,
