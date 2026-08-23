@@ -745,13 +745,10 @@ describe('CommandSpec (#130)', () => {
     expect(bodyOf('tee out.txt')).toContain('if ($false)');
   });
 
-  it('spec\'d rm fails loud on unknown flags; unspec\'d ls still ignores them', () => {
+  it('spec\'d rm fails loud on unknown flags', () => {
     const rm = bodyOf('rm -z x');
     expect(rm).toContain("invalid option -- ''z''");
     expect(rm).not.toContain('Remove-Item');
-    const ls = bodyOf('ls -Z');
-    expect(ls).not.toContain('invalid option');
-    expect(ls).toContain('Get-ChildItem');
   });
 
   it('rm --verbose matches -v; tee -i is not silently ignored', () => {
@@ -767,10 +764,32 @@ describe('CommandSpec (#130)', () => {
     expect(cp?.spec?.options.some((o) => o.short === 'n' && o.support === 'implemented')).toBe(
       true,
     );
-    expect(rows.find((r) => r.name === 'ls')?.spec).toBeNull();
+    expect(rows.find((r) => r.name === 'ls')?.spec).toBeTruthy();
     expect(lookupSpec('cp')).toBeTruthy();
-    expect(lookupSpec('ls')).toBeUndefined();
+    expect(lookupSpec('ls')).toBeTruthy();
+    expect(lookupSpec('find')).toBeUndefined();
     expect(lookup('tee')).toBeTypeOf('function');
+  });
+});
+
+describe('CommandSpec files leftovers (#130)', () => {
+  const bodyOf = (cmd: string): string => translateCommandList(parse(cmd))[0].body;
+
+  it('ls unknown flags fail loud; --format=long still means -l', () => {
+    expect(bodyOf('ls -Z')).toContain("invalid option -- ''Z''");
+    expect(bodyOf('ls --format=long')).toContain("'{0} 1");
+    expect(bodyOf('ls --recursive')).toContain('not supported by fauxnix');
+  });
+
+  it('chmod -R is unsupported; find stays unspec\'d so -name still compiles', () => {
+    expect(bodyOf('chmod -R 644 x')).toContain('not supported by fauxnix');
+    expect(bodyOf("find . -name '*.ts'")).toContain('-clike');
+    expect(lookupSpec('find')).toBeUndefined();
+  });
+
+  it('mkdir --verbose and ln --symbolic are implemented longs', () => {
+    expect(bodyOf('mkdir --verbose d')).toContain('if ($true)');
+    expect(bodyOf('ln --symbolic a b')).toContain('SymbolicLink');
   });
 });
 
