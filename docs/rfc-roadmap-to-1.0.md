@@ -92,7 +92,15 @@ Git Bash appended to the corpus (see C1), (d) README deviations updated.
 ## Milestones
 
 - **v0.7 — "script completeness + latency polish"**: A1, A2, B1, B2, C1, C2, D1, E1, E2
-- **v0.8 — "platform matrix + reach"**: A3, A4, A5, B3, B4, C3, C4, D2, D3, D4
+- **v0.8 — "execution contract + platform matrix"**: #129 host-protocol v2
+  (typed frames, per-stream limits with explicit truncation markers,
+  cancellation via runspace Stop + host health check, serialized lifecycle,
+  dispose-on-close) and #130 CommandSpec fail-loud validation
+  (destructive five first: cp -n / mv -n / touch -c / tee --append /
+  find ! … -delete), plus A3, A4, A5, B3 (subsumed by #129), B4, C3, C4,
+  D2, D3, D4. Post-v0.7 audit (#131) findings folded in: redirect fd
+  ownership, native argv fidelity, syntax fail-loud (trailing `&&`, `;;`,
+  `env -i`) as a small pre-v0.8 wave.
 - **v1.0 — stability promise** (all of):
   - differential ≥ 95% byte-identical on a ≥ 200-case corpus (C1)
   - locale matrix green (zh-CN + en-US, C2); PS 7 tier documented (C3); ARM64 green (C4)
