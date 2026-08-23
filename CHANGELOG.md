@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.9.1 — 2026-08-23
+
+Hotfix for the two P1 findings from the Codex review of #145 (both verified
+on published 0.9.0):
+
+- **Redirected files are never truncated by response budgets** — limits
+  apply only to data returned to the caller; `printf … > file` under a small
+  (or default 8 MiB) budget was writing a clipped file
+- **Truncation cuts at valid UTF-8 boundaries** — a mid-codepoint cut made
+  Node's decoder reject the whole buffer and fall back to GBK mojibake;
+  the cut now backs off to a sequence boundary (lead-byte scan)
 ## v0.9.0 — 2026-08-23
 
 Protocol v2 + bounded outputs (#141 #142 #144):

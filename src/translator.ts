@@ -1355,7 +1355,22 @@ function fx-emit-chunks($type, $id, [byte[]]$bytes, $limit, [ref]$seq) {
   if ($null -ne $bytes) { $n = $bytes.Length }
   $use = $n
   $trunc = $false
-  if ($use -gt $limit) { $use = $limit; $trunc = $true }
+  # limit 0 = uncapped (file-redirected streams must never be budget-clipped)
+  if ($limit -gt 0 -and $use -gt $limit) {
+    $use = $limit
+    $trunc = $true
+    # back the cut off to a valid UTF-8 boundary — a split codepoint makes
+    # Node's decoder reject the whole buffer and fall back to GBK mojibake
+    $i = $use - 1
+    $back = 0
+    while ($back -lt 3 -and $i -ge 0 -and (($bytes[$i] -band 0xC0) -eq 0x80)) { $i = $i - 1; $back = $back + 1 }
+    if ($i -ge 0) {
+      $lead = $bytes[$i]
+      $seqlen = 1
+      if (($lead -band 0xE0) -eq 0xC0) { $seqlen = 2 } elseif (($lead -band 0xF0) -eq 0xE0) { $seqlen = 3 } elseif (($lead -band 0xF8) -eq 0xF0) { $seqlen = 4 }
+      if (($i + $seqlen) -gt $use) { $use = $i }
+    }
+  }
   $off = 0
   while ($off -lt $use) {
     $len = $use - $off

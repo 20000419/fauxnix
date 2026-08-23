@@ -1273,6 +1273,38 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     }
   }, 30000);
 
+  it('response budgets never truncate file-redirected streams (Codex P1)', async () => {
+    const extra = new FauxnixSession();
+    try {
+      await extra.prewarm();
+      const target = join(dir, 'budget-redirect.txt');
+      const r = await extra.run(
+        translateCommandList(parseCommand('printf AAAAAAAAAA > ' + JSON.stringify(target))),
+        { stdoutLimit: 4 },
+      );
+      expect(r.exitCode).toBe(0);
+      expect(readFileSync(target, 'utf8')).toBe('AAAAAAAAAA');
+    } finally {
+      await extra.dispose();
+    }
+  }, 30000);
+
+  it('truncation cuts at a UTF-8 boundary, never mid-codepoint (Codex P1)', async () => {
+    const extra = new FauxnixSession();
+    try {
+      await extra.prewarm();
+      const r = await extra.run(
+        translateCommandList(parseCommand('printf "\u4f60\u597d\u4e16\u754c\u4f60\u597d\u4e16\u754c"')),
+        { stdoutLimit: 7 },
+      );
+      expect(r.truncated).toBe(true);
+      expect(Buffer.byteLength(r.stdout, 'utf8')).toBeLessThanOrEqual(7);
+      expect(r.stdout).toBe('你好');
+    } finally {
+      await extra.dispose();
+    }
+  }, 30000);
+
   it('whitespace-only stdout is preserved', async () => {
     const r = await run("printf '   '");
     expect(r.exitCode).toBe(0);
