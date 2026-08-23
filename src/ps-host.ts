@@ -28,12 +28,48 @@ export interface HostRequestEnv {
   [key: string]: string;
 }
 
-export function encodeHostRequest(id: string, script: string, env: HostRequestEnv): string {
-  return JSON.stringify({
+export function encodeHostRequest(
+  id: string,
+  script: string,
+  env: HostRequestEnv,
+  opts?: { v?: number; stdoutLimit?: number; stderrLimit?: number },
+): string {
+  const body: Record<string, unknown> = {
     id,
     scriptB64: Buffer.from(script, 'utf8').toString('base64'),
     env,
-  });
+  };
+  if (opts?.v === 2) {
+    body.v = 2;
+    body.type = 'run';
+    body.stdoutLimit = opts.stdoutLimit ?? DEFAULT_STDOUT_LIMIT;
+    body.stderrLimit = opts.stderrLimit ?? DEFAULT_STDERR_LIMIT;
+  }
+  return JSON.stringify(body);
+}
+
+export type HostV2Frame =
+  | { v: 2; type: 'ready'; capabilities?: { cancel?: boolean; maxChunkBytes?: number; stderrMarker?: boolean } }
+  | { v: 2; type: 'stdout' | 'stderr'; id: string; seq: number; dataB64: string }
+  | {
+      v: 2;
+      type: 'end';
+      id: string;
+      exitCode: number;
+      timedOut?: boolean;
+      cancelled?: boolean;
+      truncated?: boolean;
+    };
+
+export function parseHostLine(line: string): {
+  v1Ready?: boolean;
+  v2?: HostV2Frame;
+  v1?: ReturnType<typeof decodeHostResponse>;
+} {
+  const j = JSON.parse(line) as Record<string, unknown>;
+  if (j && j.v === 2 && typeof j.type === 'string') return { v2: j as unknown as HostV2Frame };
+  if (j && j.ready === true) return { v1Ready: true };
+  return { v1: decodeHostResponse(line) };
 }
 
 export function decodeHostResponse(line: string): {
@@ -79,6 +115,7 @@ export class PowerShellHost {
   private closed = false;
   private startLock: Promise<void> | null = null;
   private invokeLock: Promise<unknown> = Promise.resolve();
+  protocol: 1 | 2 = 1;
 
   constructor(
     private readonly hostFile: string,
@@ -95,8 +132,11 @@ export class PowerShellHost {
     env: HostRequestEnv,
     timeoutMs: number,
     signal?: AbortSignal,
+    limits?: { stdoutLimit?: number; stderrLimit?: number },
   ): Promise<HostInvokeResult> {
-    const run = this.invokeLock.then(() => this.invokeSerial(script, env, timeoutMs, signal));
+    const run = this.invokeLock.then(() =>
+      this.invokeSerial(script, env, timeoutMs, signal, limits),
+    );
     this.invokeLock = run.then(
       () => undefined,
       () => undefined,
@@ -152,6 +192,7 @@ export class PowerShellHost {
     env: HostRequestEnv,
     timeoutMs: number,
     signal?: AbortSignal,
+    limits?: { stdoutLimit?: number; stderrLimit?: number },
   ): Promise<HostInvokeResult> {
     if (signal?.aborted) {
       await this.stop();
@@ -162,7 +203,14 @@ export class PowerShellHost {
     if (started) return { ...started, cancelled: false, truncated: false };
 
     const id = 'f' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-    const line = encodeHostRequest(id, script, env);
+    const line = encodeHostRequest(
+      id,
+      script,
+      env,
+      this.protocol === 2
+        ? { v: 2, stdoutLimit: limits?.stdoutLimit, stderrLimit: limits?.stderrLimit }
+        : undefined,
+    );
     try {
       this.proc!.stdin!.write(line + '\n');
     } catch (e) {
@@ -185,6 +233,9 @@ export class PowerShellHost {
     };
     signal?.addEventListener('abort', onAbort, { once: true });
     try {
+      if (this.protocol === 2) {
+        return await this.collectV2(id, timeoutMs);
+      }
       const raw = await this.nextJsonLine(timeoutMs, id);
       const msg = decodeHostResponse(raw);
       const native = this.drainNativeStderr();
@@ -321,10 +372,10 @@ export class PowerShellHost {
     });
     try {
       const readyLine = await this.nextReadyLine(READY_TIMEOUT_MS);
-      const msg = decodeHostResponse(readyLine);
-      if (!msg.ready) {
-        throw new Error('fauxnix: powershell host handshake failed');
-      }
+      const parsed = parseHostLine(readyLine);
+      if (parsed.v2?.type === 'ready') this.protocol = 2;
+      else if (parsed.v1Ready || decodeHostResponse(readyLine).ready) this.protocol = 1;
+      else throw new Error('fauxnix: powershell host handshake failed');
     } catch (e) {
       await this.stop();
       throw e;
@@ -379,8 +430,9 @@ export class PowerShellHost {
       const line = await this.nextLine(Math.max(1, deadline - Date.now()));
       if (!line.trim()) continue;
       try {
-        const msg = decodeHostResponse(line);
-        if (msg.ready) return line;
+        const parsed = parseHostLine(line);
+        if (parsed.v2?.type === 'ready' || parsed.v1Ready) return line;
+        if (parsed.v1?.ready) return line;
       } catch {
         /* skip PS boot noise */
       }
@@ -408,6 +460,71 @@ export class PowerShellHost {
     const err = new Error('fauxnix: powershell host timed out') as Error & { timedOut: boolean };
     err.timedOut = true;
     throw err;
+  }
+
+  private async collectV2(id: string, timeoutMs: number): Promise<HostInvokeResult> {
+    const deadline = Date.now() + timeoutMs;
+    const out: Buffer[] = [];
+    const err: Buffer[] = [];
+    let outSeq = 0;
+    let errSeq = 0;
+    let end: Extract<HostV2Frame, { type: 'end' }> | null = null;
+    while (!end) {
+      const line = await this.nextLine(Math.max(1, deadline - Date.now()));
+      if (!line.trim()) continue;
+      let parsed: ReturnType<typeof parseHostLine>;
+      try {
+        parsed = parseHostLine(line);
+      } catch {
+        continue;
+      }
+      const f = parsed.v2;
+      if (!f) continue;
+      if (f.type === 'stdout' && f.id === id) {
+        if (f.seq !== outSeq) throw new Error('fauxnix: host stdout seq gap');
+        out.push(Buffer.from(f.dataB64 ?? '', 'base64'));
+        outSeq++;
+      } else if (f.type === 'stderr' && f.id === id) {
+        if (f.seq !== errSeq) throw new Error('fauxnix: host stderr seq gap');
+        err.push(Buffer.from(f.dataB64 ?? '', 'base64'));
+        errSeq++;
+      } else if (f.type === 'end' && f.id === id) {
+        end = f;
+      }
+    }
+    let native = Buffer.alloc(0);
+    try {
+      native = Buffer.from(await this.waitNativeMarker(id, 2000));
+    } catch {
+      native = Buffer.from(this.drainNativeStderr());
+    }
+    const capturedErr = Buffer.from(Buffer.concat(err));
+    const n = Number(end.exitCode);
+    return {
+      stdout: Buffer.from(Buffer.concat(out)),
+      stderr: native.length ? Buffer.from(Buffer.concat([capturedErr, native])) : capturedErr,
+      exitCode: Number.isFinite(n) ? n : 0,
+      timedOut: end.timedOut === true,
+      cancelled: end.cancelled === true,
+      truncated: end.truncated === true,
+    };
+  }
+
+  private async waitNativeMarker(id: string, timeoutMs: number): Promise<Buffer> {
+    const needle = Buffer.from('FAUXNIX_ERR_END:' + id + '\n', 'utf8');
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const buf = Buffer.concat(this.stderrChunks);
+      const idx = buf.indexOf(needle);
+      if (idx >= 0) {
+        const before = buf.subarray(0, idx);
+        const after = buf.subarray(idx + needle.length);
+        this.stderrChunks = after.length ? [Buffer.from(after)] : [];
+        return Buffer.from(before) as Buffer;
+      }
+      await new Promise((r) => setTimeout(r, 15));
+    }
+    throw new Error('fauxnix: native stderr marker missing');
   }
 
   private failWaiters(err: Error): void {
