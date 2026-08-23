@@ -218,3 +218,191 @@ export function parseWords(
   }
   return { flags, longs, values, missingValue, operandWords };
 }
+
+/* ------------------------------------------------------------------ */
+/* Typed command capabilities (#130)                                   */
+/* ------------------------------------------------------------------ */
+
+export type CommandEffect = 'read' | 'write' | 'delete' | 'network' | 'process';
+
+export type OptionSupport = 'implemented' | 'unsupported';
+
+/** One short/long alias group. Unknown options on a spec'd command fail loud. */
+export interface OptionSpec {
+  /** Short flag letter without dash (e.g. `'n'`). */
+  short?: string;
+  /** Long option including dashes (e.g. `'--no-clobber'`). */
+  long?: string;
+  /** Consumes a following argument (`-n 5`, `--lines=5`). */
+  takesValue?: boolean;
+  support: OptionSupport;
+  /** Extra phrase for unsupported options (`interactive prompt`). */
+  reason?: string;
+}
+
+export interface CommandSpec {
+  names: string[];
+  options: OptionSpec[];
+  effects: CommandEffect[];
+  platform?: 'windows-ps51' | 'portable-translate';
+  dispatch?: 'translated' | 'native' | 'dynamic';
+  handler: Handler;
+}
+
+const specs = new Map<string, CommandSpec>();
+
+/** Register a spec'd command. Unknown/unsupported options become GNU-style usage errors. */
+export function registerSpec(spec: CommandSpec): void {
+  for (const name of spec.names) {
+    const wrapped: Handler = (args, ctx) => {
+      const err = specOptionError(spec, args, name);
+      if (err) return err;
+      return spec.handler(args, ctx);
+    };
+    registry.set(name, wrapped);
+    specs.set(name, spec);
+  }
+}
+
+export function registerSpecs(list: CommandSpec[]): void {
+  for (const spec of list) registerSpec(spec);
+}
+
+export function lookupSpec(name: string): CommandSpec | undefined {
+  return specs.get(name);
+}
+
+/** Unique specs in registration order. */
+export function registeredSpecs(): CommandSpec[] {
+  const seen = new Set<CommandSpec>();
+  const out: CommandSpec[] = [];
+  for (const spec of specs.values()) {
+    if (seen.has(spec)) continue;
+    seen.add(spec);
+    out.push(spec);
+  }
+  return out;
+}
+
+export interface ListedCommand {
+  name: string;
+  spec: null | {
+    options: Array<{
+      short?: string;
+      long?: string;
+      takesValue: boolean;
+      support: OptionSupport;
+      reason?: string;
+    }>;
+    effects: CommandEffect[];
+    platform: 'windows-ps51' | 'portable-translate';
+    dispatch: 'translated' | 'native' | 'dynamic';
+  };
+}
+
+/** Capability dump for `fauxnix list --json` / MCP introspection. */
+export function listCommandsJson(): ListedCommand[] {
+  return registeredNames().map((name) => {
+    const spec = lookupSpec(name);
+    if (!spec) return { name, spec: null };
+    return {
+      name,
+      spec: {
+        options: spec.options.map((o) => ({
+          ...(o.short ? { short: o.short } : {}),
+          ...(o.long ? { long: o.long } : {}),
+          takesValue: o.takesValue === true,
+          support: o.support,
+          ...(o.reason ? { reason: o.reason } : {}),
+        })),
+        effects: spec.effects,
+        platform: spec.platform ?? 'windows-ps51',
+        dispatch: spec.dispatch ?? 'translated',
+      },
+    };
+  });
+}
+
+/**
+ * Walk argv against a CommandSpec. Returns a PowerShell error script, or
+ * null when every option is recognized and implemented.
+ */
+export function specOptionError(spec: CommandSpec, args: Word[], cmdName: string): string | null {
+  const shorts = new Map<string, OptionSpec>();
+  const longs = new Map<string, OptionSpec>();
+  for (const o of spec.options) {
+    if (o.short) shorts.set(o.short, o);
+    if (o.long) longs.set(o.long, o);
+  }
+
+  let i = 0;
+  let onlyOperands = false;
+  while (i < args.length) {
+    const t = wordToString(args[i]);
+    if (onlyOperands) {
+      i++;
+      continue;
+    }
+    if (t === '--') {
+      onlyOperands = true;
+      i++;
+      continue;
+    }
+    if (t.startsWith('--')) {
+      const eq = t.indexOf('=');
+      const name = eq >= 0 ? t.slice(0, eq) : t;
+      const opt = longs.get(name);
+      if (!opt) return optionFail(cmdName, "unrecognized option '" + name + "'");
+      if (opt.support === 'unsupported') {
+        return optionFail(cmdName, unsupportedMsg(opt, name));
+      }
+      if (!opt.takesValue && eq >= 0) {
+        return optionFail(cmdName, "option '" + name + "' doesn't allow an argument");
+      }
+      if (opt.takesValue && eq < 0) {
+        if (i + 1 < args.length) i++;
+        else return optionFail(cmdName, "option '" + name + "' requires an argument");
+      }
+      i++;
+      continue;
+    }
+    if (t.startsWith('-') && t.length > 1 && !/^-?\d/.test(t.slice(1, 2))) {
+      const body = t.slice(1);
+      for (let c = 0; c < body.length; c++) {
+        const ch = body[c];
+        const opt = shorts.get(ch);
+        if (!opt) return optionFail(cmdName, "invalid option -- '" + ch + "'");
+        if (opt.support === 'unsupported') {
+          return optionFail(cmdName, unsupportedMsg(opt, '-' + ch));
+        }
+        if (opt.takesValue) {
+          const rest = body.slice(c + 1);
+          if (!rest) {
+            if (i + 1 < args.length) i++;
+            else return optionFail(cmdName, "option requires an argument -- '" + ch + "'");
+          }
+          break;
+        }
+      }
+      i++;
+      continue;
+    }
+    i++;
+  }
+  return null;
+}
+
+function unsupportedMsg(opt: OptionSpec, shown: string): string {
+  const reason = opt.reason ? ' (' + opt.reason + ')' : '';
+  return "option '" + shown + "' is not supported by fauxnix" + reason;
+}
+
+function optionFail(cmd: string, msg: string): string {
+  return (
+    '[Console]::Error.WriteLine(' +
+    psStr(cmd + ': ' + msg) +
+    '); [Console]::Error.WriteLine(' +
+    psStr("Try '" + cmd + " --help' for more information.") +
+    '); $script:fx_exit = 1'
+  );
+}

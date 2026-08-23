@@ -11,10 +11,11 @@ import {
   wrapScript,
   hostBootstrapScript,
 } from '../src/translator.js';
-import { lookup, parseWords, psStr } from '../src/registry.js';
+import { listCommandsJson, lookup, lookupSpec, parseWords, psStr } from '../src/registry.js';
 import { decodeOutput, encodeCommand, normalizeHostNewlines } from '../src/encoding.js';
 import { normalizeStderr } from '../src/errors.js';
 import { decodeHostResponse, encodeHostRequest } from '../src/ps-host.js';
+import { bashToolResult, formatBashText } from '../src/mcp.js';
 import '../src/commands/install-all.js';
 
 /* ---------------------------- parser ---------------------------- */
@@ -176,6 +177,27 @@ describe('parser', () => {
   it('rejects heredocs with a helpful message', () => {
     expect(() => parse('cat <<EOF')).toThrow(FauxnixParseError);
     expect(() => parse('cat <<EOF')).toThrow(/heredoc/);
+  });
+
+  it('rejects trailing && / || instead of dropping them', () => {
+    expect(() => parse('echo BEFORE &&')).toThrow(/unexpected end of file after `&&'/);
+    expect(() => parse('echo BEFORE ||')).toThrow(/unexpected end of file after `\\|\\|'/);
+    expect(() => parse('echo a &&\n')).toThrow(/unexpected end of file after `&&'/);
+    expect(() => parse('if true &&; then echo x; fi')).toThrow(/unexpected token `&&'/);
+    expect(parse('echo a && echo b').segments).toHaveLength(2);
+  });
+
+  it('rejects ;; instead of treating it as extra semicolons', () => {
+    expect(() => parse('echo A;; echo B')).toThrow(/unexpected token `;;'/);
+    expect(() => parse('echo A; ; echo B')).toThrow(/unexpected token `;;'/);
+    expect(parse('echo A; echo B').segments).toHaveLength(2);
+  });
+
+  it('env -i is a loud usage error, not a silent ignore', () => {
+    const script = translateCommandList(parse('env -i echo hi'))[0].script;
+    expect(script).toMatch(/env -i\/--ignore-environment is not supported/);
+    expect(script).toContain('$script:fx_exit = 2');
+    expect(script).not.toContain("fx-write");
   });
 
   it('parses word-level $((...)) as Arith, not $( (expr) )', () => {
@@ -455,6 +477,7 @@ describe('translator', () => {
     expect(boot).toContain('function fx-csub');
     expect(boot).toContain('{"ready":true}');
     expect(boot).toContain('ConvertFrom-Json');
+    expect(boot).toContain('MaxJsonLength');
     expect(boot).not.toContain('exit $script:fx_exit');
   });
 
@@ -681,5 +704,163 @@ describe('tokenize', () => {
     const toks = tokenize('a > b 2> c');
     const ops = toks.filter((t) => t.type === 'OP').map((t) => t.op);
     expect(ops).toEqual(['>', '2>']);
+  });
+});
+
+describe('CommandSpec (#130)', () => {
+  const bodyOf = (cmd: string): string => translateCommandList(parse(cmd))[0].body;
+
+  it('cp -n / --no-clobber skip an existing dest instead of overwriting', () => {
+    expect(bodyOf('cp -n src dst')).toContain('$true -and (Test-Path -LiteralPath $fx_target)');
+    expect(bodyOf('cp --no-clobber src dst')).toContain(
+      '$true -and (Test-Path -LiteralPath $fx_target)',
+    );
+    expect(bodyOf('cp src dst')).toContain('$false -and (Test-Path -LiteralPath $fx_target)');
+  });
+
+  it('cp rejects unknown and unsupported options before Copy-Item', () => {
+    const z = bodyOf('cp -z a b');
+    expect(z).toContain("invalid option -- ''z''");
+    expect(z).toContain('$script:fx_exit = 1');
+    expect(z).not.toContain('Copy-Item');
+    expect(bodyOf('cp -i a b')).toContain("option ''-i'' is not supported by fauxnix");
+    expect(bodyOf('cp --preserve a b')).toContain("unrecognized option ''--preserve''");
+  });
+
+  it('mv -n skips an existing dest', () => {
+    expect(bodyOf('mv -n src dst')).toContain('$true -and (Test-Path -LiteralPath $fx_target)');
+    expect(bodyOf('mv src dst')).toContain('$false -and (Test-Path -LiteralPath $fx_target)');
+  });
+
+  it('touch -c does not create missing files', () => {
+    expect(bodyOf('touch -c missing')).toContain('if ($true) { continue }');
+    expect(bodyOf('touch --no-create missing')).toContain('if ($true) { continue }');
+    expect(bodyOf('touch missing')).toContain('if ($false) { continue }');
+    expect(bodyOf('touch missing')).toContain('New-Item -ItemType File');
+  });
+
+  it('tee --append and -a append; bare tee truncates', () => {
+    expect(bodyOf('tee --append out.txt')).toContain('if ($true)');
+    expect(bodyOf('tee -a out.txt')).toContain('if ($true)');
+    expect(bodyOf('tee out.txt')).toContain('if ($false)');
+  });
+
+  it('spec\'d rm fails loud on unknown flags; unspec\'d ls still ignores them', () => {
+    const rm = bodyOf('rm -z x');
+    expect(rm).toContain("invalid option -- ''z''");
+    expect(rm).not.toContain('Remove-Item');
+    const ls = bodyOf('ls -Z');
+    expect(ls).not.toContain('invalid option');
+    expect(ls).toContain('Get-ChildItem');
+  });
+
+  it('rm --verbose matches -v; tee -i is not silently ignored', () => {
+    expect(bodyOf('rm --verbose x')).toContain('if ($true)');
+    expect(bodyOf('rm x')).toContain('if ($false)');
+    expect(bodyOf('tee -i out.txt')).toContain("invalid option -- ''i''");
+  });
+
+  it('listCommandsJson exposes migrated specs and null for legacy handlers', () => {
+    const rows = listCommandsJson();
+    const cp = rows.find((r) => r.name === 'cp');
+    expect(cp?.spec?.effects).toEqual(['read', 'write']);
+    expect(cp?.spec?.options.some((o) => o.short === 'n' && o.support === 'implemented')).toBe(
+      true,
+    );
+    expect(rows.find((r) => r.name === 'ls')?.spec).toBeNull();
+    expect(lookupSpec('cp')).toBeTruthy();
+    expect(lookupSpec('ls')).toBeUndefined();
+    expect(lookup('tee')).toBeTypeOf('function');
+  });
+});
+
+describe('find predicates (#130)', () => {
+  const bodyOf = (cmd: string): string => translateCommandList(parse(cmd))[0].body;
+  const throws = (cmd: string, msg: string) => {
+    expect(() => translateCommandList(parse(cmd))).toThrow(msg);
+  };
+
+  it('compiles ! and -o instead of ignoring them', () => {
+    const neg = bodyOf("find . ! -name '*.ts'");
+    expect(neg).toContain('-not');
+    expect(neg).toContain("-clike '*.ts'");
+    expect(neg).toContain('fx-find-print');
+    expect(neg).not.toContain('fx-find-delete');
+
+    const del = bodyOf("find . ! -name '*.ts' -delete");
+    expect(del).toContain('-not');
+    expect(del).toContain('fx-find-delete');
+    expect(del).toContain('[array]::Reverse');
+
+    const or = bodyOf("find . -name a -o -name b");
+    expect(or).toContain(' -or ');
+    expect(or).toContain("-clike 'a'");
+    expect(or).toContain("-clike 'b'");
+
+    const and = bodyOf("find . -name a -name b");
+    expect(and).toContain(' -and ');
+  });
+
+  it('treats -delete as a primary so OR-delete keeps GNU precedence', () => {
+    const footgun = bodyOf("find . -name a -o -name b -delete");
+    expect(footgun).toContain(' -or ');
+    expect(footgun).toContain('fx-find-delete');
+    const grouped = bodyOf("find . \\( -name a -o -name b \\) -delete");
+    expect(grouped).toContain(' -or ');
+    expect(grouped).toContain('fx-find-delete');
+  });
+
+  it('fails loud on unknown predicates and broken expressions', () => {
+    throws('find . -perm 644', "find: unknown predicate '-perm'");
+    throws('find . -print0', "find: unknown predicate '-print0'");
+    throws('find . -name', "find: missing argument to '-name'");
+    throws('find . -type s', 'find: Unknown argument to -type: s');
+    throws('find . -size xyz', "find: Invalid argument 'xyz' to -size");
+    throws('find . -o -name a', "find: invalid expression; you have used a binary operator '-o' with nothing before it.");
+    throws('find . -name a -o', "find: expected an expression after '-o'");
+    throws("find . -name '*.ts' extra", "find: paths must precede expression: 'extra'");
+  });
+});
+
+describe('MCP structured results (#129)', () => {
+  it('keeps whitespace-only stdout instead of collapsing to (no output)', () => {
+    expect(
+      formatBashText({
+        stdout: '   ',
+        stderr: '',
+        exitCode: 0,
+        timedOut: false,
+        cancelled: false,
+      }),
+    ).toBe('   ');
+    expect(
+      formatBashText({
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+        timedOut: false,
+        cancelled: false,
+      }),
+    ).toBe('(no output)');
+  });
+
+  it('exposes schemaVersion 1 and does not mark shell exit 1 as a protocol error', () => {
+    const r = bashToolResult(
+      {
+        stdout: 'x',
+        stderr: '',
+        exitCode: 1,
+        timedOut: false,
+        cancelled: false,
+        truncated: false,
+      },
+      'abcd1234',
+      false,
+    );
+    expect(r.structuredContent.schemaVersion).toBe(1);
+    expect(r.structuredContent.sessionId).toBe('abcd1234');
+    expect(r.structuredContent.exitCode).toBe(1);
+    expect(r.content[0].text).toContain('Exit code: 1');
+    expect('isError' in r && r.isError).toBeFalsy();
   });
 });

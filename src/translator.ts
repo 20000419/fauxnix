@@ -1402,6 +1402,13 @@ while ($true) {
   $fx_code = 0
   try { $fx_code = [int]$script:fx_exit } catch { $fx_code = 1 }
   $fx_res = @{ id = $fx_id; stdoutB64 = $fx_outB64; stderrB64 = $fx_errB64; exitCode = $fx_code }
-  $fx_proto.WriteLine(($fx_res | ConvertTo-Json -Compress))
+  try {
+    $fx_json = $fx_res | ConvertTo-Json -Compress
+  } catch {
+    $fx_msg = 'fauxnix: host result exceeded ConvertTo-Json MaxJsonLength (~2MB)'
+    $fx_res = @{ id = $fx_id; stdoutB64 = ''; stderrB64 = [Convert]::ToBase64String($fx_utf8.GetBytes($fx_msg)); exitCode = 1 }
+    $fx_json = $fx_res | ConvertTo-Json -Compress
+  }
+  $fx_proto.WriteLine($fx_json)
 }
 `.trim();

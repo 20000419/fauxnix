@@ -250,8 +250,13 @@ const env: Handler = (args, ctx) => {
       break;
     }
     if (t === '-i' || t === '--ignore-environment') {
-      i++; // best-effort: the flag is accepted and ignored
-      continue;
+      return (
+        '[Console]::Error.WriteLine(' +
+        psStr(
+          'fauxnix: env -i/--ignore-environment is not supported (would silently keep inherited secrets)',
+        ) +
+        '); $script:fx_exit = 2'
+      );
     }
     if (t === '-u' || t === '--unset') {
       if (i + 1 < raw.length) unsets.push(raw[i + 1]);

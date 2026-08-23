@@ -153,6 +153,10 @@ development:
 - **text filters**: `grep egrep sed awk sort uniq cut tr` — sed/awk scripts are parsed at
   translate time (unsupported constructs throw named errors, never silently misbehave)
 - **text I/O**: `echo printf cat head tail wc tee nl tac md5sum sha1sum sha256sum base64 seq yes xargs`
+
+`cp` / `mv` / `rm` / `touch` / `tee` carry a `CommandSpec`: unknown options fail with a GNU-style
+usage error instead of being ignored. `cp -n` / `mv -n` / `touch -c` / `tee --append` match GNU
+(no clobber / no-create / append). `fauxnix list --json` dumps the same capability metadata.
 - **shell/system**: `cd pwd export unset env printenv ps kill pkill pgrep sleep which type whoami
   id groups date uname hostname uptime free nproc clear true false test [ [[ : pushd popd dirs sudo
   timeout man history less more source . eval exit alias set`
@@ -196,6 +200,7 @@ fauxnix optimizes for the commands agents actually run. Documented deviations:
 - `yes` is capped at 65,536 lines — PS 5.1 pipelines cannot signal upstream producers to stop, so
   an unbounded `yes | head` would hang.
 - `tail -f`, `eval`, `alias`, heredocs, `while`/`until`/`case`,
+  `env -i`/`--ignore-environment`,
   and background `&` are rejected with actionable error messages instead of misbehaving.
   (`if/then/elif/else/fi`, `for x in ...`, backtick substitution, `command -v`, pipeline `read`,
   dotenv-style `source`, and word-level `$((...))` arithmetic expansion are supported.)
