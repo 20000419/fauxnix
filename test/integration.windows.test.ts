@@ -38,6 +38,15 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     writeFileSync(join(dir, 'grep-tree', 'src', 'nested.ts'), 'token nested\n', 'utf8');
     writeFileSync(join(dir, 'grep-tree', 'vendor', 'vendor.ts'), 'token vendor\n', 'utf8');
     writeFileSync(join(dir, 'grep-tree', 'generated', 'generated.md'), 'token generated\n', 'utf8');
+
+    mkdirSync(join(dir, 'find-depth', 'level-one', 'level-two'), { recursive: true });
+    writeFileSync(join(dir, 'find-depth', 'root.txt'), 'root\n', 'utf8');
+    writeFileSync(join(dir, 'find-depth', 'level-one', 'child.txt'), 'child\n', 'utf8');
+    writeFileSync(
+      join(dir, 'find-depth', 'level-one', 'level-two', 'grandchild.txt'),
+      'grandchild\n',
+      'utf8',
+    );
     session = new FauxnixSession();
     // seed the session cwd like a real shell login directory
     await session.run(translateCommandList(parseCommand('cd "' + dir + '"')));
@@ -641,6 +650,46 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
   it('find + wc -l counts rows', async () => {
     const r = await run("find sub -name '*.txt' | wc -l");
     expect(r.stdout.trim()).toBe('1');
+  });
+
+  it('find applies maxdepth and mindepth from root depth zero', async () => {
+    const paths = async (cmd: string) => {
+      const r = await run(cmd);
+      expect(r.exitCode).toBe(0);
+      return r.stdout.split(/\r?\n/).filter(Boolean).sort();
+    };
+
+    expect(await paths('find find-depth -maxdepth 0')).toEqual(['find-depth']);
+    expect(await paths('find find-depth -maxdepth 1')).toEqual([
+      'find-depth',
+      'find-depth/level-one',
+      'find-depth/root.txt',
+    ]);
+    expect(await paths('find find-depth -mindepth 1 -maxdepth 1')).toEqual([
+      'find-depth/level-one',
+      'find-depth/root.txt',
+    ]);
+    expect(await paths('find find-depth -mindepth 2 -maxdepth 2')).toEqual([
+      'find-depth/level-one/child.txt',
+      'find-depth/level-one/level-two',
+    ]);
+    expect(await paths('find find-depth -mindepth 3')).toEqual([
+      'find-depth/level-one/level-two/grandchild.txt',
+    ]);
+  });
+
+  it('find rejects missing and invalid depth arguments', async () => {
+    const missing = await run('find find-depth -maxdepth');
+    expect(missing.exitCode).toBe(1);
+    expect(missing.stderr).toContain("find: missing argument to '-maxdepth'");
+
+    for (const value of ['nope', '-1']) {
+      const invalid = await run(`find find-depth -mindepth ${value}`);
+      expect(invalid.exitCode).toBe(1);
+      expect(invalid.stderr).toContain(
+        `find: expected a non-negative decimal integer argument to -mindepth, but got '${value}'`,
+      );
+    }
   });
 
   it('stat -c format', async () => {
