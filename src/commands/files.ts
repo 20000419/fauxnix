@@ -1,5 +1,4 @@
-<<<<<<< HEAD
-import { Word, wordToString } from '../ast.js';
+import { FauxnixParseError, Word, wordToString } from '../ast.js';
 import {
   CommandSpec,
   Handler,
@@ -8,10 +7,6 @@ import {
   parseWords,
   psStr,
 } from '../registry.js';
-=======
-import { FauxnixParseError, Word, wordToString } from '../ast.js';
-import { Handler, parseWords, psStr } from '../registry.js';
->>>>>>> pr/137
 import { argListExpr, exprOfWord, operandExpr } from '../translator.js';
 
 /* ------------------------------------------------------------------ */
