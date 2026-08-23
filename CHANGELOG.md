@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.8.0 — 2026-08-23
+
+Execution-contract wave (#129 PR-A + #130 first families + syntax fail-loud):
+
+- **Bounded, cancellable, structured MCP results** (#129 PR-A): bash tool
+  returns versioned structured content (stdout/stderr/exitCode/timedOut/
+  cancelled) alongside the text; whitespace-only stdout is preserved instead
+  of collapsing to "(no output)"; per-request AbortSignal cancels by host-kill
+  with the same recovery as timeout (measured: sleep 8 cancelled at 0.4s,
+  session survives via cold restart); run/reset/dispose share one lock
+  (concurrent reset can no longer leak hosts); dispose on stdin EOF/SIGINT/
+  SIGTERM; native stderr drained per request; ConvertTo-Json overflow is a
+  loud frame error. v2 chunked frames stay a follow-up (PR-B).
+- **CommandSpec fail-loud** (#130): cp/mv/rm/touch/tee carry typed option
+  specs — unknown options are GNU-style usage errors, cp -n / mv -n /
+  touch -c / tee --append match GNU semantics; fauxnix list --json exposes
+  the capability metadata (108 commands)
+- **find predicates compiled, not ignored** (#137): !, -o, -a, grouping
+  parens, -delete precedence follow GNU; unknown predicates and broken
+  expressions fail loud with GNU wording
+- **Syntax fail-loud** (#135): trailing &&, ; ;, and env -i now reject with
+  actionable errors instead of executing something surprising
+
+Note: #138's richer host bootstrap raises the first frame after prewarm to
+~0.7s (from 0.137s; warm frames unchanged at ~50ms) — tracked for a
+bootstrap-slimming follow-up.
+
+186 tests.
 ## v0.7.1 — 2026-08-23
 
 Post-v0.7 audit fixes (issue #131 by @vulragrag-star; integration of #123–#128):
