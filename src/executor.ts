@@ -21,6 +21,12 @@ export interface ExecOptions {
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000;
+const DEFAULT_WINDOWS_PATHEXT = '.COM;.EXE;.BAT;.CMD';
+
+function hasEnvKey(env: NodeJS.ProcessEnv, name: string): boolean {
+  const normalized = name.toUpperCase();
+  return Object.keys(env).some((key) => key.toUpperCase() === normalized);
+}
 
 /** Resolve /dev/null and POSIX-ish literal targets to real Windows paths. */
 function winTarget(target: string): string {
@@ -249,6 +255,14 @@ export class FauxnixSession {
     for (const [k, v] of Object.entries(this.env)) {
       if (v === undefined) delete env[k];
       else env[k] = v;
+    }
+    // The MCP SDK's safe Windows stdio environment omits PATHEXT. Without it,
+    // PowerShell cannot resolve extensionless native commands such as `node`.
+    // Windows environment names are case-insensitive, so preserve any explicit
+    // spelling/value supplied by the caller and only restore the OS default
+    // when no variant is present at all.
+    if (process.platform === 'win32' && !hasEnvKey(env, 'PATHEXT')) {
+      env.PATHEXT = DEFAULT_WINDOWS_PATHEXT;
     }
     env.FAUXNIX_CWD_FILE = this.cwdFile;
     env.FAUXNIX_ENV_FILE = this.envFile;
