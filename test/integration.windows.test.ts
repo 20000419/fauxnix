@@ -1039,9 +1039,11 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
       await extra.prewarm();
       const r = await extra.run(
         translateCommandList(
-          parseCommand('sleep 0.8; echo before-deadline; sleep 0.8; echo after-deadline'),
+          parseCommand('sleep 1; echo before-deadline; sleep 5; echo after-deadline'),
         ),
-        { timeoutMs: 1200 },
+        // wide margins for cold CI runners: segment 1 must finish inside the
+        // budget even with ~2s host overhead, segment 3 must blow it by a lot
+        { timeoutMs: 3500 },
       );
       expect(r.exitCode).toBe(124);
       expect(r.stderr).toMatch(/timed out/);
