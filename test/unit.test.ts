@@ -178,6 +178,27 @@ describe('parser', () => {
     expect(() => parse('cat <<EOF')).toThrow(/heredoc/);
   });
 
+  it('rejects trailing && / || instead of dropping them', () => {
+    expect(() => parse('echo BEFORE &&')).toThrow(/unexpected end of file after `&&'/);
+    expect(() => parse('echo BEFORE ||')).toThrow(/unexpected end of file after `\\|\\|'/);
+    expect(() => parse('echo a &&\n')).toThrow(/unexpected end of file after `&&'/);
+    expect(() => parse('if true &&; then echo x; fi')).toThrow(/unexpected token `&&'/);
+    expect(parse('echo a && echo b').segments).toHaveLength(2);
+  });
+
+  it('rejects ;; instead of treating it as extra semicolons', () => {
+    expect(() => parse('echo A;; echo B')).toThrow(/unexpected token `;;'/);
+    expect(() => parse('echo A; ; echo B')).toThrow(/unexpected token `;;'/);
+    expect(parse('echo A; echo B').segments).toHaveLength(2);
+  });
+
+  it('env -i is a loud usage error, not a silent ignore', () => {
+    const script = translateCommandList(parse('env -i echo hi'))[0].script;
+    expect(script).toMatch(/env -i\/--ignore-environment is not supported/);
+    expect(script).toContain('$script:fx_exit = 2');
+    expect(script).not.toContain("fx-write");
+  });
+
   it('parses word-level $((...)) as Arith, not $( (expr) )', () => {
     const cmd = parse('echo $((1+1))').segments[0].pipeline.commands[0];
     expect(cmd.kind).toBe('SimpleCommand');
