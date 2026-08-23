@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.7.1 — 2026-08-23
+
+Post-v0.7 audit fixes (issue #131 by @vulragrag-star; integration of #123–#128):
+
+- `grep -r` restored: recursive search honors `--include`/`--exclude`/
+  `--exclude-dir` filters without misparsing short bundles (#123)
+- Pipeline exit status now comes from the final stage (per-stage status slots
+  replace the shared flag that let earlier failures leak) (#124)
+- `find -maxdepth`/`-mindepth` semantics fixed + GNU-style argument
+  validation (#125)
+- Release integrity: CI uses `npm ci`, a `test:package` job validates the
+  packed tarball and clean-source install (catches missing executables and
+  stale versions), README source-install instructions fixed (#126)
+- One timeout deadline per request: later segments no longer run after the
+  budget expires; exit 124 propagates immediately (#127)
+- `PATHEXT` restored when the official MCP SDK's sanitized Windows
+  environment omits it (extensionless native commands like `node` resolve
+  again in real clients) (#128)
+
+156/156 tests green.
 ## v0.7.0 — 2026-08-20
 
 First roadmap wave (docs/rfc-roadmap-to-1.0.md): A2, part of A1, B1.
