@@ -459,10 +459,41 @@ const file: Handler = (args) => {
 /* ------------------------------------------------------------------ */
 
 const du: Handler = (args) => {
-  const { flags, longs, operandWords } = parseWords(args, [], ['--max-depth']);
+  const { flags, longs, values, missingValue, operandWords } = parseWords(
+    args,
+    ['d'],
+    ['--max-depth'],
+  );
   const sum = flags.has('s') || longs.has('--summarize');
   const human = flags.has('h') || longs.has('--human-readable');
+  if (missingValue.includes('-d') || missingValue.includes('--max-depth')) {
+    return (
+      '[Console]::Error.WriteLine(' +
+      psStr("du: option requires an argument -- 'max-depth'") +
+      '); $script:fx_exit = 1'
+    );
+  }
+  const maxDepthRaw = values.get('-d') ?? values.get('--max-depth');
+  let maxDepth: number | null = null;
+  if (maxDepthRaw !== undefined) {
+    if (!/^\d+$/.test(maxDepthRaw)) {
+      return (
+        '[Console]::Error.WriteLine(' +
+        psStr("du: invalid maximum depth '" + maxDepthRaw + "'") +
+        '); $script:fx_exit = 1'
+      );
+    }
+    maxDepth = parseInt(maxDepthRaw, 10);
+  }
+  if (sum && maxDepth !== null && maxDepth !== 0) {
+    return (
+      '[Console]::Error.WriteLine(' +
+      psStr('du: summarizing conflicts with --max-depth=' + String(maxDepth)) +
+      '); $script:fx_exit = 1'
+    );
+  }
   const targets = operandWords.length ? argListExpr(operandWords) : "@('.')";
+  const onlyRoot = sum || maxDepth === 0;
   return [
     PS_HSIZE_FN,
     'function fx-size($p) {',
@@ -473,7 +504,7 @@ const du: Handler = (args) => {
     '$fx_ts = ' + targets,
     'foreach ($fx_t in $fx_ts) {',
     '  if (-not (Test-Path -LiteralPath $fx_t)) { [Console]::Error.WriteLine("du: cannot access \'" + $fx_t + "\': No such file or directory"); $script:fx_exit = 1; continue }',
-    '  if (' + (sum ? '$true' : '$false') + ') {',
+    '  if (' + (onlyRoot ? '$true' : '$false') + ') {',
     '    $fx_kb = fx-size $fx_t',
     '    if (' + (human ? '$true' : '$false') + ') { "{0}`t{1}" -f (fx-hsize ($fx_kb * 1KB)), $fx_t } else { "{0}`t{1}" -f $fx_kb, $fx_t }',
     '  } else {',
@@ -481,6 +512,11 @@ const du: Handler = (args) => {
     '    foreach ($fx_d in @(Get-ChildItem -LiteralPath $fx_t -Recurse -Force -Directory -ErrorAction SilentlyContinue)) {',
     '      $fx_kb = fx-size $fx_d.FullName',
     "      $fx_rel = './' + $fx_d.FullName.Substring($fx_root.Length).TrimStart('\\').Replace('\\', '/')",
+    maxDepth !== null && maxDepth > 0
+      ? "      $fx_ddepth = @($fx_rel.ToCharArray() | Where-Object { $_ -eq '/' }).Count; if ($fx_ddepth -gt " +
+        maxDepth +
+        ') { continue }'
+      : '',
     '      if (' + (human ? '$true' : '$false') + ') { "{0}`t{1}" -f (fx-hsize ($fx_kb * 1KB)), $fx_rel } else { "{0}`t{1}" -f $fx_kb, $fx_rel }',
     '    }',
     '    $fx_kb = fx-size $fx_t',
@@ -1006,6 +1042,16 @@ export const specs: CommandSpec[] = [
     [opt('c', '--no-create')],
     touch,
   ),
+  fileSpec(
+    ['du'],
+    ['read'],
+    [
+      opt('s', '--summarize'),
+      opt('h', '--human-readable'),
+      opt('d', '--max-depth', 'implemented', { takesValue: true }),
+    ],
+    du,
+  ),
 ];
 
 export const handlers: Record<string, Handler> = {
@@ -1021,7 +1067,6 @@ export const handlers: Record<string, Handler> = {
   dirname,
   stat,
   file,
-  du,
   df,
   find,
   chmod,

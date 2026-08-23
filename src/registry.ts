@@ -246,6 +246,8 @@ export interface CommandSpec {
   effects: CommandEffect[];
   platform?: 'windows-ps51' | 'portable-translate';
   dispatch?: 'translated' | 'native' | 'dynamic';
+  /** GNU usage/syntax exit (grep uses 2; cp/mv/rm use 1). */
+  usageExit?: number;
   handler: Handler;
 }
 
@@ -282,6 +284,43 @@ export function registeredSpecs(): CommandSpec[] {
     out.push(spec);
   }
   return out;
+}
+
+/** Markdown dump of every CommandSpec — source for docs/command-specs.md. */
+export function specsMarkdown(): string {
+  const lines = [
+    '# Command specs',
+    '',
+    'Generated from `CommandSpec`. Unlisted commands still use unchecked `parseWords` (unknown flags ignored). Spec\'d commands fail loud on unknown or unsupported options.',
+    '',
+  ];
+  for (const spec of registeredSpecs()) {
+    lines.push('## `' + spec.names.join('` / `') + '`');
+    lines.push('');
+    lines.push('Effects: ' + spec.effects.map((e) => '`' + e + '`').join(', '));
+    lines.push('');
+    if (!spec.options.length) {
+      lines.push('No options declared.');
+    } else {
+      lines.push('| Option | Value | Support |');
+      lines.push('| --- | --- | --- |');
+      for (const o of spec.options) {
+        const names = [o.short ? '`-' + o.short + '`' : '', o.long ? '`' + o.long + '`' : '']
+          .filter((s) => s !== '')
+          .join(', ');
+        const val = o.takesValue ? 'required' : 'flag';
+        const extra = o.reason ? ' (' + o.reason + ')' : '';
+        lines.push('| ' + names + ' | ' + val + ' | ' + o.support + extra + ' |');
+      }
+    }
+    lines.push('');
+  }
+  const unspec = registeredNames().filter((n) => !lookupSpec(n));
+  lines.push('## Unspec\'d commands');
+  lines.push('');
+  lines.push(unspec.map((n) => '`' + n + '`').join(', '));
+  lines.push('');
+  return lines.join('\n');
 }
 
 export interface ListedCommand {
@@ -328,6 +367,8 @@ export function listCommandsJson(): ListedCommand[] {
  * null when every option is recognized and implemented.
  */
 export function specOptionError(spec: CommandSpec, args: Word[], cmdName: string): string | null {
+  const usageExit = spec.usageExit ?? 1;
+  const fail = (msg: string) => optionFail(cmdName, msg, usageExit);
   const shorts = new Map<string, OptionSpec>();
   const longs = new Map<string, OptionSpec>();
   for (const o of spec.options) {
@@ -352,16 +393,16 @@ export function specOptionError(spec: CommandSpec, args: Word[], cmdName: string
       const eq = t.indexOf('=');
       const name = eq >= 0 ? t.slice(0, eq) : t;
       const opt = longs.get(name);
-      if (!opt) return optionFail(cmdName, "unrecognized option '" + name + "'");
+      if (!opt) return fail("unrecognized option '" + name + "'");
       if (opt.support === 'unsupported') {
-        return optionFail(cmdName, unsupportedMsg(opt, name));
+        return fail(unsupportedMsg(opt, name));
       }
       if (!opt.takesValue && eq >= 0) {
-        return optionFail(cmdName, "option '" + name + "' doesn't allow an argument");
+        return fail("option '" + name + "' doesn't allow an argument");
       }
       if (opt.takesValue && eq < 0) {
         if (i + 1 < args.length) i++;
-        else return optionFail(cmdName, "option '" + name + "' requires an argument");
+        else return fail("option '" + name + "' requires an argument");
       }
       i++;
       continue;
@@ -371,15 +412,15 @@ export function specOptionError(spec: CommandSpec, args: Word[], cmdName: string
       for (let c = 0; c < body.length; c++) {
         const ch = body[c];
         const opt = shorts.get(ch);
-        if (!opt) return optionFail(cmdName, "invalid option -- '" + ch + "'");
+        if (!opt) return fail("invalid option -- '" + ch + "'");
         if (opt.support === 'unsupported') {
-          return optionFail(cmdName, unsupportedMsg(opt, '-' + ch));
+          return fail(unsupportedMsg(opt, '-' + ch));
         }
         if (opt.takesValue) {
           const rest = body.slice(c + 1);
           if (!rest) {
             if (i + 1 < args.length) i++;
-            else return optionFail(cmdName, "option requires an argument -- '" + ch + "'");
+            else return fail("option requires an argument -- '" + ch + "'");
           }
           break;
         }
@@ -397,12 +438,13 @@ function unsupportedMsg(opt: OptionSpec, shown: string): string {
   return "option '" + shown + "' is not supported by fauxnix" + reason;
 }
 
-function optionFail(cmd: string, msg: string): string {
+function optionFail(cmd: string, msg: string, code = 1): string {
   return (
     '[Console]::Error.WriteLine(' +
     psStr(cmd + ': ' + msg) +
     '); [Console]::Error.WriteLine(' +
     psStr("Try '" + cmd + " --help' for more information.") +
-    '); $script:fx_exit = 1'
+    '); $script:fx_exit = ' +
+    String(code)
   );
 }
