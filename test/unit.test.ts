@@ -495,6 +495,17 @@ describe('translator', () => {
     expect(plan.script).toMatch(/__fx_s\d+ \| __fx_s\d+ \| __fx_s\d+/);
   });
 
+  it.each([
+    ['false | true', 0],
+    ['true | false', 1],
+  ])('isolates stage exit flags for %s (failing stage %i)', (command, failingStage) => {
+    const plan = translateCommandList(parse(command))[0];
+    const statusName = plan.body.match(/\$(fx_pipe_status\d+) = @\(0, 0\)/)?.[1];
+    expect(statusName).toBeDefined();
+    expect(plan.body).toContain(`$${statusName}[${failingStage}] = 1`);
+    expect(plan.body).toContain(`$script:fx_exit = [int]$${statusName}[1]`);
+  });
+
   it('scopes VAR=value prefixes and evaluates values before applying them', () => {
     const leak = translateCommandList(parse('FOO=bar echo x'))[0].script;
     expect(leak).toContain('try {');
