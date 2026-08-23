@@ -622,24 +622,61 @@ export function parseCommand(input: string): CommandList {
   const peek = () => tokens[pos];
   const next = () => tokens[pos++];
 
+  const isListSep = (o?: string) => o === ';' || o === '\n';
+
+  /** Consume `;` / newline / `&&` / `||`. Trailing `&&`/`||` and `;;` fail loud (bash). */
+  const consumeListOp = (stops?: Set<string>): ';' | '&&' | '||' | null => {
+    const t = peek();
+    if (t.type !== 'OP') return null;
+    if (!(t.op === '&&' || t.op === '||' || isListSep(t.op))) return null;
+    if (t.op === ';') {
+      next();
+      if (peek().type === 'OP' && peek().op === ';') {
+        throw new FauxnixParseError("fauxnix: syntax error near unexpected token `;;'");
+      }
+      return ';';
+    }
+    if (t.op === '\n') {
+      next();
+      while (peek().type === 'OP' && peek().op === '\n') next();
+      return ';';
+    }
+    const sep = t.op as '&&' | '||';
+    next();
+    while (peek().type === 'OP' && peek().op === '\n') next();
+    const n = peek();
+    const kw = peekKw();
+    if (n.type === 'OP' && n.op === ';') {
+      throw new FauxnixParseError("fauxnix: syntax error near unexpected token `" + sep + "'");
+    }
+    if (n.type === 'EOF' || (stops && kw && stops.has(kw))) {
+      throw new FauxnixParseError(
+        n.type === 'EOF'
+          ? 'fauxnix: syntax error: unexpected end of file after `' + sep + "'"
+          : "fauxnix: syntax error near unexpected token `" + sep + "'",
+      );
+    }
+    return sep;
+  };
+
   const parseList = (): CommandList => {
     const segments: ListSegment[] = [];
     let op: ';' | '&&' | '||' = ';';
-    const isListSep = (o?: string) => o === ';' || o === '\n';
-    while (peek().type === 'OP' && isListSep(peek().op)) next();
+    while (peek().type === 'OP' && isListSep(peek().op)) {
+      if (peek().op === ';' && tokens[pos + 1]?.type === 'OP' && tokens[pos + 1]?.op === ';') {
+        throw new FauxnixParseError("fauxnix: syntax error near unexpected token `;;'");
+      }
+      next();
+    }
     while (peek().type !== 'EOF') {
       const pipeline = parsePipeline();
       segments.push({ pipeline, op });
-      const t = peek();
-      if (t.type === 'OP' && (t.op === '&&' || t.op === '||' || isListSep(t.op))) {
-        op = t.op === '\n' ? ';' : (t.op as '&&' | '||' | ';');
-        next();
-        while (peek().type === 'OP' && isListSep(peek().op)) next();
-      } else if (t.type === 'EOF') {
-        break;
-      } else {
+      const nextOp = consumeListOp();
+      if (nextOp === null) {
+        if (peek().type === 'EOF') break;
         throw new FauxnixParseError('fauxnix: unexpected token after pipeline');
       }
+      op = nextOp;
     }
     if (segments.length === 0) throw new FauxnixParseError('fauxnix: empty command');
     return { kind: 'CommandList', segments };
@@ -705,21 +742,20 @@ export function parseCommand(input: string): CommandList {
     const stop = new Set(stops);
     const segments: ListSegment[] = [];
     let op: ';' | '&&' | '||' = ';';
-    const isListSep = (o?: string) => o === ';' || o === '\n';
-    while (peek().type === 'OP' && isListSep(peek().op)) next();
+    while (peek().type === 'OP' && isListSep(peek().op)) {
+      if (peek().op === ';' && tokens[pos + 1]?.type === 'OP' && tokens[pos + 1]?.op === ';') {
+        throw new FauxnixParseError("fauxnix: syntax error near unexpected token `;;'");
+      }
+      next();
+    }
     while (peek().type !== 'EOF') {
       const kw = peekKw();
       if (kw && stop.has(kw)) break;
       const pipeline = parsePipeline();
       segments.push({ pipeline, op });
-      const t = peek();
-      if (t.type === 'OP' && (t.op === '&&' || t.op === '||' || isListSep(t.op))) {
-        op = t.op === '\n' ? ';' : (t.op as '&&' | '||' | ';');
-        next();
-        while (peek().type === 'OP' && isListSep(peek().op)) next();
-      } else {
-        break;
-      }
+      const nextOp = consumeListOp(stop);
+      if (nextOp === null) break;
+      op = nextOp;
     }
     if (segments.length === 0) {
       throw new FauxnixParseError('fauxnix: empty command');

@@ -877,6 +877,13 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect((await run('set --')).exitCode).toBe(0);
   });
 
+  it('env -i fails loudly instead of keeping inherited secrets', async () => {
+    const r = await run('env -i echo hi');
+    expect(r.exitCode).toBe(2);
+    expect(r.stderr).toMatch(/env -i\/--ignore-environment is not supported/);
+    expect(r.stdout.trim()).toBe('');
+  });
+
   it('${name:-word} and ${name:+word} follow bash empty/unset rules', async () => {
     expect((await run('unset X; echo ${X:-def}')).stdout.trim()).toBe('def');
     expect((await run('X=; echo ${X:-def}; unset X')).stdout.trim()).toBe('def');
