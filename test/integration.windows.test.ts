@@ -147,6 +147,25 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect(r.stdout.split(/\r?\n/).filter(Boolean)).toEqual(['apple', 'apple pie']);
   });
 
+  it('pipeline exit status comes from the last stage (pipefail off)', async () => {
+    expect((await run('false | true')).exitCode).toBe(0);
+    expect((await run('true | false')).exitCode).toBe(1);
+  });
+
+  it('pipeline exit status controls following && and || lists', async () => {
+    const andResult = await run('grep NO fruits.txt | head -1 && echo AFTER');
+    expect(andResult.stdout.trim()).toBe('AFTER');
+    expect(andResult.exitCode).toBe(0);
+
+    const ignoredFailure = await run('false | true || echo FALLBACK');
+    expect(ignoredFailure.stdout.trim()).toBe('');
+    expect(ignoredFailure.exitCode).toBe(0);
+
+    const lastStageFailure = await run('true | false || echo FALLBACK');
+    expect(lastStageFailure.stdout.trim()).toBe('FALLBACK');
+    expect(lastStageFailure.exitCode).toBe(0);
+  });
+
   it('sed substitution', async () => {
     const r = await run("sed 's/apple/MANGO/g' fruits.txt");
     expect(r.stdout).toContain('MANGO pie');
