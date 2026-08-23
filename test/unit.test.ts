@@ -707,6 +707,36 @@ describe('tokenize', () => {
   });
 });
 
+describe('bounded output flags (#130)', () => {
+  const bodyOf = (cmd: string): string => translateCommandList(parse(cmd))[0].body;
+
+  it('grep -m / --max-count stop after N matching lines', () => {
+    expect(bodyOf('grep -m1 pat f')).toContain('$fx_mleft = 1');
+    expect(bodyOf('grep --max-count=2 pat f')).toContain('$fx_mleft = 2');
+    expect(bodyOf('grep pat f')).not.toContain('$fx_mleft');
+  });
+
+  it('grep -e / --regexp keep the pattern (not an unknown flag)', () => {
+    expect(bodyOf("grep -e apple fruits.txt")).toContain('fx-gmatch');
+    expect(bodyOf("grep -e apple fruits.txt")).not.toContain('invalid option');
+  });
+
+  it('head --lines and --lines=N set the count (not silently skipped)', () => {
+    expect(bodyOf('head --lines=1 fruits.txt')).toContain('$fx_count = [int](1)');
+    expect(bodyOf('head --lines 3 fruits.txt')).toContain('$fx_count = [int](3)');
+    expect(bodyOf('head fruits.txt')).toContain('$fx_count = [int](10)');
+  });
+
+  it('du --max-depth filters subdirectory rows', () => {
+    expect(bodyOf('du --max-depth=0')).toContain('if ($true)');
+    expect(bodyOf('du --max-depth=0')).not.toContain('$fx_ddepth');
+    expect(bodyOf('du --max-depth=1')).toContain('$fx_ddepth');
+    expect(bodyOf('du --max-depth=1')).toContain('-gt 1');
+    expect(bodyOf('du -s --max-depth=1')).toContain('summarizing conflicts');
+    expect(bodyOf('du .')).not.toContain('$fx_ddepth');
+  });
+});
+
 describe('CommandSpec (#130)', () => {
   const bodyOf = (cmd: string): string => translateCommandList(parse(cmd))[0].body;
 
