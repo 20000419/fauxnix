@@ -48,6 +48,11 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
       'grandchild\n',
       'utf8',
     );
+    mkdirSync(join(dir, 'find-bool', 'sub'), { recursive: true });
+    writeFileSync(join(dir, 'find-bool', 'keep.ts'), 'keep\n', 'utf8');
+    writeFileSync(join(dir, 'find-bool', 'drop.log'), 'drop\n', 'utf8');
+    writeFileSync(join(dir, 'find-bool', 'sub', 'a.ts'), 'a\n', 'utf8');
+    writeFileSync(join(dir, 'find-bool', 'sub', 'b.log'), 'b\n', 'utf8');
     session = new FauxnixSession();
     // seed the session cwd like a real shell login directory
     await session.run(translateCommandList(parseCommand('cd "' + dir + '"')));
@@ -679,18 +684,78 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     ]);
   });
 
-  it('find rejects missing and invalid depth arguments', async () => {
-    const missing = await run('find find-depth -maxdepth');
-    expect(missing.exitCode).toBe(1);
-    expect(missing.stderr).toContain("find: missing argument to '-maxdepth'");
-
+  it('find rejects missing and invalid depth arguments', () => {
+    expect(() => translateCommandList(parseCommand('find find-depth -maxdepth'))).toThrow(
+      "find: missing argument to '-maxdepth'",
+    );
     for (const value of ['nope', '-1']) {
-      const invalid = await run(`find find-depth -mindepth ${value}`);
-      expect(invalid.exitCode).toBe(1);
-      expect(invalid.stderr).toContain(
+      expect(() =>
+        translateCommandList(parseCommand(`find find-depth -mindepth ${value}`)),
+      ).toThrow(
         `find: expected a non-negative decimal integer argument to -mindepth, but got '${value}'`,
       );
     }
+  });
+
+  it('find ! / -o compose instead of ignoring operators', async () => {
+    const paths = async (cmd: string) => {
+      const r = await run(cmd);
+      expect(r.exitCode).toBe(0);
+      return r.stdout.split(/\r?\n/).filter(Boolean).sort();
+    };
+    expect(await paths("find find-bool -name '*.ts'")).toEqual([
+      'find-bool/keep.ts',
+      'find-bool/sub/a.ts',
+    ]);
+    const negated = await paths("find find-bool ! -name '*.ts'");
+    expect(negated).toContain('find-bool');
+    expect(negated).toContain('find-bool/drop.log');
+    expect(negated).toContain('find-bool/sub');
+    expect(negated).toContain('find-bool/sub/b.log');
+    expect(negated).not.toContain('find-bool/keep.ts');
+    expect(negated).not.toContain('find-bool/sub/a.ts');
+    expect(await paths("find find-bool -name '*.ts' -o -name '*.log'")).toEqual([
+      'find-bool/drop.log',
+      'find-bool/keep.ts',
+      'find-bool/sub/a.ts',
+      'find-bool/sub/b.log',
+    ]);
+    expect(await paths("find find-bool -name '*.ts' -name '*.log'")).toEqual([]);
+  });
+
+  it('find ! -name -delete removes the negated set, not the named set', async () => {
+    const root = join(dir, 'find-del-not');
+    mkdirSync(join(root, 'sub'), { recursive: true });
+    writeFileSync(join(root, 'keep.ts'), 'keep\n', 'utf8');
+    writeFileSync(join(root, 'drop.log'), 'drop\n', 'utf8');
+    writeFileSync(join(root, 'sub', 'a.ts'), 'a\n', 'utf8');
+    writeFileSync(join(root, 'sub', 'b.log'), 'b\n', 'utf8');
+    const r = await run("find find-del-not ! -name '*.ts' -delete");
+    expect(r.exitCode).toBe(0);
+    expect(existsSync(join(root, 'keep.ts'))).toBe(true);
+    expect(existsSync(join(root, 'sub', 'a.ts'))).toBe(true);
+    expect(existsSync(join(root, 'drop.log'))).toBe(false);
+    expect(existsSync(join(root, 'sub', 'b.log'))).toBe(false);
+  });
+
+  it('find -name a -o -name b -delete follows GNU AND/OR precedence', async () => {
+    const root = join(dir, 'find-del-or');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, 'keep.ts'), 'keep\n', 'utf8');
+    writeFileSync(join(root, 'drop.log'), 'drop\n', 'utf8');
+    const footgun = await run("find find-del-or -name '*.log' -o -name '*.ts' -delete");
+    expect(footgun.exitCode).toBe(0);
+    expect(existsSync(join(root, 'drop.log'))).toBe(true);
+    expect(existsSync(join(root, 'keep.ts'))).toBe(false);
+
+    const groupedRoot = join(dir, 'find-del-group');
+    mkdirSync(groupedRoot, { recursive: true });
+    writeFileSync(join(groupedRoot, 'keep.ts'), 'keep\n', 'utf8');
+    writeFileSync(join(groupedRoot, 'drop.log'), 'drop\n', 'utf8');
+    const grouped = await run("find find-del-group \\( -name '*.log' -o -name '*.ts' \\) -delete");
+    expect(grouped.exitCode).toBe(0);
+    expect(existsSync(join(groupedRoot, 'keep.ts'))).toBe(false);
+    expect(existsSync(join(groupedRoot, 'drop.log'))).toBe(false);
   });
 
   it('stat -c format', async () => {

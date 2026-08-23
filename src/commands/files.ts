@@ -1,4 +1,4 @@
-import { Word, wordToString } from '../ast.js';
+import { FauxnixParseError, Word, wordToString } from '../ast.js';
 import { Handler, parseWords, psStr } from '../registry.js';
 import { argListExpr, exprOfWord, operandExpr } from '../translator.js';
 
@@ -501,13 +501,235 @@ const df: Handler = (args) => {
 /* find                                                                */
 /* ------------------------------------------------------------------ */
 
+type FindNode =
+  | { kind: 'true' }
+  | { kind: 'and'; left: FindNode; right: FindNode }
+  | { kind: 'or'; left: FindNode; right: FindNode }
+  | { kind: 'not'; inner: FindNode }
+  | { kind: 'name'; pat: string; ci: boolean }
+  | { kind: 'type'; t: 'f' | 'd' | 'l' }
+  | { kind: 'size'; ps: string }
+  | { kind: 'mtime'; ps: string }
+  | { kind: 'delete' }
+  | { kind: 'print' };
+
+interface FindPlan {
+  ast: FindNode;
+  maxDepth: string | null;
+  minDepth: string | null;
+  hasDelete: boolean;
+  hasPrint: boolean;
+  hasSize: boolean;
+}
+
+function findFail(msg: string): never {
+  throw new FauxnixParseError(msg);
+}
+
+function canStartFindFactor(t: string): boolean {
+  return (
+    t === '!' ||
+    t === '-not' ||
+    t === '(' ||
+    t === '-name' ||
+    t === '-iname' ||
+    t === '-type' ||
+    t === '-size' ||
+    t === '-mtime' ||
+    t === '-delete' ||
+    t === '-print' ||
+    t === '-maxdepth' ||
+    t === '-mindepth'
+  );
+}
+
+/** GNU find expression: `!` tightest, juxtaposition/`-a` next, `-o` loosest. */
+function parseFindPreds(preds: string[]): FindPlan {
+  const plan: FindPlan = {
+    ast: { kind: 'true' },
+    maxDepth: null,
+    minDepth: null,
+    hasDelete: false,
+    hasPrint: false,
+    hasSize: false,
+  };
+  let i = 0;
+  const peek = (): string | null => (i < preds.length ? preds[i] : null);
+  const take = (): string => preds[i++];
+  const needArg = (opt: string): string => {
+    if (i >= preds.length) findFail("find: missing argument to '" + opt + "'");
+    return take();
+  };
+
+  const parsePrimary = (): FindNode => {
+    const t = take();
+    if (t === '-name' || t === '-iname') {
+      return { kind: 'name', pat: needArg(t), ci: t === '-iname' };
+    }
+    if (t === '-type') {
+      const v = needArg(t);
+      if (v !== 'f' && v !== 'd' && v !== 'l') findFail('find: Unknown argument to -type: ' + v);
+      return { kind: 'type', t: v };
+    }
+    if (t === '-size') {
+      const v = needArg(t);
+      const ps = sizeOf(v);
+      if (!ps) findFail("find: Invalid argument '" + v + "' to -size");
+      plan.hasSize = true;
+      return { kind: 'size', ps };
+    }
+    if (t === '-mtime') {
+      const v = needArg(t);
+      const ps = mtimeOf(v);
+      if (!ps) findFail("find: Invalid argument '" + v + "' to -mtime");
+      return { kind: 'mtime', ps };
+    }
+    if (t === '-delete') {
+      plan.hasDelete = true;
+      return { kind: 'delete' };
+    }
+    if (t === '-print') {
+      plan.hasPrint = true;
+      return { kind: 'print' };
+    }
+    if (t === '-maxdepth' || t === '-mindepth') {
+      const v = needArg(t);
+      if (!/^\d+$/.test(v)) {
+        findFail(
+          'find: expected a non-negative decimal integer argument to ' +
+            t +
+            ", but got '" +
+            v +
+            "'",
+        );
+      }
+      if (t === '-maxdepth' && plan.maxDepth === null) plan.maxDepth = v;
+      if (t === '-mindepth' && plan.minDepth === null) plan.minDepth = v;
+      return { kind: 'true' };
+    }
+    if (t.startsWith('-')) findFail("find: unknown predicate '" + t + "'");
+    findFail("find: paths must precede expression: '" + t + "'");
+  };
+
+  const parseFactor = (): FindNode => {
+    const t = peek();
+    if (t === null) findFail('find: expected an expression');
+    if (t === '-o' || t === '-or' || t === '-a' || t === '-and') {
+      findFail(
+        "find: invalid expression; you have used a binary operator '" +
+          t +
+          "' with nothing before it.",
+      );
+    }
+    if (t === '!' || t === '-not') {
+      take();
+      if (peek() === null) findFail("find: expected an expression after '" + t + "'");
+      if (peek() === ')') findFail("find: expected an expression between '" + t + "' and ')'");
+      return { kind: 'not', inner: parseFactor() };
+    }
+    if (t === '(') {
+      take();
+      if (peek() === ')') findFail('find: invalid expression; empty parentheses are not allowed.');
+      if (peek() === null) {
+        findFail("find: invalid expression; expected to find a ')' but didn't see one.");
+      }
+      const inner = parseOr();
+      if (peek() !== ')') {
+        findFail("find: invalid expression; expected to find a ')' but didn't see one.");
+      }
+      take();
+      return inner;
+    }
+    if (t === ')') findFail("find: invalid expression; you have too many ')'");
+    return parsePrimary();
+  };
+
+  const parseAnd = (): FindNode => {
+    let left = parseFactor();
+    while (true) {
+      const t = peek();
+      if (t === null || t === ')' || t === '-o' || t === '-or') break;
+      if (t === '-a' || t === '-and') {
+        take();
+        if (peek() === null || peek() === ')') {
+          findFail("find: expected an expression after '" + t + "'");
+        }
+        left = { kind: 'and', left, right: parseFactor() };
+        continue;
+      }
+      if (canStartFindFactor(t)) {
+        left = { kind: 'and', left, right: parseFactor() };
+        continue;
+      }
+      findFail("find: paths must precede expression: '" + t + "'");
+    }
+    return left;
+  };
+
+  const parseOr = (): FindNode => {
+    let left = parseAnd();
+    while (peek() === '-o' || peek() === '-or') {
+      const op = take();
+      if (peek() === null || peek() === ')') {
+        findFail("find: expected an expression after '" + op + "'");
+      }
+      left = { kind: 'or', left, right: parseAnd() };
+    }
+    return left;
+  };
+
+  if (preds.length === 0) {
+    plan.ast = { kind: 'print' };
+    plan.hasPrint = true;
+    return plan;
+  }
+  plan.ast = parseOr();
+  if (i < preds.length) {
+    if (preds[i] === ')') findFail("find: invalid expression; you have too many ')'");
+    findFail("find: paths must precede expression: '" + preds[i] + "'");
+  }
+  if (!plan.hasDelete && !plan.hasPrint) {
+    plan.ast = { kind: 'and', left: plan.ast, right: { kind: 'print' } };
+    plan.hasPrint = true;
+  }
+  return plan;
+}
+
+function emitFind(n: FindNode): string {
+  switch (n.kind) {
+    case 'true':
+      return '$true';
+    case 'and':
+      return '(' + emitFind(n.left) + ' -and ' + emitFind(n.right) + ')';
+    case 'or':
+      return '(' + emitFind(n.left) + ' -or ' + emitFind(n.right) + ')';
+    case 'not':
+      return '(-not ' + emitFind(n.inner) + ')';
+    case 'name':
+      if (n.ci) return "($fx_i.Name.ToLower() -like '" + likeOf(n.pat).toLowerCase() + "')";
+      return "($fx_i.Name -clike '" + likeOf(n.pat) + "')";
+    case 'type':
+      if (n.t === 'f') return '(-not $fx_i.PSIsContainer)';
+      if (n.t === 'd') return '($fx_i.PSIsContainer)';
+      return '([bool]$fx_i.LinkType)';
+    case 'size':
+      return '(' + n.ps + ')';
+    case 'mtime':
+      return '(' + n.ps + ')';
+    case 'delete':
+      return '(fx-find-delete)';
+    case 'print':
+      return '(fx-find-print)';
+  }
+}
+
 const find: Handler = (args) => {
   const raw = args.map((w) => wordToString(w));
   let pathEnd = 0;
   while (
     pathEnd < raw.length &&
     !raw[pathEnd].startsWith('-') &&
-    !['(', ')', '!', '-a', '-o'].includes(raw[pathEnd])
+    !['(', ')', '!', '-a', '-o', '-not', '-and', '-or'].includes(raw[pathEnd])
   ) {
     pathEnd++;
   }
@@ -522,86 +744,42 @@ const find: Handler = (args) => {
     );
   }
 
-  const namePat = extractValue(preds, ['-name']);
-  const inamePat = extractValue(preds, ['-iname']);
-  const typeV = extractValue(preds, ['-type']);
-  const maxDepthS = extractValue(preds, ['-maxdepth']);
-  const minDepthS = extractValue(preds, ['-mindepth']);
-  const sizeExpr = extractValue(preds, ['-size']);
-  const mtimeExpr = extractValue(preds, ['-mtime']);
-  const wantDelete = preds.includes('-delete');
+  const plan = parseFindPreds(preds);
+  const expr = emitFind(plan.ast);
   const paths = pathWords.length ? argListExpr(pathWords) : "@('.')";
 
-  for (const option of ['-maxdepth', '-mindepth']) {
-    const optionIndex = preds.indexOf(option);
-    if (optionIndex < 0) continue;
-    if (optionIndex + 1 >= preds.length) {
-      return (
-        '[Console]::Error.WriteLine(' +
-        psStr(`find: missing argument to '${option}'`) +
-        '); $script:fx_exit = 1'
-      );
-    }
-    const value = preds[optionIndex + 1];
-    if (!/^\d+$/.test(value)) {
-      return (
-        '[Console]::Error.WriteLine(' +
-        psStr(
-          `find: expected a non-negative decimal integer argument to ${option}, but got '${value}'`,
-        ) +
-        '); $script:fx_exit = 1'
-      );
-    }
-  }
-
-  const conditions: string[] = [];
-  if (namePat !== null) conditions.push("($fx_i.Name -like '" + likeOf(namePat) + "')");
-  if (inamePat !== null)
-    conditions.push("($fx_i.Name.ToLower() -like '" + likeOf(inamePat).toLowerCase() + "')");
-  if (typeV === 'f') conditions.push('(-not $fx_i.PSIsContainer)');
-  if (typeV === 'd') conditions.push('($fx_i.PSIsContainer)');
-  if (typeV === 'l') conditions.push('([bool]$fx_i.LinkType)');
-  const cond = conditions.length ? conditions.join(' -and ') : '$true';
-
-  const sizeCond = sizeOf(sizeExpr);
-  const mtimeCond = mtimeOf(mtimeExpr);
-
   return [
+    plan.hasPrint
+      ? 'function fx-find-print { $script:fx_find_print = $true; $true }'
+      : '',
+    plan.hasDelete
+      ? 'function fx-find-delete { try { Remove-Item -LiteralPath $fx_i.FullName -Force -ErrorAction SilentlyContinue | Out-Null } catch {}; $true }'
+      : '',
     '$fx_paths = ' + paths,
     'foreach ($fx_p in $fx_paths) {',
     '  if (-not (Test-Path -LiteralPath $fx_p)) { [Console]::Error.WriteLine("find: \'" + $fx_p + "\': No such file or directory"); $script:fx_exit = 1; continue }',
     '  $fx_root = (Get-Item -LiteralPath $fx_p -Force).FullName',
     '  $fx_all = @(Get-Item -LiteralPath $fx_p -Force)',
     '  $fx_all += @(Get-ChildItem -LiteralPath $fx_p -Recurse -Force -ErrorAction SilentlyContinue)',
+    plan.hasDelete ? '  [array]::Reverse($fx_all)' : '',
     '  foreach ($fx_i in $fx_all) {',
     "    $fx_rel = $fx_i.FullName.Substring($fx_root.Length).TrimStart('\\').Replace('\\', '/')",
     "    if ($fx_rel -eq '') { $fx_disp = $fx_p } else { $fx_disp = ($fx_p.TrimEnd('/') + '/' + $fx_rel) }",
     '    $fx_depth = 0; if ($fx_rel -ne \'\') { $fx_depth = 1; foreach ($fx_c in $fx_rel.ToCharArray()) { if ($fx_c -eq \'/\') { $fx_depth++ } } }',
-    '    if ($fx_depth -lt ' + (minDepthS ?? '0') + ') { continue }',
-    maxDepthS !== null ? '    if ($fx_depth -gt ' + maxDepthS + ') { continue }' : '',
-    '    if (-not (' + cond + ')) { continue }',
-    sizeCond ? '    $fx_sz = 0; if (-not $fx_i.PSIsContainer) { try { $fx_sz = $fx_i.Length } catch {} }' : '',
-    sizeCond ? '    if (-not (' + sizeCond + ')) { continue }' : '',
-    mtimeCond ? '    if (-not (' + mtimeCond + ')) { continue }' : '',
-    '    if (' + (wantDelete ? '$true' : '$false') + ') {',
-    '      try { Remove-Item -LiteralPath $fx_i.FullName -Recurse -Force -ErrorAction SilentlyContinue } catch {}',
-    '    } else {',
-    '      $fx_disp',
-    '    }',
+    '    if ($fx_depth -lt ' + (plan.minDepth ?? '0') + ') { continue }',
+    plan.maxDepth !== null ? '    if ($fx_depth -gt ' + plan.maxDepth + ') { continue }' : '',
+    plan.hasSize
+      ? '    $fx_sz = 0; if (-not $fx_i.PSIsContainer) { try { $fx_sz = $fx_i.Length } catch {} }'
+      : '',
+    plan.hasPrint ? '    $script:fx_find_print = $false' : '',
+    '    if (' + expr + ') { }',
+    plan.hasPrint ? '    if ($script:fx_find_print) { $fx_disp }' : '',
     '  }',
     '}',
   ]
     .filter((l) => l !== '')
     .join('\n');
 };
-
-function extractValue(preds: string[], names: string[]): string | null {
-  for (const n of names) {
-    const i = preds.indexOf(n);
-    if (i >= 0 && i + 1 < preds.length) return preds[i + 1];
-  }
-  return null;
-}
 
 /** fnmatch glob → PowerShell -like pattern (same semantics for * and ?). */
 function likeOf(glob: string): string {

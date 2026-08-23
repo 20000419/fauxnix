@@ -683,3 +683,51 @@ describe('tokenize', () => {
     expect(ops).toEqual(['>', '2>']);
   });
 });
+
+describe('find predicates (#130)', () => {
+  const bodyOf = (cmd: string): string => translateCommandList(parse(cmd))[0].body;
+  const throws = (cmd: string, msg: string) => {
+    expect(() => translateCommandList(parse(cmd))).toThrow(msg);
+  };
+
+  it('compiles ! and -o instead of ignoring them', () => {
+    const neg = bodyOf("find . ! -name '*.ts'");
+    expect(neg).toContain('-not');
+    expect(neg).toContain("-clike '*.ts'");
+    expect(neg).toContain('fx-find-print');
+    expect(neg).not.toContain('fx-find-delete');
+
+    const del = bodyOf("find . ! -name '*.ts' -delete");
+    expect(del).toContain('-not');
+    expect(del).toContain('fx-find-delete');
+    expect(del).toContain('[array]::Reverse');
+
+    const or = bodyOf("find . -name a -o -name b");
+    expect(or).toContain(' -or ');
+    expect(or).toContain("-clike 'a'");
+    expect(or).toContain("-clike 'b'");
+
+    const and = bodyOf("find . -name a -name b");
+    expect(and).toContain(' -and ');
+  });
+
+  it('treats -delete as a primary so OR-delete keeps GNU precedence', () => {
+    const footgun = bodyOf("find . -name a -o -name b -delete");
+    expect(footgun).toContain(' -or ');
+    expect(footgun).toContain('fx-find-delete');
+    const grouped = bodyOf("find . \\( -name a -o -name b \\) -delete");
+    expect(grouped).toContain(' -or ');
+    expect(grouped).toContain('fx-find-delete');
+  });
+
+  it('fails loud on unknown predicates and broken expressions', () => {
+    throws('find . -perm 644', "find: unknown predicate '-perm'");
+    throws('find . -print0', "find: unknown predicate '-print0'");
+    throws('find . -name', "find: missing argument to '-name'");
+    throws('find . -type s', 'find: Unknown argument to -type: s');
+    throws('find . -size xyz', "find: Invalid argument 'xyz' to -size");
+    throws('find . -o -name a', "find: invalid expression; you have used a binary operator '-o' with nothing before it.");
+    throws('find . -name a -o', "find: expected an expression after '-o'");
+    throws("find . -name '*.ts' extra", "find: paths must precede expression: 'extra'");
+  });
+});
