@@ -3,6 +3,7 @@
  * PowerShell 5.1. Skipped automatically on non-Windows platforms.
  */
 import { beforeAll, afterAll, describe, expect, it } from 'vitest';
+import { getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, existsSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -890,6 +891,46 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
       const next = await extra.run(translateCommandList(parseCommand('echo after-timeout')));
       expect(next.exitCode).toBe(0);
       expect(next.stdout.trim()).toBe('after-timeout');
+    } finally {
+      await extra.dispose();
+    }
+  }, 30000);
+
+  it('adds a default PATHEXT only when no case variant is present', async () => {
+    const extra = new FauxnixSession();
+    const overrides = extra.env as Record<string, string | undefined>;
+    for (const key of Object.keys(process.env)) {
+      if (key.toUpperCase() === 'PATHEXT') overrides[key] = undefined;
+    }
+    try {
+      const fallbackEnv = extra.childEnv();
+      expect(fallbackEnv.PATHEXT).toBe('.COM;.EXE;.BAT;.CMD');
+
+      extra.env.PathExt = '.EXPLICIT';
+      const explicitEnv = extra.childEnv();
+      const pathExtKeys = Object.keys(explicitEnv).filter((key) => key.toUpperCase() === 'PATHEXT');
+      expect(pathExtKeys).toEqual(['PathExt']);
+      expect(explicitEnv.PathExt).toBe('.EXPLICIT');
+    } finally {
+      await extra.dispose();
+    }
+  });
+
+  it('runs an extensionless native executable when the official MCP environment omits PATHEXT', async () => {
+    const inheritedEnv = getDefaultEnvironment();
+    expect(Object.keys(inheritedEnv).some((key) => key.toUpperCase() === 'PATHEXT')).toBe(false);
+
+    const extra = new FauxnixSession();
+    const overrides = extra.env as Record<string, string | undefined>;
+    for (const key of Object.keys(process.env)) {
+      if (key.toUpperCase() === 'PATHEXT') overrides[key] = undefined;
+    }
+    try {
+      await extra.prewarm();
+      const result = await extra.run(translateCommandList(parseCommand('node --version')));
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toMatch(/^v\d+\.\d+\.\d+/m);
+      expect(result.stderr).toBe('');
     } finally {
       await extra.dispose();
     }
