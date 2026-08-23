@@ -457,6 +457,11 @@ async function runPlans(
     }
 
     const encoded = wrapScript(plan.body, { mode: 'host' });
+    // Response budgets cap what the CALLER receives — streams redirected to
+    // files must never be truncated by them (Codex-review P1: `printf … > f`
+    // with a small stdoutLimit was writing a clipped file). The final
+    // clipUtf8 below still enforces the returned-data budget.
+    const fileRedirected = !!(red.stdoutFile || red.stderrFile);
     const inv = await ensureHost().invoke(
       encoded,
       {
@@ -466,7 +471,9 @@ async function runPlans(
       },
       remainingMs,
       opts.signal,
-      { stdoutLimit, stderrLimit },
+      fileRedirected
+        ? { stdoutLimit: 0, stderrLimit: 0 }
+        : { stdoutLimit, stderrLimit },
     );
 
     if (inv.spawnError === 'ENOENT' || inv.spawnError === 'START') {
