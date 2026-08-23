@@ -282,6 +282,9 @@ async function runPlans(
   ensureHost: () => PowerShellHost,
 ): Promise<ExecResult> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const deadline = Date.now() + timeoutMs;
+  const timeoutMessage =
+    '\nbash: command timed out after ' + Math.round(timeoutMs / 1000) + 's';
   let stdout = '';
   let stderr = '';
   let exitCode = 0;
@@ -300,6 +303,12 @@ async function runPlans(
   for (const plan of plans) {
     if (plan.op === '&&' && !chainOk) continue;
     if (plan.op === '||' && chainOk) continue;
+    if (Date.now() >= deadline) {
+      stderr += timeoutMessage;
+      exitCode = 124;
+      session.prevExit = exitCode;
+      break;
+    }
 
     const red = planRedirects(plan.redirects);
     red.stdinFile = red.stdinFile ? resolveTarget(red.stdinFile) : null;
@@ -372,6 +381,14 @@ async function runPlans(
       continue;
     }
 
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      stderr += timeoutMessage;
+      exitCode = 124;
+      session.prevExit = exitCode;
+      break;
+    }
+
     const encoded = wrapScript(plan.body, { mode: 'host' });
     const inv = await ensureHost().invoke(
       encoded,
@@ -380,7 +397,7 @@ async function runPlans(
         FAUXNIX_PREV_EXIT: session.prevExit === null ? '' : String(session.prevExit),
         FAUXNIX_STDIN_FILE: red.stdinFile || '',
       },
-      timeoutMs,
+      remainingMs,
     );
 
     if (inv.spawnError === 'ENOENT') {
@@ -401,7 +418,7 @@ async function runPlans(
     let segErr = normalizeHostNewlines(normalizeStderr(decodeOutput(inv.stderr, decodePref)));
 
     if (inv.timedOut) {
-      segErr += '\nbash: command timed out after ' + Math.round(timeoutMs / 1000) + 's';
+      segErr += timeoutMessage;
     }
 
     if (red.mergeStderr) {
@@ -450,6 +467,7 @@ async function runPlans(
     // output redirects succeeded. A failed `cd dir > missing/out` must
     // not move later relative redirects.
     if (redirectOk && session.cwd) currentDir = session.cwd;
+    if (inv.timedOut) break;
     } finally {
       closePrepFds(prepFds);
     }
