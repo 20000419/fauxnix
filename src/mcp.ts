@@ -1,20 +1,13 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
 import { FauxnixSession } from './executor.js';
 import { parseCommand } from './parser.js';
 import { translateCommandList, wrapScript, translatePipelineBody } from './translator.js';
 import { registeredNames } from './registry.js';
+import { packageVersion } from './version.js';
 import './commands/install-all.js';
-
-// single source of truth: the npm package version in package.json
-// (src/ and dist/ sit one level below the root, so the relative path holds in both)
-const pkgVersion: string = JSON.parse(
-  readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'),
-).version;
 
 const TOOL_NAME = process.env.FAUXNIX_TOOL_NAME || 'bash';
 
@@ -55,7 +48,7 @@ Platform requirement: the execution backend is native Windows PowerShell 5.1+. O
 
 export async function startMcpServer(): Promise<void> {
   const server = new McpServer(
-    { name: 'fauxnix', version: pkgVersion },
+    { name: 'fauxnix', version: packageVersion },
     { capabilities: { tools: {} } },
   );
   let session = new FauxnixSession();
