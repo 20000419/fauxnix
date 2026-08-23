@@ -6,18 +6,30 @@ import { Redirect } from './ast.js';
 import { SegmentPlan, normalizeLiteralPath, wrapScript } from './translator.js';
 import { decodeOutput, normalizeHostNewlines, resolveNativePref } from './encoding.js';
 import { normalizeStderr } from './errors.js';
-import { PowerShellHost, PS_MISSING_MESSAGE } from './ps-host.js';
+import {
+  DEFAULT_STDERR_LIMIT,
+  DEFAULT_STDOUT_LIMIT,
+  PowerShellHost,
+  PS_MISSING_MESSAGE,
+} from './ps-host.js';
 
 export interface ExecResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+  timedOut: boolean;
+  cancelled: boolean;
+  truncated: boolean;
+  spawnError?: 'ENOENT' | 'START';
 }
 
 export interface ExecOptions {
   timeoutMs?: number;
   /** Extra environment layered over the session (used by MCP per-call cwd). */
   cwd?: string;
+  signal?: AbortSignal;
+  stdoutLimit?: number;
+  stderrLimit?: number;
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -179,6 +191,7 @@ function planRedirects(redirects: Redirect[]): SegmentRedirects {
 
 /** Session persists cwd and env across segments, like a real shell. */
 export class FauxnixSession {
+  id: string;
   cwd: string | null = null;
   env: Record<string, string> = {};
   /** Exit code of the previous segment — powers bash's `$?`. */
@@ -188,17 +201,28 @@ export class FauxnixSession {
   private scriptFile!: string;
   private hostFile!: string;
   private host: PowerShellHost | null = null;
-  private runLock: Promise<unknown> = Promise.resolve();
+  private lifecycleLock: Promise<unknown> = Promise.resolve();
 
   constructor() {
-    this.bindFiles(randomUUID().slice(0, 8));
+    this.id = randomUUID().slice(0, 8);
+    this.bindFiles(this.id);
   }
 
   private bindFiles(id: string): void {
+    this.id = id;
     this.cwdFile = path.join(os.tmpdir(), 'fauxnix-' + id + '-cwd.txt');
     this.envFile = path.join(os.tmpdir(), 'fauxnix-' + id + '-env.json');
     this.scriptFile = path.join(os.tmpdir(), 'fauxnix-' + id + '-script.ps1');
     this.hostFile = path.join(os.tmpdir(), 'fauxnix-' + id + '-host.ps1');
+  }
+
+  private withLock<T>(fn: () => Promise<T>): Promise<T> {
+    const done = this.lifecycleLock.then(fn, fn);
+    this.lifecycleLock = done.then(
+      () => undefined,
+      () => undefined,
+    );
+    return done;
   }
 
   private syncFromDisk(): void {
@@ -228,11 +252,25 @@ export class FauxnixSession {
   }
 
   /** Boot powershell.exe now so the first run() is not the 1.1s cold start. */
-  async prewarm(): Promise<void> {
-    await this.ensureHost().ready();
+  prewarm(): Promise<void> {
+    return this.withLock(async () => {
+      await this.ensureHost().ready();
+    });
   }
 
-  async dispose(): Promise<void> {
+  dispose(): Promise<void> {
+    return this.withLock(() => this.disposeUnlocked());
+  }
+
+  /** Kill the host and re-prewarm the same session object (no second FauxnixSession). */
+  reset(): Promise<void> {
+    return this.withLock(async () => {
+      await this.disposeUnlocked();
+      await this.ensureHost().ready();
+    });
+  }
+
+  private async disposeUnlocked(): Promise<void> {
     if (this.host) {
       await this.host.stop();
       this.host = null;
@@ -277,14 +315,9 @@ export class FauxnixSession {
   }
 
   run(plans: SegmentPlan[], opts: ExecOptions = {}): Promise<ExecResult> {
-    const done = this.runLock.then(() =>
+    return this.withLock(() =>
       runPlans(plans, this, opts, () => this.syncFromDisk(), () => this.ensureHost()),
     );
-    this.runLock = done.then(
-      () => undefined,
-      () => undefined,
-    );
-    return done;
   }
 }
 
@@ -297,11 +330,17 @@ async function runPlans(
 ): Promise<ExecResult> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const deadline = Date.now() + timeoutMs;
+  const stdoutLimit = opts.stdoutLimit ?? DEFAULT_STDOUT_LIMIT;
+  const stderrLimit = opts.stderrLimit ?? DEFAULT_STDERR_LIMIT;
   const timeoutMessage =
     '\nbash: command timed out after ' + Math.round(timeoutMs / 1000) + 's';
   let stdout = '';
   let stderr = '';
   let exitCode = 0;
+  let timedOut = false;
+  let cancelled = false;
+  let truncated = false;
+  let spawnError: ExecResult['spawnError'];
   // bash list semantics: `a && b ; c` runs c regardless of a; `a && b && c`
   // skips b AND c when a fails. chainOk models the value of the current
   // &&/|| chain; `;` segments always run and restart the chain.
@@ -317,9 +356,16 @@ async function runPlans(
   for (const plan of plans) {
     if (plan.op === '&&' && !chainOk) continue;
     if (plan.op === '||' && chainOk) continue;
+    if (opts.signal?.aborted) {
+      cancelled = true;
+      exitCode = 130;
+      session.prevExit = exitCode;
+      break;
+    }
     if (Date.now() >= deadline) {
       stderr += timeoutMessage;
       exitCode = 124;
+      timedOut = true;
       session.prevExit = exitCode;
       break;
     }
@@ -396,9 +442,16 @@ async function runPlans(
     }
 
     const remainingMs = deadline - Date.now();
+    if (opts.signal?.aborted) {
+      cancelled = true;
+      exitCode = 130;
+      session.prevExit = exitCode;
+      break;
+    }
     if (remainingMs <= 0) {
       stderr += timeoutMessage;
       exitCode = 124;
+      timedOut = true;
       session.prevExit = exitCode;
       break;
     }
@@ -412,14 +465,24 @@ async function runPlans(
         FAUXNIX_STDIN_FILE: red.stdinFile || '',
       },
       remainingMs,
+      opts.signal,
     );
 
-    if (inv.spawnError === 'ENOENT') {
+    if (inv.spawnError === 'ENOENT' || inv.spawnError === 'START') {
       stderr += inv.stderr.toString('utf8') || PS_MISSING_MESSAGE;
       exitCode = 127;
+      spawnError = inv.spawnError;
       session.prevExit = exitCode;
       chainOk = false;
       continue;
+    }
+
+    if (inv.cancelled) {
+      cancelled = true;
+      exitCode = 130;
+      session.prevExit = exitCode;
+      chainOk = false;
+      break;
     }
 
     afterSegment();
@@ -474,7 +537,9 @@ async function runPlans(
 
     stdout += segOut;
     stderr += segErr;
-    exitCode = inv.timedOut ? 124 : inv.exitCode;
+    if (inv.truncated) truncated = true;
+    exitCode = inv.timedOut ? 124 : inv.cancelled ? 130 : inv.exitCode;
+    if (inv.timedOut) timedOut = true;
     session.prevExit = exitCode;
     chainOk = exitCode === 0;
     // Only inherit cwd from a segment that actually ran and whose
@@ -487,5 +552,23 @@ async function runPlans(
     }
   }
 
-  return { stdout, stderr, exitCode };
+  const clippedOut = clipUtf8(stdout, stdoutLimit);
+  const clippedErr = clipUtf8(stderr, stderrLimit);
+  if (clippedOut.truncated || clippedErr.truncated) truncated = true;
+  return {
+    stdout: clippedOut.text,
+    stderr: clippedErr.text,
+    exitCode,
+    timedOut,
+    cancelled,
+    truncated,
+    spawnError,
+  };
+}
+
+function clipUtf8(text: string, limit: number): { text: string; truncated: boolean } {
+  if (Buffer.byteLength(text, 'utf8') <= limit) return { text, truncated: false };
+  let end = text.length;
+  while (end > 0 && Buffer.byteLength(text.slice(0, end), 'utf8') > limit) end--;
+  return { text: text.slice(0, end), truncated: true };
 }

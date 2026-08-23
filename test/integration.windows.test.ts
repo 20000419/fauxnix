@@ -1229,4 +1229,58 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect(r.stderr).toContain("invalid option -- 'z'");
     expect(readFileSync(join(dir, 'cp-z-dst.txt'), 'utf8')).toBe('DST\n');
   });
+  it('whitespace-only stdout is preserved', async () => {
+    const r = await run("printf '   '");
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe('   ');
+    expect(r.cancelled).toBe(false);
+    expect(r.timedOut).toBe(false);
+  });
+
+  it('native stderr is returned once and does not leak into the next command', async () => {
+    const noisy = await run(`node -e "process.stderr.write('E'.repeat(4096)); process.exit(7)"`);
+    expect(noisy.exitCode).toBe(7);
+    expect(noisy.stderr).toContain('E'.repeat(64));
+    expect(noisy.stderr.split('E').length - 1).toBeGreaterThanOrEqual(4096);
+    const next = await run('echo hi');
+    expect(next.exitCode).toBe(0);
+    expect(next.stdout.trim()).toBe('hi');
+    expect(next.stderr).not.toContain('E'.repeat(64));
+  });
+
+  it('AbortSignal cancel unblocks the next request without running later segments', async () => {
+    const extra = new FauxnixSession();
+    try {
+      await extra.prewarm();
+      const ac = new AbortController();
+      const pending = extra.run(
+        translateCommandList(parseCommand('sleep 5; echo should-not-run')),
+        { timeoutMs: 30_000, signal: ac.signal },
+      );
+      await new Promise((r) => setTimeout(r, 250));
+      ac.abort();
+      const cancelled = await pending;
+      expect(cancelled.cancelled).toBe(true);
+      expect(cancelled.exitCode).toBe(130);
+      expect(cancelled.stdout).not.toContain('should-not-run');
+      const next = await extra.run(translateCommandList(parseCommand('echo after-cancel')));
+      expect(next.exitCode).toBe(0);
+      expect(next.stdout.trim()).toBe('after-cancel');
+    } finally {
+      await extra.dispose();
+    }
+  }, 30000);
+
+  it('concurrent reset leaves one usable session', async () => {
+    const extra = new FauxnixSession();
+    try {
+      await extra.prewarm();
+      await Promise.all([extra.reset(), extra.reset(), extra.reset()]);
+      const r = await extra.run(translateCommandList(parseCommand('echo x')));
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout.trim()).toBe('x');
+    } finally {
+      await extra.dispose();
+    }
+  }, 30000);
 });
