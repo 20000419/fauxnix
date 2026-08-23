@@ -1106,4 +1106,55 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
       await extra.dispose();
     }
   }, 30000);
+
+  it('cp -n does not overwrite an existing dest', async () => {
+    writeFileSync(join(dir, 'cp-n-src.txt'), 'SRC\n', 'utf8');
+    writeFileSync(join(dir, 'cp-n-dst.txt'), 'DST\n', 'utf8');
+    const r = await run('cp -n cp-n-src.txt cp-n-dst.txt');
+    expect(r.exitCode).toBe(0);
+    expect(readFileSync(join(dir, 'cp-n-dst.txt'), 'utf8')).toBe('DST\n');
+  });
+
+  it('cp without -n overwrites dest', async () => {
+    writeFileSync(join(dir, 'cp-ow-src.txt'), 'SRC\n', 'utf8');
+    writeFileSync(join(dir, 'cp-ow-dst.txt'), 'DST\n', 'utf8');
+    const r = await run('cp cp-ow-src.txt cp-ow-dst.txt');
+    expect(r.exitCode).toBe(0);
+    expect(readFileSync(join(dir, 'cp-ow-dst.txt'), 'utf8')).toBe('SRC\n');
+  });
+
+  it('mv -n leaves both files when dest exists', async () => {
+    writeFileSync(join(dir, 'mv-n-src.txt'), 'SRC\n', 'utf8');
+    writeFileSync(join(dir, 'mv-n-dst.txt'), 'DST\n', 'utf8');
+    const r = await run('mv -n mv-n-src.txt mv-n-dst.txt');
+    expect(r.exitCode).toBe(0);
+    expect(existsSync(join(dir, 'mv-n-src.txt'))).toBe(true);
+    expect(readFileSync(join(dir, 'mv-n-dst.txt'), 'utf8')).toBe('DST\n');
+  });
+
+  it('touch -c does not create a missing file; plain touch does', async () => {
+    expect(existsSync(join(dir, 'touch-c-missing.txt'))).toBe(false);
+    const skipped = await run('touch -c touch-c-missing.txt');
+    expect(skipped.exitCode).toBe(0);
+    expect(existsSync(join(dir, 'touch-c-missing.txt'))).toBe(false);
+    const created = await run('touch touch-create.txt');
+    expect(created.exitCode).toBe(0);
+    expect(existsSync(join(dir, 'touch-create.txt'))).toBe(true);
+  });
+
+  it('tee --append appends instead of truncating', async () => {
+    writeFileSync(join(dir, 'tee-app.txt'), 'A', 'utf8');
+    const r = await run('printf B | tee --append tee-app.txt');
+    expect(r.exitCode).toBe(0);
+    expect(readFileSync(join(dir, 'tee-app.txt'), 'utf8')).toBe('AB');
+  });
+
+  it('cp unknown option fails before copying', async () => {
+    writeFileSync(join(dir, 'cp-z-src.txt'), 'SRC\n', 'utf8');
+    writeFileSync(join(dir, 'cp-z-dst.txt'), 'DST\n', 'utf8');
+    const r = await run('cp -z cp-z-src.txt cp-z-dst.txt');
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain("invalid option -- 'z'");
+    expect(readFileSync(join(dir, 'cp-z-dst.txt'), 'utf8')).toBe('DST\n');
+  });
 });

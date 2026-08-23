@@ -11,7 +11,7 @@ import {
   wrapScript,
   hostBootstrapScript,
 } from '../src/translator.js';
-import { lookup, parseWords, psStr } from '../src/registry.js';
+import { listCommandsJson, lookup, lookupSpec, parseWords, psStr } from '../src/registry.js';
 import { decodeOutput, encodeCommand, normalizeHostNewlines } from '../src/encoding.js';
 import { normalizeStderr } from '../src/errors.js';
 import { decodeHostResponse, encodeHostRequest } from '../src/ps-host.js';
@@ -681,5 +681,72 @@ describe('tokenize', () => {
     const toks = tokenize('a > b 2> c');
     const ops = toks.filter((t) => t.type === 'OP').map((t) => t.op);
     expect(ops).toEqual(['>', '2>']);
+  });
+});
+
+describe('CommandSpec (#130)', () => {
+  const bodyOf = (cmd: string): string => translateCommandList(parse(cmd))[0].body;
+
+  it('cp -n / --no-clobber skip an existing dest instead of overwriting', () => {
+    expect(bodyOf('cp -n src dst')).toContain('$true -and (Test-Path -LiteralPath $fx_target)');
+    expect(bodyOf('cp --no-clobber src dst')).toContain(
+      '$true -and (Test-Path -LiteralPath $fx_target)',
+    );
+    expect(bodyOf('cp src dst')).toContain('$false -and (Test-Path -LiteralPath $fx_target)');
+  });
+
+  it('cp rejects unknown and unsupported options before Copy-Item', () => {
+    const z = bodyOf('cp -z a b');
+    expect(z).toContain("invalid option -- ''z''");
+    expect(z).toContain('$script:fx_exit = 1');
+    expect(z).not.toContain('Copy-Item');
+    expect(bodyOf('cp -i a b')).toContain("option ''-i'' is not supported by fauxnix");
+    expect(bodyOf('cp --preserve a b')).toContain("unrecognized option ''--preserve''");
+  });
+
+  it('mv -n skips an existing dest', () => {
+    expect(bodyOf('mv -n src dst')).toContain('$true -and (Test-Path -LiteralPath $fx_target)');
+    expect(bodyOf('mv src dst')).toContain('$false -and (Test-Path -LiteralPath $fx_target)');
+  });
+
+  it('touch -c does not create missing files', () => {
+    expect(bodyOf('touch -c missing')).toContain('if ($true) { continue }');
+    expect(bodyOf('touch --no-create missing')).toContain('if ($true) { continue }');
+    expect(bodyOf('touch missing')).toContain('if ($false) { continue }');
+    expect(bodyOf('touch missing')).toContain('New-Item -ItemType File');
+  });
+
+  it('tee --append and -a append; bare tee truncates', () => {
+    expect(bodyOf('tee --append out.txt')).toContain('if ($true)');
+    expect(bodyOf('tee -a out.txt')).toContain('if ($true)');
+    expect(bodyOf('tee out.txt')).toContain('if ($false)');
+  });
+
+  it('spec\'d rm fails loud on unknown flags; unspec\'d ls still ignores them', () => {
+    const rm = bodyOf('rm -z x');
+    expect(rm).toContain("invalid option -- ''z''");
+    expect(rm).not.toContain('Remove-Item');
+    const ls = bodyOf('ls -Z');
+    expect(ls).not.toContain('invalid option');
+    expect(ls).toContain('Get-ChildItem');
+  });
+
+  it('rm --verbose matches -v; tee -i is not silently ignored', () => {
+    expect(bodyOf('rm --verbose x')).toContain('if ($true)');
+    expect(bodyOf('rm x')).toContain('if ($false)');
+    expect(bodyOf('tee -i out.txt')).toContain("invalid option -- ''i''");
+  });
+
+  it('listCommandsJson exposes migrated specs and null for legacy handlers', () => {
+    const rows = listCommandsJson();
+    const cp = rows.find((r) => r.name === 'cp');
+    expect(cp?.spec?.effects).toEqual(['read', 'write']);
+    expect(cp?.spec?.options.some((o) => o.short === 'n' && o.support === 'implemented')).toBe(
+      true,
+    );
+    expect(rows.find((r) => r.name === 'ls')?.spec).toBeNull();
+    expect(lookupSpec('cp')).toBeTruthy();
+    expect(lookupSpec('ls')).toBeUndefined();
+    expect(lookup('tee')).toBeTypeOf('function');
   });
 });
