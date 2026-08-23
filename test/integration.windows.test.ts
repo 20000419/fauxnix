@@ -1011,6 +1011,45 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     }
   }, 60000);
 
+  it('executor timeout stops later segments before output or side effects', async () => {
+    const extra = new FauxnixSession();
+    const marker = join(dir, 'timeout-later-segment.txt');
+    rmSync(marker, { force: true });
+    try {
+      const r = await extra.run(
+        translateCommandList(
+          parseCommand('sleep 5; echo should-not-run; touch "' + marker + '"'),
+        ),
+        { timeoutMs: 800 },
+      );
+      expect(r.exitCode).toBe(124);
+      expect(r.stderr).toMatch(/timed out/);
+      expect(r.stdout).not.toContain('should-not-run');
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      await extra.dispose();
+      rmSync(marker, { force: true });
+    }
+  }, 30000);
+
+  it('executor timeout is one deadline across all segments', async () => {
+    const extra = new FauxnixSession();
+    try {
+      await extra.prewarm();
+      const r = await extra.run(
+        translateCommandList(
+          parseCommand('sleep 0.8; echo before-deadline; sleep 0.8; echo after-deadline'),
+        ),
+        { timeoutMs: 1200 },
+      );
+      expect(r.exitCode).toBe(124);
+      expect(r.stderr).toMatch(/timed out/);
+      expect(r.stdout.trim()).toBe('before-deadline');
+    } finally {
+      await extra.dispose();
+    }
+  }, 30000);
+
   it('executor timeout 124 leaves the same session usable', async () => {
     const extra = new FauxnixSession();
     try {
