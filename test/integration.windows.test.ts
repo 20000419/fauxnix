@@ -1233,6 +1233,23 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect(r.stderr).toContain("invalid option -- 'z'");
     expect(readFileSync(join(dir, 'cp-z-dst.txt'), 'utf8')).toBe('DST\n');
   });
+  it('v2 host truncates stdout at the per-run budget', async () => {
+    const extra = new FauxnixSession();
+    try {
+      await extra.prewarm();
+      const r = await extra.run(translateCommandList(parseCommand('printf AAAAAAAAAA')), {
+        stdoutLimit: 4,
+      });
+      expect(r.truncated).toBe(true);
+      expect(Buffer.byteLength(r.stdout, 'utf8')).toBeLessThanOrEqual(4);
+      const hi = await extra.run(translateCommandList(parseCommand('echo hi')));
+      expect(hi.exitCode).toBe(0);
+      expect(hi.stdout.trim()).toBe('hi');
+    } finally {
+      await extra.dispose();
+    }
+  }, 30000);
+
   it('whitespace-only stdout is preserved', async () => {
     const r = await run("printf '   '");
     expect(r.exitCode).toBe(0);

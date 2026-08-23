@@ -14,7 +14,7 @@ import {
 import { listCommandsJson, lookup, lookupSpec, parseWords, psStr } from '../src/registry.js';
 import { decodeOutput, encodeCommand, normalizeHostNewlines } from '../src/encoding.js';
 import { normalizeStderr } from '../src/errors.js';
-import { decodeHostResponse, encodeHostRequest } from '../src/ps-host.js';
+import { decodeHostResponse, encodeHostRequest, parseHostLine } from '../src/ps-host.js';
 import { bashToolResult, formatBashText } from '../src/mcp.js';
 import '../src/commands/install-all.js';
 
@@ -475,7 +475,9 @@ describe('translator', () => {
     const boot = hostBootstrapScript();
     expect(boot).toContain('function fx-arrload');
     expect(boot).toContain('function fx-csub');
-    expect(boot).toContain('{"ready":true}');
+    expect(boot).toContain('"type":"ready"');
+    expect(boot).toContain('FAUXNIX_ERR_END:');
+    expect(boot).toContain('maxChunkBytes');
     expect(boot).toContain('ConvertFrom-Json');
     expect(boot).toContain('MaxJsonLength');
     expect(boot).not.toContain('exit $script:fx_exit');
@@ -662,6 +664,18 @@ describe('persistent PowerShell host protocol', () => {
     expect(msg.stderr.toString('utf8')).toBe('err');
     expect(msg.exitCode).toBe(2);
     expect(decodeHostResponse('{"ready":true}').ready).toBe(true);
+  });
+
+  it('encodes v2 run frames and parses v2 ready / v1 ready', () => {
+    const line = encodeHostRequest('r1', 'echo', { FAUXNIX_CWD: 'D:\\tmp' }, { v: 2, stdoutLimit: 10, stderrLimit: 4 });
+    const parsed = JSON.parse(line) as { v: number; type: string; stdoutLimit: number };
+    expect(parsed.v).toBe(2);
+    expect(parsed.type).toBe('run');
+    expect(parsed.stdoutLimit).toBe(10);
+    expect(parseHostLine('{"v":2,"type":"ready","capabilities":{"cancel":false}}').v2?.type).toBe(
+      'ready',
+    );
+    expect(parseHostLine('{"ready":true}').v1Ready).toBe(true);
   });
 });
 

@@ -1343,12 +1343,36 @@ $fx_reader = New-Object System.IO.StreamReader($fx_in, $fx_utf8, $true, 8192, $t
 $fx_proto = New-Object System.IO.StreamWriter($fx_out, $fx_utf8, 8192, $true)
 $fx_proto.NewLine = [string][char]10
 $fx_proto.AutoFlush = $true
-$fx_proto.WriteLine('{"ready":true}')
+$fx_proto.WriteLine('{"v":2,"type":"ready","capabilities":{"cancel":false,"maxChunkBytes":65536,"stderrMarker":true}}')
+function fx-b64([byte[]]$bytes, $off, $len) {
+  if ($len -le 0) { return '' }
+  $slice = New-Object byte[] $len
+  [Array]::Copy($bytes, $off, $slice, 0, $len)
+  return [Convert]::ToBase64String($slice)
+}
+function fx-emit-chunks($type, $id, [byte[]]$bytes, $limit, [ref]$seq) {
+  $n = 0
+  if ($null -ne $bytes) { $n = $bytes.Length }
+  $use = $n
+  $trunc = $false
+  if ($use -gt $limit) { $use = $limit; $trunc = $true }
+  $off = 0
+  while ($off -lt $use) {
+    $len = $use - $off
+    if ($len -gt 65536) { $len = 65536 }
+    $b64 = fx-b64 $bytes $off $len
+    $fx_proto.WriteLine('{"v":2,"type":"' + $type + '","id":"' + $id + '","seq":' + $seq.Value + ',"dataB64":"' + $b64 + '"}')
+    $seq.Value = $seq.Value + 1
+    $off += $len
+  }
+  return $trunc
+}
 while ($true) {
   $fx_line = $fx_reader.ReadLine()
   if ($null -eq $fx_line) { break }
   if ($fx_line -eq '') { continue }
   $fx_id = ''
+  $fx_req = $null
   $fx_msOut = $null
   $fx_msErr = $null
   $fx_outW = $null
@@ -1395,20 +1419,47 @@ while ($true) {
     try { [Console]::SetOut($fx_oldOut) } catch {}
     try { [Console]::SetError($fx_oldErr) } catch {}
   }
-  $fx_outB64 = ''
-  $fx_errB64 = ''
-  if ($null -ne $fx_msOut) { $fx_outB64 = [Convert]::ToBase64String($fx_msOut.ToArray()) }
-  if ($null -ne $fx_msErr) { $fx_errB64 = [Convert]::ToBase64String($fx_msErr.ToArray()) }
   $fx_code = 0
   try { $fx_code = [int]$script:fx_exit } catch { $fx_code = 1 }
-  $fx_res = @{ id = $fx_id; stdoutB64 = $fx_outB64; stderrB64 = $fx_errB64; exitCode = $fx_code }
-  try {
-    $fx_json = $fx_res | ConvertTo-Json -Compress
-  } catch {
-    $fx_msg = 'fauxnix: host result exceeded ConvertTo-Json MaxJsonLength (~2MB)'
-    $fx_res = @{ id = $fx_id; stdoutB64 = ''; stderrB64 = [Convert]::ToBase64String($fx_utf8.GetBytes($fx_msg)); exitCode = 1 }
-    $fx_json = $fx_res | ConvertTo-Json -Compress
+  $fx_v2 = $false
+  if ($null -ne $fx_req -and $null -ne $fx_req.PSObject.Properties['v']) {
+    if ([int]$fx_req.v -eq 2) { $fx_v2 = $true }
   }
-  $fx_proto.WriteLine($fx_json)
+  $fx_outBytes = New-Object byte[] 0
+  $fx_errBytes = New-Object byte[] 0
+  if ($null -ne $fx_msOut) { $fx_outBytes = $fx_msOut.ToArray() }
+  if ($null -ne $fx_msErr) { $fx_errBytes = $fx_msErr.ToArray() }
+  if ($fx_v2) {
+    $fx_outLimit = 8388608
+    $fx_errLimit = 1048576
+    if ($null -ne $fx_req.PSObject.Properties['stdoutLimit']) { $fx_outLimit = [int]$fx_req.stdoutLimit }
+    if ($null -ne $fx_req.PSObject.Properties['stderrLimit']) { $fx_errLimit = [int]$fx_req.stderrLimit }
+    $fx_outSeq = 0
+    $fx_errSeq = 0
+    $fx_trunc = $false
+    if (fx-emit-chunks 'stdout' $fx_id $fx_outBytes $fx_outLimit ([ref]$fx_outSeq)) { $fx_trunc = $true }
+    if (fx-emit-chunks 'stderr' $fx_id $fx_errBytes $fx_errLimit ([ref]$fx_errSeq)) { $fx_trunc = $true }
+    $fx_nativeErr = [Console]::OpenStandardError()
+    $fx_mark = $fx_utf8.GetBytes(('FAUXNIX_ERR_END:' + $fx_id + [char]10))
+    $fx_nativeErr.Write($fx_mark, 0, $fx_mark.Length)
+    $fx_nativeErr.Flush()
+    $fx_end = '{"v":2,"type":"end","id":"' + $fx_id + '","exitCode":' + $fx_code + ',"timedOut":false,"cancelled":false,"truncated":'
+    if ($fx_trunc) { $fx_end = $fx_end + 'true}' } else { $fx_end = $fx_end + 'false}' }
+    $fx_proto.WriteLine($fx_end)
+  } else {
+    $fx_outB64 = ''
+    $fx_errB64 = ''
+    if ($fx_outBytes.Length -gt 0) { $fx_outB64 = [Convert]::ToBase64String($fx_outBytes) }
+    if ($fx_errBytes.Length -gt 0) { $fx_errB64 = [Convert]::ToBase64String($fx_errBytes) }
+    $fx_res = @{ id = $fx_id; stdoutB64 = $fx_outB64; stderrB64 = $fx_errB64; exitCode = $fx_code }
+    try {
+      $fx_json = $fx_res | ConvertTo-Json -Compress
+    } catch {
+      $fx_msg = 'fauxnix: host result exceeded ConvertTo-Json MaxJsonLength (~2MB)'
+      $fx_res = @{ id = $fx_id; stdoutB64 = ''; stderrB64 = [Convert]::ToBase64String($fx_utf8.GetBytes($fx_msg)); exitCode = 1 }
+      $fx_json = $fx_res | ConvertTo-Json -Compress
+    }
+    $fx_proto.WriteLine($fx_json)
+  }
 }
 `.trim();
