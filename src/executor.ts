@@ -141,8 +141,10 @@ function planRedirects(redirects: Redirect[]): SegmentRedirects {
         break;
       case '>':
       case '&>':
-        if (target === 'NUL') r.devNull = true;
-        else {
+        if (target === 'NUL') {
+          r.devNull = true;
+          if (red.op === '&>') (r as { swallowStderr?: boolean }).swallowStderr = true;
+        } else {
           r.stdoutFile = target;
           r.appendStdout = false;
           if (red.op === '&>') r.stderrFile = target;
@@ -150,8 +152,10 @@ function planRedirects(redirects: Redirect[]): SegmentRedirects {
         break;
       case '>>':
       case '&>>':
-        if (target === 'NUL') r.devNull = true;
-        else {
+        if (target === 'NUL') {
+          r.devNull = true;
+          if (red.op === '&>>') (r as { swallowStderr?: boolean }).swallowStderr = true;
+        } else {
           r.stdoutFile = target;
           r.appendStdout = true;
           if (red.op === '&>>') {
@@ -370,7 +374,9 @@ async function runPlans(
       break;
     }
 
-    const red = planRedirects(plan.redirects);
+    const red = planRedirects(plan.outputRedirects);
+    const inRed = planRedirects(plan.stdinRedirects);
+    red.stdinFile = inRed.stdinFile;
     red.stdinFile = red.stdinFile ? resolveTarget(red.stdinFile) : null;
     red.stdoutFile = red.stdoutFile ? resolveTarget(red.stdoutFile) : null;
     red.stderrFile = red.stderrFile ? resolveTarget(red.stderrFile) : null;
@@ -517,6 +523,7 @@ async function runPlans(
     }
     const swallowStderr = (red as { swallowStderr?: boolean }).swallowStderr;
     if (swallowStderr) segErr = '';
+    if (red.devNull) segOut = '';
 
     // Write captured streams through the fds opened during preflight
     // (bash: the redirect refers to the open file, not the path). Reopening

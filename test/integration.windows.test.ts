@@ -249,6 +249,20 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect(silenced.stdout.trim()).toBe('OK');
   });
 
+  it('>/dev/null discards stdout', async () => {
+    const r = await run('echo hi >/dev/null');
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe('');
+    // Windows treats NUL as a DOS device; existsSync(dir/NUL) is not a file check.
+    expect(existsSync(join(dir, 'null'))).toBe(false);
+  });
+
+  it('middle-stage < overrides the pipe as that stage stdin', async () => {
+    const r = await run('printf x | cat < fruits.txt | head -1');
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.trim()).toBe('apple');
+  });
+
   it(
     '[[ ]] file and string tests, including =~',
     async () => {

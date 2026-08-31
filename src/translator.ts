@@ -3,6 +3,7 @@ import {
   CommandList,
   FauxnixParseError,
   Redirect,
+  ShellCommand,
   SimpleCommand,
   IfCommand,
   ForCommand,
@@ -888,6 +889,20 @@ function translateFor(cmd: ForCommand): string {
   return lines.join('\n');
 }
 
+function stdinTarget(c: ShellCommand): string | null {
+  let t: string | null = null;
+  for (const r of c.redirects) {
+    if (r.op === '<') t = r.target;
+  }
+  return t;
+}
+
+function stdinReadExpr(target: string): string {
+  const n = normalizeLiteralPath(target);
+  if (n === 'NUL') return '@()';
+  return '@(fx-readlines ' + pathExpr(n) + ')';
+}
+
 export function translatePipelineBody(p: {
   commands: Array<SimpleCommand | IfCommand | ForCommand>;
 }): PipelineParts {
@@ -927,7 +942,24 @@ export function translatePipelineBody(p: {
   }
   const pipelineName = '__fx_p' + pipelineId;
   const statuses = bodies.map(() => '0').join(', ');
-  const pipelineCall = names.join(' | ');
+  const stageStdin = p.commands.map((c) => stdinTarget(c));
+  const middleStdin = stageStdin.some((t, i) => i > 0 && t !== null);
+  let pipelineInner: string;
+  if (middleStdin) {
+    // A non-first `< file` replaces the pipe as that stage's stdin. Run
+    // earlier stages anyway (they may have side effects) but do not feed
+    // their stream into the redirected stage.
+    const seq: string[] = ['    $fx_cur = @($input)'];
+    for (let i = 0; i < names.length; i++) {
+      if (stageStdin[i] && i > 0) seq.push('    $fx_cur = ' + stdinReadExpr(stageStdin[i]!));
+      if (i === names.length - 1) seq.push('    $fx_cur | ' + names[i]);
+      else seq.push('    $fx_cur = @($fx_cur | ' + names[i] + ')');
+    }
+    pipelineInner = seq.join('\n');
+  } else {
+    pipelineInner =
+      '    $input | ' + names.join(' | ');
+  }
   defs.push(
     [
       'function ' + pipelineName + ' {',
@@ -936,7 +968,7 @@ export function translatePipelineBody(p: {
       // The wrapper forwards redirect input to stage zero. With no input,
       // PowerShell still invokes a regular function once, which preserves the
       // existing no-stdin pipeline behavior on Windows PowerShell 5.1.
-      '    $input | ' + pipelineCall,
+      pipelineInner,
       '  } finally {',
       // Bash defaults to pipefail off: only the last stage controls the list
       // status used by a following && / || segment.
@@ -958,19 +990,29 @@ export interface SegmentPlan {
   script: string;
   /** Pipeline body before wrapScript — executor host mode re-wraps this. */
   body: string;
-  /** All redirects collected from this segment (executor handles them). */
+  /** Every stage's redirects, in source order — executor prep (open/fail). */
   redirects: Redirect[];
+  /** Last-stage redirects — captured stdout/stderr apply / >/dev/null. */
+  outputRedirects: Redirect[];
+  /** First-stage `<` only — FAUXNIX_STDIN_FILE feed. */
+  stdinRedirects: Redirect[];
 }
 
 export function translateCommandList(list: CommandList): SegmentPlan[] {
   const plans: SegmentPlan[] = [];
   for (const seg of list.segments) {
+    const cmds = seg.pipeline.commands;
     const redirects: Redirect[] = [];
-    for (const c of seg.pipeline.commands) redirects.push(...c.redirects);
+    for (const c of cmds) redirects.push(...c.redirects);
+    const outputRedirects = cmds.length ? cmds[cmds.length - 1].redirects.slice() : [];
+    const stdinRedirects = cmds.length
+      ? cmds[0].redirects.filter((r) => r.op === '<')
+      : [];
     const { defs, call } = translatePipelineBody(seg.pipeline);
     let body = defs ? defs + '\n' + call : call;
-    // `< file` redirects feed the pipeline via the FAUXNIX_STDIN_FILE channel
-    if (redirects.some((r) => r.op === '<')) {
+    // First-stage `< file` feeds stage zero via FAUXNIX_STDIN_FILE.
+    // Later-stage `<` is owned inside the pipeline body, not this wrapper.
+    if (stdinRedirects.length) {
       // `& { ... }` (no parens) so the scriptblock can be a non-first
       // pipeline element receiving the fed lines.
       const pipeCall = call.startsWith('(& {') ? call.slice(1, -1) : call;
@@ -982,7 +1024,14 @@ export function translateCommandList(list: CommandList): SegmentPlan[] {
         call +
         ' }';
     }
-    plans.push({ op: seg.op, script: wrapScript(body), body, redirects });
+    plans.push({
+      op: seg.op,
+      script: wrapScript(body),
+      body,
+      redirects,
+      outputRedirects,
+      stdinRedirects,
+    });
   }
   return plans;
 }
