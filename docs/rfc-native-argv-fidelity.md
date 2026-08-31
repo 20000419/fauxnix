@@ -22,9 +22,13 @@ That violates fail-loud / never silently-wrong.
   builds a Win32 command line (`fx-winargv`) and starts
   `System.Diagnostics.Process` with redirected stdio. Empty arguments become
   `""`; quotes follow the CRT quoting rules.
-- Stdout/stderr are `ReadToEndAsync` (PS 5.1 cannot run a scriptblock on the
-  thread pool, so `Task.Factory.StartNew({ $p.StandardOutput.ReadToEnd() })`
-  throws and the wrap catch turns that into exit 1).
+- Stdout/stderr are `ReadToEndAsync` started **before** writing stdin (a
+  chatty child must not fill the 64KB pipe). PS 5.1 cannot run a scriptblock
+  on the thread pool, so `Task.Factory.StartNew({ $p.StandardOutput.ReadToEnd() })`
+  throws and the wrap catch turns that into exit 1.
+- Empty `[object[]]` must not unwrap to `$null` (that became a phantom `""`
+  argv). `.cmd`/`.bat` Applications go through `cmd.exe /d /s /c` because
+  `CreateProcess` cannot launch them with `UseShellExecute = $false`.
 - Pipelines still work: `$input` is copied to the child stdin; stdout/stderr
   are captured without the `& @array` splat.
 - Dynamic/`[@]` command names use the same helper. If the name is not an

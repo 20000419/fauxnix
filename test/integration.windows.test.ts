@@ -30,6 +30,7 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
       'process.stdout.write(JSON.stringify(process.argv.slice(2)))\n',
       'utf8',
     );
+    writeFileSync(join(dir, 'hit.cmd'), '@echo off\r\necho CMDHIT\r\n');
     writeFileSync(join(dir, 'nums.txt'), '1 2\n3 4\n5 6\n', 'utf8');
     writeFileSync(join(dir, 'dups.txt'), 'aaa\naaa\nbbb\n', 'utf8');
     mkdirSync(join(dir, 'sub'));
@@ -1040,6 +1041,15 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect(JSON.parse(quoted.stdout.trim())).toEqual(['a"b']);
     const dashed = await run(dump + ' --foo');
     expect(JSON.parse(dashed.stdout.trim())).toEqual(['--foo']);
+    const none = await run(dump);
+    expect(none.exitCode).toBe(0);
+    expect(JSON.parse(none.stdout.trim())).toEqual([]);
+  });
+
+  it('native .cmd shims run through cmd.exe', async () => {
+    const r = await run('./hit.cmd');
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.trim()).toBe('CMDHIT');
   });
 
   it('xargs runs native commands', async () => {

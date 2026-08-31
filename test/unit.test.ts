@@ -550,6 +550,8 @@ describe('translator', () => {
     const script = translateCommandList(parse('node --version'))[0].script;
     expect(script).toContain('ReadToEndAsync');
     expect(script).not.toContain('StartNew');
+    expect(script).toContain("'.cmd'");
+    expect(script).toContain("if ($null -eq $argv) { $argv = @() }");
   });
 
   it('feeds stdin for < redirects', () => {
