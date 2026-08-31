@@ -60,19 +60,54 @@ interface SegmentRedirects {
   appendStdout: boolean;
   stderrFile: string | null;
   appendStderr: boolean;
-  mergeStderr: boolean;
-  devNull: boolean;
-  swallowStderr: boolean;
 }
 
-/** Where a fd points during left-to-right redirect setup. */
-type PrepDest = { kind: 'caller' } | { kind: 'nul' } | { kind: 'file'; path: string };
+/**
+ * Where a fd points after left-to-right redirects.
+ * `2>&1` copies stdout's dest at that moment; a later `>/dev/null` must
+ * not drag stderr along (bash fd dup). `caller.fd` is the original
+ * caller stream (1=stdout, 2=stderr).
+ */
+type FdDest = { kind: 'caller'; fd: 1 | 2 } | { kind: 'nul' } | { kind: 'file'; path: string };
+
+function applyRedirectDest(
+  op: Redirect['op'],
+  target: string | undefined,
+  stdout: FdDest,
+  stderr: FdDest,
+): { stdout: FdDest; stderr: FdDest } {
+  if (op === '2>&1') return { stdout, stderr: stdout };
+  if (op === '1>&2') return { stdout: stderr, stderr };
+  if (op === '<' || target === undefined) return { stdout, stderr };
+  const dest: FdDest = isNulPath(target) ? { kind: 'nul' } : { kind: 'file', path: target };
+  if (op === '>' || op === '>>') return { stdout: dest, stderr };
+  if (op === '2>' || op === '2>>') return { stdout, stderr: dest };
+  if (op === '&>' || op === '&>>') return { stdout: dest, stderr: dest };
+  return { stdout, stderr };
+}
+
+/** Last-stage output fds only — captured stdout/stderr apply. */
+function lastStageOutputDests(
+  redirects: Redirect[],
+  resolveTarget: (t: string) => string,
+): { stdout: FdDest; stderr: FdDest } {
+  let stdout: FdDest = { kind: 'caller', fd: 1 };
+  let stderr: FdDest = { kind: 'caller', fd: 2 };
+  for (const r of redirects) {
+    const target =
+      r.op === '2>&1' || r.op === '1>&2' || r.op === '<'
+        ? undefined
+        : resolveTarget(winTarget(r.target));
+    ({ stdout, stderr } = applyRedirectDest(r.op, target, stdout, stderr));
+  }
+  return { stdout, stderr };
+}
 
 function emitToPrepDest(
-  dest: PrepDest,
+  dest: FdDest,
   msg: string,
   fds: Map<string, number>,
-  fallback: (s: string) => void,
+  caller: { stdout: (s: string) => void; stderr: (s: string) => void },
 ): void {
   if (dest.kind === 'nul') return;
   if (dest.kind === 'file') {
@@ -80,10 +115,12 @@ function emitToPrepDest(
       writeToPrepFd(fds, dest.path, msg);
       return;
     } catch {
-      /* fall through to caller */
+      caller.stderr(msg);
+      return;
     }
   }
-  fallback(msg);
+  if (dest.fd === 1) caller.stdout(msg);
+  else caller.stderr(msg);
 }
 
 function writeAllSync(fd: number, data: Buffer): void {
@@ -137,9 +174,6 @@ function planRedirects(redirects: Redirect[]): SegmentRedirects {
     appendStdout: false,
     stderrFile: null,
     appendStderr: false,
-    mergeStderr: false,
-    devNull: false,
-    swallowStderr: false,
   };
   for (const red of redirects) {
     const target = winTarget(red.target);
@@ -150,39 +184,25 @@ function planRedirects(redirects: Redirect[]): SegmentRedirects {
       case '>':
       case '&>':
         if (isNulPath(target)) {
-          r.devNull = true;
           r.stdoutFile = null;
-          if (red.op === '&>') {
-            r.swallowStderr = true;
-            r.stderrFile = null;
-          }
+          if (red.op === '&>') r.stderrFile = null;
         } else {
-          r.devNull = false;
           r.stdoutFile = target;
           r.appendStdout = false;
-          if (red.op === '&>') {
-            r.stderrFile = target;
-            r.swallowStderr = false;
-          }
+          if (red.op === '&>') r.stderrFile = target;
         }
         break;
       case '>>':
       case '&>>':
         if (isNulPath(target)) {
-          r.devNull = true;
           r.stdoutFile = null;
-          if (red.op === '&>>') {
-            r.swallowStderr = true;
-            r.stderrFile = null;
-          }
+          if (red.op === '&>>') r.stderrFile = null;
         } else {
-          r.devNull = false;
           r.stdoutFile = target;
           r.appendStdout = true;
           if (red.op === '&>>') {
             r.stderrFile = target;
             r.appendStderr = true;
-            r.swallowStderr = false;
           }
         }
         break;
@@ -190,29 +210,20 @@ function planRedirects(redirects: Redirect[]): SegmentRedirects {
         if (isNulPath(target)) {
           // stderr only — must not undo a prior >/dev/null
           r.stderrFile = null;
-          r.swallowStderr = true;
         } else {
           r.stderrFile = target;
           r.appendStderr = false;
-          r.swallowStderr = false;
         }
         break;
       case '2>>':
         if (isNulPath(target)) {
           r.stderrFile = null;
-          r.swallowStderr = true;
         } else {
           r.stderrFile = target;
           r.appendStderr = true;
-          r.swallowStderr = false;
         }
         break;
-      case '2>&1':
-        r.mergeStderr = true;
-        break;
-      case '1>&2':
-        r.mergeStderr = false;
-        (r as { stdoutToStderr?: boolean }).stdoutToStderr = true;
+      default:
         break;
     }
   }
@@ -418,19 +429,25 @@ async function runPlans(
     let redirectPrepFailed = false;
     // Snapshot fd destinations as we walk. `2>&1` copies stdout *at that
     // moment*; a later `>file` must not drag stderr along (bash fd dup).
-    let prepStdout: PrepDest = { kind: 'caller' };
-    let prepStderr: PrepDest = { kind: 'caller' };
+    let prepStdout: FdDest = { kind: 'caller', fd: 1 };
+    let prepStderr: FdDest = { kind: 'caller', fd: 2 };
     const emitPrepError = (msg: string) =>
-      emitToPrepDest(prepStderr, msg, prepFds, (s) => {
-        stderr += s;
+      emitToPrepDest(prepStderr, msg, prepFds, {
+        stdout: (s) => {
+          stdout += s;
+        },
+        stderr: (s) => {
+          stderr += s;
+        },
       });
     for (const r of plan.redirects) {
-      if (r.op === '2>&1') {
-        prepStderr = prepStdout;
-        continue;
-      }
-      if (r.op === '1>&2') {
-        prepStdout = prepStderr;
+      if (r.op === '2>&1' || r.op === '1>&2') {
+        ({ stdout: prepStdout, stderr: prepStderr } = applyRedirectDest(
+          r.op,
+          undefined,
+          prepStdout,
+          prepStderr,
+        ));
         continue;
       }
       const target = resolveTarget(winTarget(r.target));
@@ -443,29 +460,21 @@ async function runPlans(
         }
         continue;
       }
-      if (isNulPath(target)) {
-        if (r.op === '>' || r.op === '>>') prepStdout = { kind: 'nul' };
-        else if (r.op === '2>' || r.op === '2>>') prepStderr = { kind: 'nul' };
-        else if (r.op === '&>' || r.op === '&>>') {
-          prepStdout = { kind: 'nul' };
-          prepStderr = { kind: 'nul' };
+      if (!isNulPath(target)) {
+        const append = r.op === '>>' || r.op === '2>>' || r.op === '&>>';
+        const fail = prepareRedirectFile(target, append, prepFds);
+        if (fail) {
+          emitPrepError('bash: ' + fail + '\n');
+          redirectPrepFailed = true;
+          break;
         }
-        continue;
       }
-      const append = r.op === '>>' || r.op === '2>>' || r.op === '&>>';
-      const fail = prepareRedirectFile(target, append, prepFds);
-      if (fail) {
-        emitPrepError('bash: ' + fail + '\n');
-        redirectPrepFailed = true;
-        break;
-      }
-      const fileDest: PrepDest = { kind: 'file', path: target };
-      if (r.op === '>' || r.op === '>>') prepStdout = fileDest;
-      else if (r.op === '2>' || r.op === '2>>') prepStderr = fileDest;
-      else if (r.op === '&>' || r.op === '&>>') {
-        prepStdout = fileDest;
-        prepStderr = fileDest;
-      }
+      ({ stdout: prepStdout, stderr: prepStderr } = applyRedirectDest(
+        r.op,
+        target,
+        prepStdout,
+        prepStderr,
+      ));
     }
     if (redirectPrepFailed) {
       exitCode = 1;
@@ -490,11 +499,15 @@ async function runPlans(
     }
 
     const encoded = wrapScript(plan.body, { mode: 'host' });
+    // Last-stage fds last-win independently. `2>&1 >/dev/null` snapshots
+    // stderr onto the caller's stdout before stdout is pointed at NUL, so
+    // captured stderr is still returned; `>/dev/null 2>&1` points both at NUL.
+    const applyDests = lastStageOutputDests(plan.outputRedirects, resolveTarget);
     // Response budgets cap what the CALLER receives — streams redirected to
     // files must never be truncated by them (Codex-review P1: `printf … > f`
     // with a small stdoutLimit was writing a clipped file). The final
     // clipUtf8 below still enforces the returned-data budget.
-    const fileRedirected = !!(red.stdoutFile || red.stderrFile);
+    const fileRedirected = applyDests.stdout.kind === 'file' || applyDests.stderr.kind === 'file';
     const inv = await ensureHost().invoke(
       encoded,
       {
@@ -532,52 +545,41 @@ async function runPlans(
     // GNU line discipline: the PS host terminates Write-Output lines with
     // CRLF. Exact writers (fx-write / printf / echo -n) must keep embedded
     // CR so `printf 'a\r\nb' > out` stays 4 bytes.
-    let segOut = normalizeHostNewlines(decodeOutput(inv.stdout, decodePref));
+    const segOut = normalizeHostNewlines(decodeOutput(inv.stdout, decodePref));
     let segErr = normalizeHostNewlines(normalizeStderr(decodeOutput(inv.stderr, decodePref)));
 
     if (inv.timedOut) {
       segErr += timeoutMessage;
     }
 
-    if (red.mergeStderr) {
-      segOut += (segOut && !segOut.endsWith('\n') && segErr ? '\n' : '') + segErr;
-      segErr = '';
-    }
-    const stdoutToStderr = (red as { stdoutToStderr?: boolean }).stdoutToStderr;
-    if (stdoutToStderr) {
-      segErr += segOut;
-      segOut = '';
-    }
-    if (red.swallowStderr) segErr = '';
-    if (red.devNull) segOut = '';
-
     // Write captured streams through the fds opened during preflight
     // (bash: the redirect refers to the open file, not the path). Reopening
     // the path would recreate a file the command just unlinked
     // (`rm out.txt > out.txt`).
     let redirectOk = true;
-    if (red.stdoutFile) {
-      try {
-        writeToPrepFd(prepFds, red.stdoutFile, segOut);
-        segOut = '';
-      } catch (e) {
-        segErr += 'bash: ' + red.stdoutFile + ': cannot create: ' + (e as Error).message + '\n';
-        exitCode = 1;
-        redirectOk = false;
+    const deliverCaptured = (dest: FdDest, data: string, fromStdout: boolean): void => {
+      if (!data) return;
+      if (dest.kind === 'nul') return;
+      if (dest.kind === 'file') {
+        try {
+          writeToPrepFd(prepFds, dest.path, data);
+        } catch (e) {
+          if (fromStdout) {
+            stderr += 'bash: ' + dest.path + ': cannot create: ' + (e as Error).message + '\n';
+            exitCode = 1;
+            redirectOk = false;
+            stdout += data;
+          } else {
+            stderr += data;
+          }
+        }
+        return;
       }
-    }
-    if (red.stderrFile) {
-      try {
-        const body = red.stderrFile === red.stdoutFile ? segOut + segErr : segErr;
-        writeToPrepFd(prepFds, red.stderrFile, body);
-        segErr = '';
-      } catch {
-        /* best effort */
-      }
-    }
-
-    stdout += segOut;
-    stderr += segErr;
+      if (dest.fd === 1) stdout += data;
+      else stderr += data;
+    };
+    deliverCaptured(applyDests.stdout, segOut, true);
+    deliverCaptured(applyDests.stderr, segErr, false);
     if (inv.truncated) truncated = true;
     exitCode = inv.timedOut ? 124 : inv.cancelled ? 130 : inv.exitCode;
     if (inv.timedOut) timedOut = true;
