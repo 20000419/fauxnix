@@ -201,6 +201,60 @@ Effects: `read`
 | `--silent` | flag | implemented |
 | `-v`, `--verbose` | flag | implemented |
 
+## `echo`
+
+Effects: none
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-n` | flag | implemented |
+| `-e` | flag | implemented |
+| `-E` | flag | implemented |
+
+## `printf`
+
+Effects: none
+
+No options declared.
+
+## `cat`
+
+Effects: `read`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-n` | flag | implemented |
+| `-b` | flag | implemented |
+| `-s` | flag | implemented |
+| `-E` | flag | implemented |
+| `-T` | flag | implemented |
+| `-A` | flag | implemented |
+
+## `tail`
+
+Effects: `read`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-n`, `--lines` | required | implemented |
+| `-c`, `--bytes` | required | implemented |
+| `-q`, `--quiet` | flag | implemented |
+| `--silent` | flag | implemented |
+| `-v`, `--verbose` | flag | implemented |
+| `-f` | flag | unsupported (no persistent tty) |
+| `-F` | flag | unsupported (no persistent tty) |
+
+## `wc`
+
+Effects: `read`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-l` | flag | implemented |
+| `-w` | flag | implemented |
+| `-c` | flag | implemented |
+| `-m` | flag | implemented |
+
 ## `grep`
 
 Effects: `read`
@@ -232,4 +286,4 @@ Effects: `read`
 
 ## Unspec'd commands
 
-`.`, `:`, `[`, `[[`, `alias`, `awk`, `base64`, `cat`, `cd`, `clear`, `command`, `curl`, `cut`, `date`, `dig`, `dirs`, `echo`, `egrep`, `env`, `eval`, `exit`, `export`, `false`, `find`, `free`, `groups`, `gunzip`, `gzip`, `history`, `host`, `hostname`, `id`, `ifconfig`, `ip`, `kill`, `less`, `man`, `md5sum`, `more`, `netstat`, `nl`, `nproc`, `nslookup`, `pgrep`, `ping`, `pkill`, `popd`, `printenv`, `printf`, `ps`, `pushd`, `pwd`, `read`, `sed`, `seq`, `set`, `sha1sum`, `sha256sum`, `sleep`, `sort`, `source`, `ss`, `sudo`, `tac`, `tail`, `tar`, `test`, `timeout`, `tr`, `true`, `type`, `uname`, `uniq`, `unset`, `unzip`, `uptime`, `wc`, `wget`, `which`, `whoami`, `xargs`, `yes`, `zcat`, `zip`
+`.`, `:`, `[`, `[[`, `alias`, `awk`, `base64`, `cd`, `clear`, `command`, `curl`, `cut`, `date`, `dig`, `dirs`, `egrep`, `env`, `eval`, `exit`, `export`, `false`, `find`, `free`, `groups`, `gunzip`, `gzip`, `history`, `host`, `hostname`, `id`, `ifconfig`, `ip`, `kill`, `less`, `man`, `md5sum`, `more`, `netstat`, `nl`, `nproc`, `nslookup`, `pgrep`, `ping`, `pkill`, `popd`, `printenv`, `ps`, `pushd`, `pwd`, `read`, `sed`, `seq`, `set`, `sha1sum`, `sha256sum`, `sleep`, `sort`, `source`, `ss`, `sudo`, `tac`, `tar`, `test`, `timeout`, `tr`, `true`, `type`, `uname`, `uniq`, `unset`, `unzip`, `uptime`, `wget`, `which`, `whoami`, `xargs`, `yes`, `zcat`, `zip`
