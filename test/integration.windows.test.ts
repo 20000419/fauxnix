@@ -1458,6 +1458,65 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     }
   }, 30000);
 
+  it('hard links look like regular files; symbolic links still look like links', async () => {
+    writeFileSync(join(dir, 'hl-src.txt'), 'hello\n', 'utf8');
+    const hl = await run('ln hl-src.txt hl-dst.txt');
+    expect(hl.exitCode).toBe(0);
+    expect(existsSync(join(dir, 'hl-dst.txt'))).toBe(true);
+
+    const lsLong = await run('ls -l hl-dst.txt');
+    expect(lsLong.exitCode).toBe(0);
+    expect(lsLong.stdout).toMatch(/-rw-r--r--.*hl-dst\.txt/);
+    expect(lsLong.stdout).not.toMatch(/^l/m);
+
+    const lsClass = await run('ls -F hl-dst.txt');
+    expect(lsClass.exitCode).toBe(0);
+    expect(lsClass.stdout.trim()).not.toMatch(/@$/);
+
+    const st = await run('stat -c %F hl-dst.txt');
+    expect(st.exitCode).toBe(0);
+    expect(st.stdout.trim()).toBe('regular file');
+
+    const fl = await run('file hl-dst.txt');
+    expect(fl.stdout).not.toMatch(/symbolic link/);
+
+    const found = await run("find . -name hl-dst.txt -type l");
+    expect(found.stdout.trim()).toBe('');
+
+    const rl = await run('readlink hl-dst.txt');
+    expect(rl.exitCode).toBe(1);
+    expect(rl.stdout.trim()).toBe('');
+
+    const sl = await run('ln -s hl-src.txt sl-dst.txt');
+    const sls = existsSync(join(dir, 'sl-dst.txt')) ? await run('ls -l sl-dst.txt') : sl;
+    if (sl.exitCode !== 0 || !existsSync(join(dir, 'sl-dst.txt')) || !/^l/m.test(sls.stdout)) {
+      // SymbolicLink creation needs SeCreateSymbolicLinkPrivilege (Admin /
+      // Developer Mode). Some hosts still create a regular file; skip that half.
+      expect(sl.exitCode !== 0 || sl.stderr.length > 0 || existsSync(join(dir, 'sl-dst.txt'))).toBe(
+        true,
+      );
+      return;
+    }
+
+    expect(sls.stdout).toMatch(/^l/m);
+
+    const slF = await run('ls -F sl-dst.txt');
+    expect(slF.stdout.trim()).toMatch(/@$/);
+
+    const slStat = await run('stat -c %F sl-dst.txt');
+    expect(slStat.stdout.trim()).toBe('symbolic link');
+
+    const slFile = await run('file sl-dst.txt');
+    expect(slFile.stdout).toMatch(/symbolic link to/);
+
+    const slFind = await run("find . -name sl-dst.txt -type l");
+    expect(slFind.stdout.replaceAll('\\', '/')).toMatch(/sl-dst\.txt/);
+
+    const slRl = await run('readlink sl-dst.txt');
+    expect(slRl.exitCode).toBe(0);
+    expect(slRl.stdout).toMatch(/hl-src/);
+  });
+
   it('concurrent reset leaves one usable session', async () => {
     const extra = new FauxnixSession();
     try {
