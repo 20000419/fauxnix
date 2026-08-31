@@ -36,7 +36,12 @@ const PS_SPLITLINES_FN = [
   '}',
 ].join('\n');
 
-const STDIN_LINES = '@($input | ForEach-Object { [string]$_ })';
+/** stdin → flat line array (multi-line items from printf-style stages split). */
+const STDIN_LINES = [
+  '$fx_in = New-Object System.Collections.Generic.List[string]',
+  'foreach ($fx_it in @($input | ForEach-Object { [string]$_ })) { $fx_in.AddRange([string[]]@(fx-splitlines $fx_it)) }',
+  '$fx_in = @($fx_in)',
+].join('\n');
 
 /** Operand Words → PS array expression of string exprs. */
 function psArray(words: Word[], fn: (w: Word) => string = operandExpr): string {
@@ -730,7 +735,8 @@ const grep: Handler = (args) => {
   } else {
     lines.push('$fx_pre = $false');
     lines.push("$fx_disp = '(standard input)'");
-    lines.push('$fx_ls = ' + STDIN_LINES);
+    lines.push(STDIN_LINES);
+    lines.push('$fx_ls = $fx_in');
     for (const l of scan) lines.push(l);
   }
 
@@ -1316,7 +1322,8 @@ const sed: Handler = (args) => {
     lines.push('}');
   } else {
     lines.push('$fx_err = $false');
-    lines.push('$fx_lines = ' + STDIN_LINES);
+    lines.push(STDIN_LINES);
+    lines.push('$fx_lines = $fx_in');
     lines.push('$fx_n = $fx_lines.Count');
     lines.push('$fx_out = New-Object System.Collections.Generic.List[string]');
     lines.push('$fx_stop = $false');
@@ -2186,7 +2193,8 @@ const awk: Handler = (args) => {
     lines.push('foreach ($fx_f in $fx_srcs) { $fx_lines += fx-splitlines (fx-read $fx_f) }');
   } else {
     lines.push('$fx_err = $false');
-    lines.push('$fx_lines = ' + STDIN_LINES);
+    lines.push(STDIN_LINES);
+    lines.push('$fx_lines = $fx_in');
   }
 
   const mainLoop: string[] = [];
@@ -2310,7 +2318,8 @@ const sort: Handler = (args) => {
     lines.push('$fx_lines = @()');
     lines.push('foreach ($fx_f in $fx_srcs) { $fx_lines += fx-splitlines (fx-read $fx_f) }');
   } else {
-    lines.push('$fx_lines = ' + STDIN_LINES);
+    lines.push(STDIN_LINES);
+    lines.push('$fx_lines = $fx_in');
   }
 
   const fastPath = specs.length === 0 && !globalN && !globalB;
@@ -2487,7 +2496,8 @@ const uniq: Handler = (args) => {
     lines.push('else { $fx_lines = @() }');
   } else {
     lines.push('$fx_err = $false');
-    lines.push('$fx_lines = ' + STDIN_LINES);
+    lines.push(STDIN_LINES);
+    lines.push('$fx_lines = $fx_in');
   }
 
   lines.push('function fx-ueq($a, $b) {');
@@ -2607,7 +2617,8 @@ const cut: Handler = (args) => {
     lines.push('$fx_lines = @()');
     lines.push('foreach ($fx_f in $fx_srcs) { $fx_lines += fx-splitlines (fx-read $fx_f) }');
   } else {
-    lines.push('$fx_lines = ' + STDIN_LINES);
+    lines.push(STDIN_LINES);
+    lines.push('$fx_lines = $fx_in');
   }
 
   if (charsMode) {
@@ -2744,7 +2755,7 @@ const tr: Handler = (args) => {
     }
   }
 
-  const lines: string[] = [];
+  const lines: string[] = [PS_SPLITLINES_FN];
   lines.push('$fx_dl = @{}');
   if (del) {
     lines.push('foreach ($c in [char[]](' + set1.join(', ') + ')) { $fx_dl[[int]$c] = $true }');
@@ -2758,7 +2769,8 @@ const tr: Handler = (args) => {
     lines.push('foreach ($c in [char[]](' + sqSet.join(', ') + ')) { $fx_sq[[int]$c] = $true }');
   }
 
-  lines.push('foreach ($fx_line in ' + STDIN_LINES + ') {');
+  lines.push(STDIN_LINES);
+  lines.push('foreach ($fx_line in $fx_in) {');
   lines.push('  $fx_sb = New-Object System.Text.StringBuilder');
   lines.push('  $fx_prev = -1');
   lines.push('  foreach ($fx_ch in $fx_line.ToCharArray()) {');

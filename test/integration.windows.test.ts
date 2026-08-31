@@ -169,6 +169,18 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect(r.stdout.split(/\r?\n/).filter(Boolean)).toEqual(['apple', 'apple pie']);
   });
 
+  it('printf-style stdin is re-split so grep matches a later line', async () => {
+    const r = await run("printf 'a\\nb\\n' | grep b");
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.trim()).toBe('b');
+  });
+
+  it('echo hi | grep hi still matches a single line without embedded newlines', async () => {
+    const r = await run('echo hi | grep hi');
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.trim()).toBe('hi');
+  });
+
   it('pipeline exit status comes from the last stage (pipefail off)', async () => {
     expect((await run('false | true')).exitCode).toBe(0);
     expect((await run('true | false')).exitCode).toBe(1);
