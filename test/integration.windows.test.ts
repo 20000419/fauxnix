@@ -31,6 +31,7 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
       'utf8',
     );
     writeFileSync(join(dir, 'hit.cmd'), '@echo off\r\necho CMDHIT\r\n');
+    writeFileSync(join(dir, 'letters.txt'), 'a\nb\nc\n', 'utf8');
     writeFileSync(join(dir, 'nums.txt'), '1 2\n3 4\n5 6\n', 'utf8');
     writeFileSync(join(dir, 'dups.txt'), 'aaa\naaa\nbbb\n', 'utf8');
     mkdirSync(join(dir, 'sub'));
@@ -240,6 +241,28 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     const viaE = await run('grep -e apple fruits.txt');
     expect(viaE.exitCode).toBe(0);
     expect(viaE.stdout.trim().split(/\r?\n/)).toEqual(['apple', 'apple pie']);
+  });
+
+  it('grep -e a -e c OR-accumulates patterns', async () => {
+    const r = await run('grep -e a -e c letters.txt');
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.trim().split(/\r?\n/)).toEqual(['a', 'c']);
+    expect(r.stdout).not.toContain('b');
+  });
+
+  it('grep --regexp repeats OR-accumulate', async () => {
+    const spaced = await run('grep --regexp a --regexp c letters.txt');
+    expect(spaced.exitCode).toBe(0);
+    expect(spaced.stdout.trim().split(/\r?\n/)).toEqual(['a', 'c']);
+    const equals = await run('grep --regexp=a --regexp=c letters.txt');
+    expect(equals.exitCode).toBe(0);
+    expect(equals.stdout.trim().split(/\r?\n/)).toEqual(['a', 'c']);
+  });
+
+  it('grep -v -e a -e c inverts the combined OR', async () => {
+    const r = await run('grep -v -e a -e c letters.txt');
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.trim().split(/\r?\n/)).toEqual(['b']);
   });
 
   it('du --max-depth=0 prints only the root', async () => {

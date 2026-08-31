@@ -755,8 +755,43 @@ describe('bounded output flags (#130)', () => {
   });
 
   it('grep -e / --regexp keep the pattern (not an unknown flag)', () => {
-    expect(bodyOf("grep -e apple fruits.txt")).toContain('fx-gmatch');
-    expect(bodyOf("grep -e apple fruits.txt")).not.toContain('invalid option');
+    expect(bodyOf('grep -e apple fruits.txt')).toContain('fx-gmatch');
+    expect(bodyOf('grep -e apple fruits.txt')).toContain("$fx_pat = 'apple'");
+    expect(bodyOf('grep -e apple fruits.txt')).not.toContain('invalid option');
+    expect(bodyOf('grep --regexp apple fruits.txt')).toContain("$fx_pat = 'apple'");
+    expect(bodyOf('grep --regexp=apple fruits.txt')).toContain("$fx_pat = 'apple'");
+  });
+
+  it('grep -e / --regexp repeats OR-accumulate (#143)', () => {
+    const short = bodyOf('grep -e a -e c f');
+    expect(short).toContain("$fx_pat = '(?:a)|(?:c)'");
+    expect(short).toContain("foreach ($fx_o in (@('f')))");
+    expect(short).not.toContain("$fx_pat = 'c'");
+    expect(short).toContain('return $fx_re.IsMatch($l)');
+
+    const longs = bodyOf('grep --regexp a --regexp=c f');
+    expect(longs).toContain("$fx_pat = '(?:a)|(?:c)'");
+    expect(longs).toContain("foreach ($fx_o in (@('f')))");
+
+    const mixed = bodyOf('grep -e a --regexp=c f');
+    expect(mixed).toContain("$fx_pat = '(?:a)|(?:c)'");
+
+    const glued = bodyOf('grep -ea -ec f');
+    expect(glued).toContain("$fx_pat = '(?:a)|(?:c)'");
+  });
+
+  it('grep -v -e a -e c inverts the combined OR once (#143)', () => {
+    const body = bodyOf('grep -v -e a -e c f');
+    expect(body).toContain("$fx_pat = '(?:a)|(?:c)'");
+    expect(body).toContain('return -not ($fx_re.IsMatch($l))');
+    expect(body).not.toContain('return -not ($fx_re.IsMatch($l))\n  return -not');
+  });
+
+  it('grep with no pattern fails loud with usage', () => {
+    const body = bodyOf('grep');
+    expect(body).toContain('usage: grep [OPTION]... PATTERN [FILE]...');
+    expect(body).toContain('$script:fx_exit = 2');
+    expect(bodyOf('grep -v')).toContain('usage: grep [OPTION]... PATTERN [FILE]...');
   });
 
   it('head --lines and --lines=N set the count (not silently skipped)', () => {
