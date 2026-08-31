@@ -96,6 +96,10 @@ async function runCheck(): Promise<void> {
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   });
+  probe.on('error', (e) => {
+    console.error('status     : FAILED to run powershell.exe: ' + e.message);
+    process.exit(1);
+  });
   let out = '';
   probe.stdout.on('data', (d) => (out += d.toString('utf8')));
   const code = await new Promise<number>((resolve) => probe.on('close', (c) => resolve(c ?? 1)));

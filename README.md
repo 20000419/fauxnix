@@ -154,10 +154,13 @@ development:
   translate time (unsupported constructs throw named errors, never silently misbehave)
 - **text I/O**: `echo printf cat head tail wc tee nl tac md5sum sha1sum sha256sum base64 seq yes xargs`
 
-`cp` / `mv` / `rm` / `touch` / `tee` / `grep` / `head` / `du` carry a `CommandSpec`: unknown
-options fail with a GNU-style usage error instead of being ignored. Implemented GNU holes:
-`cp -n` / `mv -n` / `touch -c` / `tee --append` / `grep -m` / `head --lines` / `du --max-depth`.
-`fauxnix list --json` and `docs/command-specs.md` dump the same metadata.
+`cp` / `mv` / `rm` / `touch` / `du` / `ls` / `ll` / `mkdir` / `rmdir` / `mktemp` / `ln` /
+`readlink` / `realpath` / `basename` / `dirname` / `stat` / `file` / `df` / `chmod` / `chown` /
+`diff` / `tee` / `grep` / `head` carry a `CommandSpec`: unknown options fail with a GNU-style
+usage error instead of being ignored (`find` stays unspec'd so predicates like `-name` still
+compile). Implemented GNU holes: `cp -n` / `mv -n` / `touch -c` / `tee --append` / `grep -m` /
+`head --lines` / `du --max-depth`. `fauxnix list --json` and `docs/command-specs.md` dump the
+same metadata.
 - **shell/system**: `cd pwd export unset env printenv ps kill pkill pgrep sleep which type whoami
   id groups date uname hostname uptime free nproc clear true false test [ [[ : pushd popd dirs sudo
   timeout man history less more source . eval exit alias set`

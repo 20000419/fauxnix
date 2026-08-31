@@ -25,6 +25,13 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
   beforeAll(async () => {
     dir = mkdtempSync(join(tmpdir(), 'fauxnix-it-'));
     writeFileSync(join(dir, 'fruits.txt'), 'apple\nBanana\napple pie\ncherry\n', 'utf8');
+    writeFileSync(
+      join(dir, 'dump-argv.js'),
+      'process.stdout.write(JSON.stringify(process.argv.slice(2)))\n',
+      'utf8',
+    );
+    writeFileSync(join(dir, 'hit.cmd'), '@echo off\r\necho CMDHIT\r\n');
+    writeFileSync(join(dir, 'letters.txt'), 'a\nb\nc\n', 'utf8');
     writeFileSync(join(dir, 'nums.txt'), '1 2\n3 4\n5 6\n', 'utf8');
     writeFileSync(join(dir, 'dups.txt'), 'aaa\naaa\nbbb\n', 'utf8');
     mkdirSync(join(dir, 'sub'));
@@ -162,6 +169,18 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect(r.stdout.split(/\r?\n/).filter(Boolean)).toEqual(['apple', 'apple pie']);
   });
 
+  it('printf-style stdin is re-split so grep matches a later line', async () => {
+    const r = await run("printf 'a\\nb\\n' | grep b");
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.trim()).toBe('b');
+  });
+
+  it('echo hi | grep hi still matches a single line without embedded newlines', async () => {
+    const r = await run('echo hi | grep hi');
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.trim()).toBe('hi');
+  });
+
   it('pipeline exit status comes from the last stage (pipefail off)', async () => {
     expect((await run('false | true')).exitCode).toBe(0);
     expect((await run('true | false')).exitCode).toBe(1);
@@ -207,6 +226,24 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect((await run('wc -l < fruits.txt')).stdout.trim()).toBe('4');
   });
 
+  it('head --lines=-N / --bytes=-N print all but last N (GNU)', async () => {
+    const droppedLine = await run('head --lines=-1 fruits.txt');
+    expect(droppedLine.exitCode).toBe(0);
+    expect(droppedLine.stdout.split(/\r?\n/).filter(Boolean)).toEqual([
+      'apple',
+      'Banana',
+      'apple pie',
+    ]);
+
+    writeFileSync(join(dir, 'head-bytes.txt'), 'abc', 'utf8');
+    const droppedByte = await run('head --bytes=-1 head-bytes.txt');
+    expect(droppedByte.exitCode).toBe(0);
+    expect(droppedByte.stdout).toBe('ab');
+
+    expect((await run('head --bytes=2 head-bytes.txt')).stdout).toBe('ab');
+    expect((await run('head --lines=1 fruits.txt')).stdout.trim()).toBe('apple');
+  });
+
   it('grep -m1 stops after the first match', async () => {
     const r = await run('grep -m1 apple fruits.txt');
     expect(r.exitCode).toBe(0);
@@ -216,6 +253,28 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     const viaE = await run('grep -e apple fruits.txt');
     expect(viaE.exitCode).toBe(0);
     expect(viaE.stdout.trim().split(/\r?\n/)).toEqual(['apple', 'apple pie']);
+  });
+
+  it('grep -e a -e c OR-accumulates patterns', async () => {
+    const r = await run('grep -e a -e c letters.txt');
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.trim().split(/\r?\n/)).toEqual(['a', 'c']);
+    expect(r.stdout).not.toContain('b');
+  });
+
+  it('grep --regexp repeats OR-accumulate', async () => {
+    const spaced = await run('grep --regexp a --regexp c letters.txt');
+    expect(spaced.exitCode).toBe(0);
+    expect(spaced.stdout.trim().split(/\r?\n/)).toEqual(['a', 'c']);
+    const equals = await run('grep --regexp=a --regexp=c letters.txt');
+    expect(equals.exitCode).toBe(0);
+    expect(equals.stdout.trim().split(/\r?\n/)).toEqual(['a', 'c']);
+  });
+
+  it('grep -v -e a -e c inverts the combined OR', async () => {
+    const r = await run('grep -v -e a -e c letters.txt');
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.trim().split(/\r?\n/)).toEqual(['b']);
   });
 
   it('du --max-depth=0 prints only the root', async () => {
@@ -247,6 +306,35 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     const silenced = await run('cat missing.txt 2>/dev/null; echo OK');
     expect(silenced.stderr).toBe('');
     expect(silenced.stdout.trim()).toBe('OK');
+  });
+
+  it('>/dev/null discards stdout', async () => {
+    const r = await run('echo hi >/dev/null');
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe('');
+    // Windows treats NUL as a DOS device; existsSync(dir/NUL) is not a file check.
+    expect(existsSync(join(dir, 'null'))).toBe(false);
+  });
+
+  it('>/dev/null last-wins against a later file redirect', async () => {
+    const lastFile = await run('echo hi >/dev/null > lastwins.txt');
+    expect(lastFile.stdout).toBe('');
+    expect(readFileSync(join(dir, 'lastwins.txt'), 'utf8').trim()).toBe('hi');
+    const lastNull = await run('echo hi > lastnull.txt >/dev/null');
+    expect(lastNull.stdout).toBe('');
+    expect(readFileSync(join(dir, 'lastnull.txt'), 'utf8')).toBe('');
+  });
+
+  it('&>/dev/null discards stdout and stderr', async () => {
+    const r = await run('cat missing.txt &>/dev/null; echo OK');
+    expect(r.stdout.trim()).toBe('OK');
+    expect(r.stderr).toBe('');
+  });
+
+  it('middle-stage < overrides the pipe as that stage stdin', async () => {
+    const r = await run('printf x | cat < fruits.txt | head -1');
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.trim()).toBe('apple');
   });
 
   it(
@@ -1023,6 +1111,29 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect(r.stdout.trim()).toMatch(/^v\d+\.\d+/);
   });
 
+  it('native argv keeps empty strings, spaces, and embedded quotes', async () => {
+    // A script file (not `node -e`) so user args are always argv.slice(2) on
+    // Windows too — `node -e` omits `-e` from process.argv here.
+    const dump = 'node dump-argv.js';
+    const empty = await run(dump + " '' 'a b'");
+    expect(empty.exitCode).toBe(0);
+    expect(JSON.parse(empty.stdout.trim())).toEqual(['', 'a b']);
+    const quoted = await run(dump + " 'a\"b'");
+    expect(quoted.exitCode).toBe(0);
+    expect(JSON.parse(quoted.stdout.trim())).toEqual(['a"b']);
+    const dashed = await run(dump + ' --foo');
+    expect(JSON.parse(dashed.stdout.trim())).toEqual(['--foo']);
+    const none = await run(dump);
+    expect(none.exitCode).toBe(0);
+    expect(JSON.parse(none.stdout.trim())).toEqual([]);
+  });
+
+  it('native .cmd shims run through cmd.exe', async () => {
+    const r = await run('./hit.cmd');
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.trim()).toBe('CMDHIT');
+  });
+
   it('xargs runs native commands', async () => {
     const r = await run("printf -- '--version\\n' | xargs node");
     expect(r.stdout.trim()).toMatch(/^v\d+\.\d+/);
@@ -1346,6 +1457,65 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
       await extra.dispose();
     }
   }, 30000);
+
+  it('hard links look like regular files; symbolic links still look like links', async () => {
+    writeFileSync(join(dir, 'hl-src.txt'), 'hello\n', 'utf8');
+    const hl = await run('ln hl-src.txt hl-dst.txt');
+    expect(hl.exitCode).toBe(0);
+    expect(existsSync(join(dir, 'hl-dst.txt'))).toBe(true);
+
+    const lsLong = await run('ls -l hl-dst.txt');
+    expect(lsLong.exitCode).toBe(0);
+    expect(lsLong.stdout).toMatch(/-rw-r--r--.*hl-dst\.txt/);
+    expect(lsLong.stdout).not.toMatch(/^l/m);
+
+    const lsClass = await run('ls -F hl-dst.txt');
+    expect(lsClass.exitCode).toBe(0);
+    expect(lsClass.stdout.trim()).not.toMatch(/@$/);
+
+    const st = await run('stat -c %F hl-dst.txt');
+    expect(st.exitCode).toBe(0);
+    expect(st.stdout.trim()).toBe('regular file');
+
+    const fl = await run('file hl-dst.txt');
+    expect(fl.stdout).not.toMatch(/symbolic link/);
+
+    const found = await run("find . -name hl-dst.txt -type l");
+    expect(found.stdout.trim()).toBe('');
+
+    const rl = await run('readlink hl-dst.txt');
+    expect(rl.exitCode).toBe(1);
+    expect(rl.stdout.trim()).toBe('');
+
+    const sl = await run('ln -s hl-src.txt sl-dst.txt');
+    const sls = existsSync(join(dir, 'sl-dst.txt')) ? await run('ls -l sl-dst.txt') : sl;
+    if (sl.exitCode !== 0 || !existsSync(join(dir, 'sl-dst.txt')) || !/^l/m.test(sls.stdout)) {
+      // SymbolicLink creation needs SeCreateSymbolicLinkPrivilege (Admin /
+      // Developer Mode). Some hosts still create a regular file; skip that half.
+      expect(sl.exitCode !== 0 || sl.stderr.length > 0 || existsSync(join(dir, 'sl-dst.txt'))).toBe(
+        true,
+      );
+      return;
+    }
+
+    expect(sls.stdout).toMatch(/^l/m);
+
+    const slF = await run('ls -F sl-dst.txt');
+    expect(slF.stdout.trim()).toMatch(/@$/);
+
+    const slStat = await run('stat -c %F sl-dst.txt');
+    expect(slStat.stdout.trim()).toBe('symbolic link');
+
+    const slFile = await run('file sl-dst.txt');
+    expect(slFile.stdout).toMatch(/symbolic link to/);
+
+    const slFind = await run("find . -name sl-dst.txt -type l");
+    expect(slFind.stdout.replaceAll('\\', '/')).toMatch(/sl-dst\.txt/);
+
+    const slRl = await run('readlink sl-dst.txt');
+    expect(slRl.exitCode).toBe(0);
+    expect(slRl.stdout).toMatch(/hl-src/);
+  });
 
   it('concurrent reset leaves one usable session', async () => {
     const extra = new FauxnixSession();

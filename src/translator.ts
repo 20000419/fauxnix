@@ -3,6 +3,7 @@ import {
   CommandList,
   FauxnixParseError,
   Redirect,
+  ShellCommand,
   SimpleCommand,
   IfCommand,
   ForCommand,
@@ -433,7 +434,6 @@ export function translateSimple(
 
   let body: string;
   if (nameSplat) {
-    const invoke = '& $fx_cmd @fx_na';
     const hasAffix = !!(nameSplat.prefix || nameSplat.suffix);
     const promoted =
       cmd.args.length === 0
@@ -469,13 +469,10 @@ export function translateSimple(
       // known at compile time, so reuse translateSimple (handlers, not `&`).
       promoted ? indentBlock(promoted) : '  ',
       '} else {',
-      '  $fx_na = [object[]]@(' + argListExpr(cmd.args) + ')',
+      '  $fx_na = [object[]](' + argListExpr(cmd.args) + ')',
       '  $fx_cmd = [string]$fx_cw[0]',
-      '  if ($fx_cw.Count -gt 1) { $fx_na = @($fx_cw[1..($fx_cw.Count - 1)]) + $fx_na }',
-      '  ' +
-        (hasStdin ? '($input | ' + invoke + ')' : invoke) +
-        ' | ForEach-Object { [string]$_ }',
-      '  if ($LASTEXITCODE -gt 0) { $script:fx_exit = $LASTEXITCODE } elseif ($LASTEXITCODE -lt 0) { $script:fx_exit = 1 }',
+      '  if ($fx_cw.Count -gt 1) { $fx_na = [object[]](@($fx_cw[1..($fx_cw.Count - 1)]) + $fx_na) }',
+      '  ' + (hasStdin ? '($input | fx-native $fx_cmd $fx_na)' : 'fx-native $fx_cmd $fx_na'),
       '}',
     );
     body = emptyCmdLines.join('\n');
@@ -485,25 +482,22 @@ export function translateSimple(
       body = handler(cmd.args, { position, hasStdin });
     } else {
       // passthrough: native command (git, node, npm, python, cargo, ...)
-      // invoked with the call operator and an argv-style argument array —
-      // no string re-parsing of user text.
+      // via fx-native (Win32 command line + Process). `& name @array` on
+      // PS 5.1 drops empty argv entries and eats embedded quotes.
       const nameExpr = psStr(nameLit);
-      const invoke = '& ' + nameExpr + ' @fx_na';
+      const invoke = 'fx-native ' + nameExpr + ' $fx_na';
       body = [
-        '$fx_na = ' + argListExpr(cmd.args),
-        // feed pipeline stdin into the native process when we are a non-first stage
-        (hasStdin ? '($input | ' + invoke + ')' : invoke) + ' | ForEach-Object { [string]$_ }',
-        'if ($LASTEXITCODE -gt 0) { $script:fx_exit = $LASTEXITCODE } elseif ($LASTEXITCODE -lt 0) { $script:fx_exit = 1 }',
+        '$fx_na = [object[]](' + argListExpr(cmd.args) + ')',
+        (hasStdin ? '($input | ' + invoke + ')' : invoke),
       ].join('\n');
     }
   } else {
     // dynamic command name — evaluate it
     const nameExpr = exprOfWord(cmd.name);
-    const invoke = '& (' + nameExpr + ') @fx_na';
+    const invoke = 'fx-native (' + nameExpr + ') $fx_na';
     body = [
-      '$fx_na = ' + argListExpr(cmd.args),
-      (hasStdin ? '($input | ' + invoke + ')' : invoke) + ' | ForEach-Object { [string]$_ }',
-      'if ($LASTEXITCODE -gt 0) { $script:fx_exit = $LASTEXITCODE } elseif ($LASTEXITCODE -lt 0) { $script:fx_exit = 1 }',
+      '$fx_na = [object[]](' + argListExpr(cmd.args) + ')',
+      (hasStdin ? '($input | ' + invoke + ')' : invoke),
     ].join('\n');
   }
 
@@ -888,6 +882,20 @@ function translateFor(cmd: ForCommand): string {
   return lines.join('\n');
 }
 
+function stdinTarget(c: ShellCommand): string | null {
+  let t: string | null = null;
+  for (const r of c.redirects) {
+    if (r.op === '<') t = r.target;
+  }
+  return t;
+}
+
+function stdinReadExpr(target: string): string {
+  const n = normalizeLiteralPath(target);
+  if (n === 'NUL') return '@()';
+  return '@(fx-readlines ' + pathExpr(n) + ')';
+}
+
 export function translatePipelineBody(p: {
   commands: Array<SimpleCommand | IfCommand | ForCommand>;
 }): PipelineParts {
@@ -927,7 +935,24 @@ export function translatePipelineBody(p: {
   }
   const pipelineName = '__fx_p' + pipelineId;
   const statuses = bodies.map(() => '0').join(', ');
-  const pipelineCall = names.join(' | ');
+  const stageStdin = p.commands.map((c) => stdinTarget(c));
+  const middleStdin = stageStdin.some((t, i) => i > 0 && t !== null);
+  let pipelineInner: string;
+  if (middleStdin) {
+    // A non-first `< file` replaces the pipe as that stage's stdin. Run
+    // earlier stages anyway (they may have side effects) but do not feed
+    // their stream into the redirected stage.
+    const seq: string[] = ['    $fx_cur = @($input)'];
+    for (let i = 0; i < names.length; i++) {
+      if (stageStdin[i] && i > 0) seq.push('    $fx_cur = ' + stdinReadExpr(stageStdin[i]!));
+      if (i === names.length - 1) seq.push('    $fx_cur | ' + names[i]);
+      else seq.push('    $fx_cur = @($fx_cur | ' + names[i] + ')');
+    }
+    pipelineInner = seq.join('\n');
+  } else {
+    pipelineInner =
+      '    $input | ' + names.join(' | ');
+  }
   defs.push(
     [
       'function ' + pipelineName + ' {',
@@ -936,7 +961,7 @@ export function translatePipelineBody(p: {
       // The wrapper forwards redirect input to stage zero. With no input,
       // PowerShell still invokes a regular function once, which preserves the
       // existing no-stdin pipeline behavior on Windows PowerShell 5.1.
-      '    $input | ' + pipelineCall,
+      pipelineInner,
       '  } finally {',
       // Bash defaults to pipefail off: only the last stage controls the list
       // status used by a following && / || segment.
@@ -958,19 +983,29 @@ export interface SegmentPlan {
   script: string;
   /** Pipeline body before wrapScript — executor host mode re-wraps this. */
   body: string;
-  /** All redirects collected from this segment (executor handles them). */
+  /** Every stage's redirects, in source order — executor prep (open/fail). */
   redirects: Redirect[];
+  /** Last-stage redirects — captured stdout/stderr apply / >/dev/null. */
+  outputRedirects: Redirect[];
+  /** First-stage `<` only — FAUXNIX_STDIN_FILE feed. */
+  stdinRedirects: Redirect[];
 }
 
 export function translateCommandList(list: CommandList): SegmentPlan[] {
   const plans: SegmentPlan[] = [];
   for (const seg of list.segments) {
+    const cmds = seg.pipeline.commands;
     const redirects: Redirect[] = [];
-    for (const c of seg.pipeline.commands) redirects.push(...c.redirects);
+    for (const c of cmds) redirects.push(...c.redirects);
+    const outputRedirects = cmds.length ? cmds[cmds.length - 1].redirects.slice() : [];
+    const stdinRedirects = cmds.length
+      ? cmds[0].redirects.filter((r) => r.op === '<')
+      : [];
     const { defs, call } = translatePipelineBody(seg.pipeline);
     let body = defs ? defs + '\n' + call : call;
-    // `< file` redirects feed the pipeline via the FAUXNIX_STDIN_FILE channel
-    if (redirects.some((r) => r.op === '<')) {
+    // First-stage `< file` feeds stage zero via FAUXNIX_STDIN_FILE.
+    // Later-stage `<` is owned inside the pipeline body, not this wrapper.
+    if (stdinRedirects.length) {
       // `& { ... }` (no parens) so the scriptblock can be a non-first
       // pipeline element receiving the fed lines.
       const pipeCall = call.startsWith('(& {') ? call.slice(1, -1) : call;
@@ -982,7 +1017,14 @@ export function translateCommandList(list: CommandList): SegmentPlan[] {
         call +
         ' }';
     }
-    plans.push({ op: seg.op, script: wrapScript(body), body, redirects });
+    plans.push({
+      op: seg.op,
+      script: wrapScript(body),
+      body,
+      redirects,
+      outputRedirects,
+      stdinRedirects,
+    });
   }
   return plans;
 }
@@ -1002,6 +1044,8 @@ const WRAP_HELPER_ORDER = [
   'fx-arrput',
   'fx-arrclr',
   'fx-subget',
+  'fx-winargv',
+  'fx-native',
 ] as const;
 
 type WrapHelper = (typeof WRAP_HELPER_ORDER)[number];
@@ -1021,6 +1065,8 @@ const WRAP_HELPER_DEPS: Record<WrapHelper, WrapHelper[]> = {
   'fx-arrput': ['fx-arrdrop', 'fx-svenc'],
   'fx-arrclr': ['fx-arrdrop'],
   'fx-subget': ['fx-arrload', 'fx-ifs1'],
+  'fx-winargv': [],
+  'fx-native': ['fx-winargv'],
 };
 
 /** Helpers the body calls that wrapScript still has to emit (not already defined there). */
@@ -1300,6 +1346,114 @@ export function wrapScript(body: string, opts: WrapScriptOptions = {}): string {
       '  if (-not [int]::TryParse($ix, [ref]$i)) { return \'\' }',
       "  if ($i -lt 0 -or $i -ge $arr.Count) { return '' }",
       '  return [string]$arr[$i]',
+      '}',
+    ],
+    'fx-winargv': [
+      'function fx-winargv($argv) {',
+      // Empty [object[]] unwraps to $null on PS 5.1; @($null) is one empty arg.
+      '  if ($null -eq $argv) { $argv = @() }',
+      '  $parts = New-Object System.Collections.Generic.List[string]',
+      '  foreach ($a in @($argv)) {',
+      '    $s = [string]$a',
+      '    if ($s.Length -eq 0) { $parts.Add(\'""\'); continue }',
+      '    $need = $false',
+      '    foreach ($ch in $s.ToCharArray()) {',
+      "      if ($ch -eq ' ' -or $ch -eq ([char]9) -or $ch -eq [char]34) { $need = $true; break }",
+      '    }',
+      '    if (-not $need) { $parts.Add($s); continue }',
+      '    $sb = New-Object System.Text.StringBuilder',
+      '    [void]$sb.Append([char]34)',
+      '    $bs = 0',
+      '    foreach ($ch in $s.ToCharArray()) {',
+      '      if ($ch -eq [char]92) { $bs++ }',
+      '      elseif ($ch -eq [char]34) {',
+      '        [void]$sb.Append(([string][char]92) * (2 * $bs + 1))',
+      '        [void]$sb.Append([char]34)',
+      '        $bs = 0',
+      '      } else {',
+      '        if ($bs -gt 0) { [void]$sb.Append(([string][char]92) * $bs); $bs = 0 }',
+      '        [void]$sb.Append($ch)',
+      '      }',
+      '    }',
+      '    if ($bs -gt 0) { [void]$sb.Append(([string][char]92) * (2 * $bs)) }',
+      '    [void]$sb.Append([char]34)',
+      '    $parts.Add($sb.ToString())',
+      '  }',
+      "  return (($parts.ToArray()) -join ' ')",
+      '}',
+    ],
+    'fx-native': [
+      'function fx-native($name, $argv) {',
+      '  if ($null -eq $argv) { $argv = @() } else { $argv = [object[]]@($argv) }',
+      '  $app = Get-Command -Name $name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1',
+      '  if ($null -eq $app) {',
+      // Dynamic/splat names can resolve to PS echo/cat aliases, not an .exe.
+      // Application-first keeps node/git on the Win32 argv path; the call
+      // operator is only for names that are not executables.
+      '    $cmd = Get-Command -Name $name -ErrorAction SilentlyContinue | Select-Object -First 1',
+      '    if ($null -eq $cmd) {',
+      "      [Console]::Error.WriteLine('bash: ' + $name + ': command not found')",
+      '      $script:fx_exit = 127',
+      '      return',
+      '    }',
+      '    $ins = @($input)',
+      '    $global:LASTEXITCODE = 0',
+      '    if ($ins.Count -gt 0) { $ins | & $name @argv } else { & $name @argv }',
+      '    if ($LASTEXITCODE -gt 0) { $script:fx_exit = $LASTEXITCODE }',
+      '    return',
+      '  }',
+      '  $psi = New-Object System.Diagnostics.ProcessStartInfo',
+      '  $ext = [IO.Path]::GetExtension([string]$app.Source)',
+      // CreateProcess cannot launch .cmd/.bat with UseShellExecute=false (npm.cmd).
+      "  if ($ext -eq '.cmd' -or $ext -eq '.bat') {",
+      '    $comspec = Get-Command -Name cmd -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1',
+      '    if ($null -eq $comspec) {',
+      "      [Console]::Error.WriteLine('bash: cmd.exe: command not found')",
+      '      $script:fx_exit = 127',
+      '      return',
+      '    }',
+      '    $psi.FileName = $comspec.Source',
+      '    $fx_rest = fx-winargv $argv',
+      "    if ($fx_rest.Length -gt 0) { $psi.Arguments = '/d /s /c ' + (fx-winargv $app.Source) + ' ' + $fx_rest } else { $psi.Arguments = '/d /s /c ' + (fx-winargv $app.Source) }",
+      '  } else {',
+      '    $psi.FileName = $app.Source',
+      '    $psi.Arguments = fx-winargv $argv',
+      '  }',
+      '  $psi.UseShellExecute = $false',
+      '  $psi.RedirectStandardInput = $true',
+      '  $psi.RedirectStandardOutput = $true',
+      '  $psi.RedirectStandardError = $true',
+      '  $psi.CreateNoWindow = $true',
+      '  $psi.WorkingDirectory = [Environment]::CurrentDirectory',
+      // StreamReader.ReadToEndAsync is .NET 4.5 (PS 5.1). Start readers
+      // before writing stdin so a chatty child cannot fill the 64KB pipe.
+      "  if ($env:FAUXNIX_NATIVE_ENCODING -eq 'ansi') { $enc = [System.Text.Encoding]::GetEncoding(936) } else { $enc = New-Object System.Text.UTF8Encoding $false }",
+      '  $psi.StandardOutputEncoding = $enc',
+      '  $psi.StandardErrorEncoding = $enc',
+      '  $p = New-Object System.Diagnostics.Process',
+      '  $p.StartInfo = $psi',
+      '  [void]$p.Start()',
+      '  $outTask = $p.StandardOutput.ReadToEndAsync()',
+      '  $errTask = $p.StandardError.ReadToEndAsync()',
+      '  $ins = @($input)',
+      '  if ($ins.Count -gt 0) {',
+      '    foreach ($fx_ln in $ins) { $p.StandardInput.WriteLine([string]$fx_ln) }',
+      '  }',
+      '  $p.StandardInput.Close()',
+      '  [void][System.Threading.Tasks.Task]::WaitAll(@($outTask, $errTask))',
+      '  [void]$p.WaitForExit()',
+      '  $errt = [string]$errTask.Result',
+      '  if ($errt.Length -gt 0) { [Console]::Error.Write($errt) }',
+      '  $t = [string]$outTask.Result',
+      "  $t = $t.Replace(([string][char]13 + [string][char]10), [string][char]10).Replace([string][char]13, [string][char]10)",
+      "  if ($t -ne '') {",
+      '    $parts = @($t.Split([char]10))',
+      "    if ($parts.Count -gt 0 -and $parts[$parts.Count - 1] -eq '') { $parts = $parts[0..($parts.Count - 2)] }",
+      '    foreach ($fx_ol in $parts) { $fx_ol }',
+      '  }',
+      '  $code = [int]$p.ExitCode',
+      '  if ($code -gt 0) { $script:fx_exit = $code } elseif ($code -lt 0) { $script:fx_exit = 1 }',
+      '  try { $p.Close() } catch {}',
       '}',
     ],
   };

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { FauxnixParseError, isUnquotedLiteral, wordToString } from '../src/ast.js';
 import { parseCommand as parse, tokenize } from '../src/parser.js';
@@ -17,6 +18,7 @@ import { normalizeStderr } from '../src/errors.js';
 import { decodeHostResponse, encodeHostRequest, parseHostLine } from '../src/ps-host.js';
 import { bashToolResult, formatBashText } from '../src/mcp.js';
 import '../src/commands/install-all.js';
+import { specsMarkdown } from '../src/registry.js';
 
 /* ---------------------------- parser ---------------------------- */
 
@@ -475,6 +477,8 @@ describe('translator', () => {
     const boot = hostBootstrapScript();
     expect(boot).toContain('function fx-arrload');
     expect(boot).toContain('function fx-csub');
+    expect(boot).toContain('function fx-native');
+    expect(boot).toContain('function fx-winargv');
     expect(boot).toContain('"type":"ready"');
     expect(boot).toContain('FAUXNIX_ERR_END:');
     expect(boot).toContain('maxChunkBytes');
@@ -541,9 +545,41 @@ describe('translator', () => {
     expect(body).toContain('$script:fx_exit = 2');
   });
 
+  it('native passthrough uses fx-native instead of call-operator splat', () => {
+    const body = translateCommandList(parse('node --version'))[0].body;
+    expect(body).toContain('fx-native');
+    expect(body).not.toContain('@fx_na');
+    const script = translateCommandList(parse('node --version'))[0].script;
+    expect(script).toContain('ReadToEndAsync');
+    expect(script).not.toContain('StartNew');
+    expect(script).toContain("'.cmd'");
+    expect(script).toContain("if ($null -eq $argv) { $argv = @() }");
+  });
+
+  it('re-splits printf-style stdin for grep and other text-filters', () => {
+    const split = 'fx-splitlines $fx_it';
+    const cmds = ['grep b', "sed 's/a/A/'", "awk '{print}'", 'sort', 'uniq', 'tr a b'];
+    for (const cmd of cmds) {
+      const body = translateCommandList(parse(cmd))[0].body;
+      expect(body, cmd).toContain(split);
+      expect(body, cmd).toContain('$input | ForEach-Object { [string]$_ }');
+    }
+    const grepHi = translateCommandList(parse('grep hi'))[0].body;
+    expect(grepHi).toContain('$fx_ls = $fx_in');
+  });
+
   it('feeds stdin for < redirects', () => {
     const plan = translateCommandList(parse('wc -l < f.txt'))[0];
     expect(plan.script).toContain('fx-readlines $env:FAUXNIX_STDIN_FILE |');
+    expect(plan.stdinRedirects).toEqual([{ op: '<', target: 'f.txt' }]);
+  });
+
+  it('middle-stage < is owned by that stage, not stage zero', () => {
+    const plan = translateCommandList(parse('printf x | cat < fruits.txt | head -1'))[0];
+    expect(plan.stdinRedirects).toEqual([]);
+    expect(plan.body).toContain('fx-readlines');
+    expect(plan.body).toContain('fruits.txt');
+    expect(plan.body).not.toContain('fx-readlines $env:FAUXNIX_STDIN_FILE');
   });
 
   it('uses functions for multi-stage pipelines (PS 5.1 rule)', () => {
@@ -731,14 +767,66 @@ describe('bounded output flags (#130)', () => {
   });
 
   it('grep -e / --regexp keep the pattern (not an unknown flag)', () => {
-    expect(bodyOf("grep -e apple fruits.txt")).toContain('fx-gmatch');
-    expect(bodyOf("grep -e apple fruits.txt")).not.toContain('invalid option');
+    expect(bodyOf('grep -e apple fruits.txt')).toContain('fx-gmatch');
+    expect(bodyOf('grep -e apple fruits.txt')).toContain("$fx_pat = 'apple'");
+    expect(bodyOf('grep -e apple fruits.txt')).not.toContain('invalid option');
+    expect(bodyOf('grep --regexp apple fruits.txt')).toContain("$fx_pat = 'apple'");
+    expect(bodyOf('grep --regexp=apple fruits.txt')).toContain("$fx_pat = 'apple'");
+  });
+
+  it('grep -e / --regexp repeats OR-accumulate (#143)', () => {
+    const short = bodyOf('grep -e a -e c f');
+    expect(short).toContain("$fx_pat = '(?:a)|(?:c)'");
+    expect(short).toContain("foreach ($fx_o in (@('f')))");
+    expect(short).not.toContain("$fx_pat = 'c'");
+    expect(short).toContain('return $fx_re.IsMatch($l)');
+
+    const longs = bodyOf('grep --regexp a --regexp=c f');
+    expect(longs).toContain("$fx_pat = '(?:a)|(?:c)'");
+    expect(longs).toContain("foreach ($fx_o in (@('f')))");
+
+    const mixed = bodyOf('grep -e a --regexp=c f');
+    expect(mixed).toContain("$fx_pat = '(?:a)|(?:c)'");
+
+    const glued = bodyOf('grep -ea -ec f');
+    expect(glued).toContain("$fx_pat = '(?:a)|(?:c)'");
+  });
+
+  it('grep -v -e a -e c inverts the combined OR once (#143)', () => {
+    const body = bodyOf('grep -v -e a -e c f');
+    expect(body).toContain("$fx_pat = '(?:a)|(?:c)'");
+    expect(body).toContain('return -not ($fx_re.IsMatch($l))');
+    expect(body).not.toContain('return -not ($fx_re.IsMatch($l))\n  return -not');
+  });
+
+  it('grep with no pattern fails loud with usage', () => {
+    const body = bodyOf('grep');
+    expect(body).toContain('usage: grep [OPTION]... PATTERN [FILE]...');
+    expect(body).toContain('$script:fx_exit = 2');
+    expect(bodyOf('grep -v')).toContain('usage: grep [OPTION]... PATTERN [FILE]...');
   });
 
   it('head --lines and --lines=N set the count (not silently skipped)', () => {
     expect(bodyOf('head --lines=1 fruits.txt')).toContain('$fx_count = [int](1)');
     expect(bodyOf('head --lines 3 fruits.txt')).toContain('$fx_count = [int](3)');
     expect(bodyOf('head fruits.txt')).toContain('$fx_count = [int](10)');
+  });
+
+  it('head --lines=-N uses count+length (all but last N lines)', () => {
+    const body = bodyOf('head --lines=-1 fruits.txt');
+    expect(body).toContain('$fx_count = [int](-1)');
+    expect(body).toContain('$fx_ls.Count + $fx_count');
+  });
+
+  it('head --bytes=-N uses length + negative count (not Min/clamp-to-0 first)', () => {
+    const body = bodyOf('head --bytes=-1 fruits.txt');
+    expect(body).toContain('$fx_count = [int](-1)');
+    expect(body).toContain('$fx_txt.Length + $fx_count');
+    expect(body).toMatch(/if \(\$fx_count -lt 0\)/);
+    // old bug: Min(-N, length) then clamp $fx_len to 0 → empty output
+    expect(body).not.toMatch(
+      /\$fx_len = \[math\]::Min\(\$fx_count, \$fx_txt\.Length\)\s+if \(\$fx_len -lt 0\) \{ \$fx_len = 0 \}/,
+    );
   });
 
   it('du --max-depth filters subdirectory rows', () => {
@@ -837,6 +925,16 @@ describe('CommandSpec files leftovers (#130)', () => {
   });
 });
 
+describe('command-specs.md (#143)', () => {
+  it('equals specsMarkdown() from the live registry', () => {
+    const onDisk = readFileSync(new URL('../docs/command-specs.md', import.meta.url), 'utf8').replace(
+      /\r\n/g,
+      '\n',
+    );
+    expect(onDisk).toBe(specsMarkdown());
+  });
+});
+
 describe('find predicates (#130)', () => {
   const bodyOf = (cmd: string): string => translateCommandList(parse(cmd))[0].body;
   const throws = (cmd: string, msg: string) => {
@@ -885,6 +983,24 @@ describe('find predicates (#130)', () => {
   });
 });
 
+describe('hard links are not symlinks', () => {
+  const bodyOf = (cmd: string): string => translateCommandList(parse(cmd))[0].body;
+  const isLink = (v: string) =>
+    `${v}.LinkType -eq 'SymbolicLink' -or ${v}.LinkType -eq 'Junction'`;
+
+  it('ls/stat/file/find/readlink treat only SymbolicLink and Junction as links', () => {
+    expect(bodyOf('ls -l')).toContain(isLink('$it'));
+    expect(bodyOf('ls -F')).toContain(isLink('$it'));
+    expect(bodyOf('stat -c %F x')).toContain(isLink('$fx_it'));
+    expect(bodyOf('file x')).toContain(isLink('$fx_it'));
+    expect(bodyOf('readlink x')).toContain(isLink('$fx_it'));
+    expect(bodyOf('find . -type l')).toContain(isLink('$fx_i'));
+    expect(bodyOf('find . -type l')).not.toContain('([bool]$fx_i.LinkType)');
+    expect(bodyOf('ln a b')).toContain('HardLink');
+    expect(bodyOf('ln -s a b')).toContain('SymbolicLink');
+  });
+});
+
 describe('MCP structured results (#129)', () => {
   it('keeps whitespace-only stdout instead of collapsing to (no output)', () => {
     expect(
@@ -925,5 +1041,15 @@ describe('MCP structured results (#129)', () => {
     expect(r.structuredContent.exitCode).toBe(1);
     expect(r.content[0].text).toContain('Exit code: 1');
     expect('isError' in r && r.isError).toBeFalsy();
+  });
+});
+
+describe('cli check spawn error', () => {
+  it('runCheck attaches an error listener so missing powershell.exe prints FAILED', () => {
+    const src = readFileSync('src/cli.ts', 'utf8');
+    const check = src.slice(src.indexOf('async function runCheck'));
+    expect(check).toContain("probe.on('error'");
+    expect(check).toMatch(/FAILED to run powershell\.exe:.*e\.message/);
+    expect(check).toContain('process.exit(1)');
   });
 });

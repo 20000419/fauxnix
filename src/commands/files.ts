@@ -61,6 +61,11 @@ function psArray(words: Word[], fn: (w: Word) => string = operandExpr): string {
   return argListExpr(words, fn);
 }
 
+/** GNU-style link: symlink or Windows junction. HardLink is a regular file. */
+function psIsLink(it: string): string {
+  return `(${it}.LinkType -eq 'SymbolicLink' -or ${it}.LinkType -eq 'Junction')`;
+}
+
 /* ------------------------------------------------------------------ */
 /* ls                                                                  */
 /* ------------------------------------------------------------------ */
@@ -83,7 +88,7 @@ const ls: Handler = (args) => {
     PS_GLOB_FN,
     PS_FTIME_FN,
     'function fx-mode($it) {',
-    "  $t = '-'; if ($it.PSIsContainer) { $t = 'd' } elseif ($it.LinkType) { $t = 'l' }",
+    "  $t = '-'; if ($it.PSIsContainer) { $t = 'd' } elseif " + psIsLink('$it') + " { $t = 'l' }",
     "  if ($it.PSIsContainer) { return ($t + 'rwxr-xr-x') }",
     "  $ro = $it.Attributes.ToString().Contains('ReadOnly')",
     '  $ex = $false',
@@ -95,7 +100,9 @@ const ls: Handler = (args) => {
     'function fx-name($it) {',
     '  $n = $it.Name',
     '  if (' + (classify ? '$true' : '$false') + ') {',
-    "    if ($it.PSIsContainer) { $n = $n + '/' } elseif (@('.exe','.bat','.cmd','.com','.msi','.ps1') -contains $it.Extension.ToLower()) { $n = $n + '*' } elseif ($it.LinkType) { $n = $n + '@' }",
+    "    if ($it.PSIsContainer) { $n = $n + '/' } elseif (@('.exe','.bat','.cmd','.com','.msi','.ps1') -contains $it.Extension.ToLower()) { $n = $n + '*' } elseif " +
+      psIsLink('$it') +
+      " { $n = $n + '@' }",
     '  }',
     '  return $n',
     '}',
@@ -327,7 +334,9 @@ const readlink: Handler = (args) => {
     '  if (' + (canon ? '$true' : '$false') + ') { (Resolve-Path -LiteralPath $fx_p).ProviderPath }',
     '  else {',
     '    $fx_it = Get-Item -LiteralPath $fx_p -Force',
-    '    if ($fx_it.LinkType) { $fx_it.Target }',
+    '    if ' +
+      psIsLink('$fx_it') +
+      ' { $fx_tgt = \'\'; try { $fx_tgt = [string](@($fx_it.Target)[0]) } catch {}; $fx_tgt }',
     '    else { $script:fx_exit = 1 }',
     '  }',
     '}',
@@ -402,7 +411,9 @@ const stat: Handler = (args) => {
     '    if (-not (Test-Path -LiteralPath $fx_g)) { [Console]::Error.WriteLine("stat: cannot statx \'" + $fx_g + "\': No such file or directory"); $script:fx_exit = 1; continue }',
     '    $fx_it = Get-Item -LiteralPath $fx_g -Force',
     '    $fx_size = 0; if (-not $fx_it.PSIsContainer) { try { $fx_size = $fx_it.Length } catch {} }',
-    "    $fx_ft = 'regular file'; if ($fx_it.PSIsContainer) { $fx_ft = 'directory' } elseif ($fx_it.LinkType) { $fx_ft = 'symbolic link' }",
+    "    $fx_ft = 'regular file'; if ($fx_it.PSIsContainer) { $fx_ft = 'directory' } elseif " +
+      psIsLink('$fx_it') +
+      " { $fx_ft = 'symbolic link' }",
     "    $fx_ro = $fx_it.Attributes.ToString().Contains('ReadOnly')",
     "    $fx_mode = '0664'; if ($fx_it.PSIsContainer) { $fx_mode = '0775' } elseif ($fx_ro) { $fx_mode = '0444' }",
     "    $fx_epoch = [int](($fx_it.LastWriteTime.ToUniversalTime() - [datetime]'1970-01-01').TotalSeconds)",
@@ -433,22 +444,25 @@ const file: Handler = (args) => {
     '  foreach ($fx_g in (fx-glob $fx_f)) {',
     '    if (-not (Test-Path -LiteralPath $fx_g)) { [Console]::Error.WriteLine($fx_g + ": cannot open (No such file or directory)"); $script:fx_exit = 1; continue }',
     '    $fx_it = Get-Item -LiteralPath $fx_g -Force',
-    '    if ($fx_it.PSIsContainer) { "$fx_g: directory"; continue }',
-    '    if ($fx_it.LinkType) { "$fx_g: symbolic link to " + $fx_it.Target; continue }',
+    // `"$fx_g: …"` is a PS scope (`$fx_g:symbolic`), not "name: text".
+    '    if ($fx_it.PSIsContainer) { $fx_g + \': directory\'; continue }',
+    '    if ' +
+      psIsLink('$fx_it') +
+      ' { $fx_tgt = \'\'; try { $fx_tgt = [string](@($fx_it.Target)[0]) } catch {}; $fx_g + \': symbolic link to \' + $fx_tgt; continue }',
     '    $fx_ext = $fx_it.Extension.ToLower()',
-    '    if (@(\'.exe\', \'.dll\', \'.sys\') -contains $fx_ext) { "$fx_g: PE32+ executable (console) Intel 80386, for MS Windows"; continue }',
+    '    if (@(\'.exe\', \'.dll\', \'.sys\') -contains $fx_ext) { $fx_g + \': PE32+ executable (console) Intel 80386, for MS Windows\'; continue }',
     '    $fx_bytes = [IO.File]::ReadAllBytes($fx_g)',
-    '    if ($fx_bytes.Length -eq 0) { "$fx_g: empty"; continue }',
+    '    if ($fx_bytes.Length -eq 0) { $fx_g + \': empty\'; continue }',
     '    $fx_nul = $false',
     '    $fx_lim = [math]::Min(8192, $fx_bytes.Length)',
     '    for ($fx_i = 0; $fx_i -lt $fx_lim; $fx_i++) { if ($fx_bytes[$fx_i] -eq 0) { $fx_nul = $true; break } }',
-    '    if ($fx_nul) { "$fx_g: data"; continue }',
+    '    if ($fx_nul) { $fx_g + \': data\'; continue }',
     '    $fx_txt = fx-read $fx_g',
-    '    if ($fx_txt.StartsWith(\'#!/\')) { "$fx_g: " + $fx_txt.Split("`n")[0].Trim() + " a /bin/sh script text executable" }',
+    '    if ($fx_txt.StartsWith(\'#!/\')) { $fx_g + \': \' + $fx_txt.Split("`n")[0].Trim() + \' a /bin/sh script text executable\' }',
     '    else {',
     '      $fx_nonascii = $false',
     '      foreach ($fx_c in $fx_txt.ToCharArray()) { if ([int]$fx_c -gt 127) { $fx_nonascii = $true; break } }',
-    '      if ($fx_nonascii) { "$fx_g: UTF-8 Unicode text" } else { "$fx_g: ASCII text" }',
+    '      if ($fx_nonascii) { $fx_g + \': UTF-8 Unicode text\' } else { $fx_g + \': ASCII text\' }',
     '    }',
     '  }',
     '}',
@@ -761,7 +775,7 @@ function emitFind(n: FindNode): string {
     case 'type':
       if (n.t === 'f') return '(-not $fx_i.PSIsContainer)';
       if (n.t === 'd') return '($fx_i.PSIsContainer)';
-      return '([bool]$fx_i.LinkType)';
+      return psIsLink('$fx_i');
     case 'size':
       return '(' + n.ps + ')';
     case 'mtime':
