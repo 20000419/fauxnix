@@ -71,7 +71,7 @@ function psIsLink(it: string): string {
 /* ------------------------------------------------------------------ */
 
 const ls: Handler = (args) => {
-  const { flags, longs, values, operandWords } = parseWords(args, [], ['--format']);
+  const { flags, longs, values, operandWords } = parseWords(args, [], ['--format', '--color']);
   const long =
     flags.has('l') || longs.has('--long') || values.get('--format') === 'long';
   const all = flags.has('a') || longs.has('--all');
@@ -1083,6 +1083,8 @@ export const specs: CommandSpec[] = [
       opt('S', undefined),
       opt('r', undefined),
       opt('R', '--recursive', 'unsupported', { reason: 'recursive listing' }),
+      // GNU optional WHEN; takesValue so --color=auto is valid. No ANSI.
+      opt(undefined, '--color', 'implemented', { takesValue: true }),
     ],
     ls,
   ),
