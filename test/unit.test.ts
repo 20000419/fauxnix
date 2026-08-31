@@ -475,6 +475,8 @@ describe('translator', () => {
     const boot = hostBootstrapScript();
     expect(boot).toContain('function fx-arrload');
     expect(boot).toContain('function fx-csub');
+    expect(boot).toContain('function fx-native');
+    expect(boot).toContain('function fx-winargv');
     expect(boot).toContain('"type":"ready"');
     expect(boot).toContain('FAUXNIX_ERR_END:');
     expect(boot).toContain('maxChunkBytes');
@@ -539,6 +541,17 @@ describe('translator', () => {
     const body = translateCommandList(parse('grep token file --exclude-dir'))[0].body;
     expect(body).toContain("grep: option ''--exclude-dir'' requires an argument");
     expect(body).toContain('$script:fx_exit = 2');
+  });
+
+  it('native passthrough uses fx-native instead of call-operator splat', () => {
+    const body = translateCommandList(parse('node --version'))[0].body;
+    expect(body).toContain('fx-native');
+    expect(body).not.toContain('@fx_na');
+    const script = translateCommandList(parse('node --version'))[0].script;
+    expect(script).toContain('ReadToEndAsync');
+    expect(script).not.toContain('StartNew');
+    expect(script).toContain("'.cmd'");
+    expect(script).toContain("if ($null -eq $argv) { $argv = @() }");
   });
 
   it('feeds stdin for < redirects', () => {
