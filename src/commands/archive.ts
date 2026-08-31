@@ -253,8 +253,9 @@ const tar: Handler = (args) => {
     '  if ($fx_c) { $fx_tar = $fx_c.Source } else { $fx_tar = $null }',
     '}',
     'if ($fx_tar) {',
-    '  & $fx_tar @($fx_args) | ForEach-Object { [string]$_ }',
-    '  if ($LASTEXITCODE -gt 0) { $script:fx_exit = $LASTEXITCODE }',
+    // fx-native captures stdout as pipeline strings and sets fx_exit.
+    // [object[]]@(...) keeps an empty argv from unwrapping to $null on PS 5.1.
+    '  fx-native $fx_tar ([object[]]@($fx_args))',
     '} else {',
     "  [Console]::Error.WriteLine('tar: fauxnix: tar.exe not found (Windows 10+ ships bsdtar as tar.exe)')",
     '  $script:fx_exit = 1',
