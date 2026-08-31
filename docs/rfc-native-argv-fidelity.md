@@ -28,7 +28,9 @@ That violates fail-loud / never silently-wrong.
   throws and the wrap catch turns that into exit 1.
 - Empty `[object[]]` must not unwrap to `$null` (that became a phantom `""`
   argv). `.cmd`/`.bat` Applications go through `cmd.exe /d /s /c` because
-  `CreateProcess` cannot launch them with `UseShellExecute = $false`.
+  `CreateProcess` cannot launch them with `UseShellExecute = $false`. The
+  `/c` tail is wrapped in extra quotes (`/s` strips that pair); arguments
+  containing `& | ( ) < > ^` are CRT-quoted so cmd.exe does not split them.
 - Pipelines still work: `$input` is copied to the child stdin; stdout/stderr
   are captured without the `& @array` splat.
 - Dynamic/`[@]` command names use the same helper. If the name is not an
@@ -39,7 +41,8 @@ That violates fail-loud / never silently-wrong.
 
 ## Non-goals
 
-- Byte-identical cmd.exe metacharacter quirks beyond CRT argv.
+- Byte-identical cmd.exe quirks beyond that quoting (`%VAR%` expansion,
+  delayed-expansion `!`, nested quote encoding).
 - `pwsh` 7 `ArgumentList`.
 - Version bump / npm publish.
 
@@ -49,3 +52,4 @@ That violates fail-loud / never silently-wrong.
 empty arg, space, embedded `"`, leading `--foo`.
 (`node -e` is a bad oracle on Windows: `-e` is omitted from `process.argv`,
 so `slice(2)` drops the first user argument.)
+`.cmd` that echoes `%*`: `'a&b'` / `'--flag=a&b'` stay one argument containing `&`.
