@@ -636,53 +636,53 @@ const grep: Handler = (args) => {
     if (maxCount !== null) scan.push('    $fx_mleft--');
     if (onlyMatch && !inv) {
       if (fixed) {
+        // GNU -o: emit leftmost-longest matches in input order, not per-needle.
         if (ci) scan.push('    $lx = $fx_l.ToLower()');
         const hay = ci ? '$lx' : '$fx_l';
-        const emitFixedHits = (needle: string, indent: string) => {
-          scan.push(indent + '$p = ' + hay + '.IndexOf(' + needle + ')');
-          scan.push(indent + 'while ($p -ge 0) {');
-          scan.push(indent + '  $ok = $true');
-          if (word) {
-            scan.push(
-              indent +
-                "  if ($p -gt 0) { $c = " +
-                hay +
-                "[$p - 1]; $ok = -not ([char]::IsLetterOrDigit($c) -or $c -eq '_') }",
-            );
-            scan.push(
-              indent +
-                '  if ($ok) { $e = $p + ' +
-                needle +
-                '.Length; if ($e -lt ' +
-                hay +
-                '.Length) { $c = ' +
-                hay +
-                "[$e]; $ok = -not ([char]::IsLetterOrDigit($c) -or $c -eq '_') } }",
-            );
-            scan.push(
-              indent +
-                '  if ($ok) { fx-emitline $fx_i (' +
-                hay +
-                '.Substring($p, ' +
-                needle +
-                '.Length)) }',
-            );
-          } else {
-            scan.push(
-              indent + '  fx-emitline $fx_i (' + hay + '.Substring($p, ' + needle + '.Length))',
-            );
-          }
-          scan.push(indent + '  $p = ' + hay + '.IndexOf(' + needle + ', $p + 1)');
-          scan.push(indent + '}');
-        };
-        if (multiFixed) {
-          const arr = ci ? '$fx_needles_ll' : '$fx_needles';
-          scan.push('    foreach ($fx_needle in ' + arr + ') {');
-          emitFixedHits('$fx_needle', '      ');
-          scan.push('    }');
+        const needleArr = multiFixed
+          ? ci
+            ? '$fx_needles_ll'
+            : '$fx_needles'
+          : '@(' + (ci ? '$fx_needle_ll' : '$fx_needle') + ')';
+        scan.push('    $fx_cands = New-Object System.Collections.Generic.List[object]');
+        scan.push('    foreach ($fx_needle in ' + needleArr + ') {');
+        scan.push('      if ($fx_needle.Length -lt 1) { continue }');
+        scan.push('      $p = ' + hay + '.IndexOf($fx_needle)');
+        scan.push('      while ($p -ge 0) {');
+        if (word) {
+          scan.push('        $ok = $true');
+          scan.push(
+            "        if ($p -gt 0) { $c = " +
+              hay +
+              "[$p - 1]; $ok = -not ([char]::IsLetterOrDigit($c) -or $c -eq '_') }",
+          );
+          scan.push(
+            '        if ($ok) { $e = $p + $fx_needle.Length; if ($e -lt ' +
+              hay +
+              '.Length) { $c = ' +
+              hay +
+              "[$e]; $ok = -not ([char]::IsLetterOrDigit($c) -or $c -eq '_') } }",
+          );
+          scan.push(
+            '        if ($ok) { [void]$fx_cands.Add([pscustomobject]@{ Start = $p; Len = $fx_needle.Length }) }',
+          );
         } else {
-          emitFixedHits(ci ? '$fx_needle_ll' : '$fx_needle', '    ');
+          scan.push(
+            '        [void]$fx_cands.Add([pscustomobject]@{ Start = $p; Len = $fx_needle.Length })',
+          );
         }
+        scan.push('        $p = ' + hay + '.IndexOf($fx_needle, $p + 1)');
+        scan.push('      }');
+        scan.push('    }');
+        scan.push('    $fx_end = 0');
+        scan.push(
+          '    foreach ($fx_c in @($fx_cands | Sort-Object Start, @{ Expression = { $_.Len }; Descending = $true })) {',
+        );
+        scan.push('      if ($fx_c.Start -ge $fx_end) {');
+        scan.push('        fx-emitline $fx_i (' + hay + '.Substring($fx_c.Start, $fx_c.Len))');
+        scan.push('        $fx_end = $fx_c.Start + $fx_c.Len');
+        scan.push('      }');
+        scan.push('    }');
       } else {
         scan.push(
           '    foreach ($fx_m in $fx_re.Matches($fx_l)) { fx-emitline $fx_i $fx_m.Value }',
