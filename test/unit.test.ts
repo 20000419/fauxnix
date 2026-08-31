@@ -977,6 +977,77 @@ describe('command-specs.md (#143)', () => {
   });
 });
 
+describe('CommandSpec text-io leftovers (#143)', () => {
+  const bodyOf = (cmd: string): string => translateCommandList(parse(cmd))[0].body;
+
+  it('echo is spec\'d; unknown -z is a usage error with exit 2', () => {
+    expect(lookupSpec('echo')).toBeTruthy();
+    const z = bodyOf('echo -z');
+    expect(z).toContain("invalid option -- ''z''");
+    expect(z).toContain('$script:fx_exit = 2');
+    expect(z).toContain("Try ''echo --help'' for more information.");
+    expect(z).not.toContain('fx-write');
+  });
+
+  it('echo -n/-e/-E and bundles still compile; operands may look like flags', () => {
+    expect(bodyOf('echo -n abc')).toContain('fx-write $fx_s $fx_term');
+    expect(bodyOf('echo -n abc')).not.toContain('invalid option');
+    expect(bodyOf('echo -e x')).toContain('$fx_s = fx-unesq $fx_s');
+    expect(bodyOf('echo -ne x')).toContain('$fx_s = fx-unesq $fx_s');
+    expect(bodyOf('echo -ne x')).toContain('fx-write $fx_s $fx_term');
+    expect(bodyOf('echo -E x')).not.toContain('$fx_s = fx-unesq $fx_s');
+    expect(bodyOf('echo hello -z')).toContain('fx-write');
+    expect(bodyOf('echo hello -z')).not.toContain('invalid option');
+  });
+
+  it('printf has no option flags; --help fails loud; format operands still work', () => {
+    expect(lookupSpec('printf')).toBeTruthy();
+    const help = bodyOf('printf --help');
+    expect(help).toContain("unrecognized option ''--help''");
+    expect(help).toContain('$script:fx_exit = 2');
+    expect(help).not.toContain('fx-printf');
+    const z = bodyOf('printf -z');
+    expect(z).toContain("invalid option -- ''z''");
+    expect(bodyOf("printf '%s' -n")).toContain('fx-printf');
+    expect(bodyOf("printf '%s' -n")).not.toContain('invalid option');
+    expect(bodyOf("printf '%s=%d\\n' x 42")).toContain('fx-printf');
+  });
+
+  it('cat --no-such fails; implemented shorts still compile', () => {
+    expect(lookupSpec('cat')).toBeTruthy();
+    const unknown = bodyOf('cat --no-such');
+    expect(unknown).toContain("unrecognized option ''--no-such''");
+    expect(unknown).not.toContain('fx-read');
+    expect(bodyOf('cat -n f')).toContain("'all'");
+    expect(bodyOf('cat -n f')).not.toContain('invalid option');
+    expect(bodyOf('cat -nbsETA f')).not.toContain('invalid option');
+    expect(bodyOf('cat -nbsETA f')).toContain('fx-read');
+  });
+
+  it('tail --lines/-n/-c and legacy +/-N still compile; -f is unsupported', () => {
+    expect(lookupSpec('tail')).toBeTruthy();
+    expect(bodyOf('tail --lines=1 f')).toContain('$fx_count = [int](1)');
+    expect(bodyOf('tail -n 2 f')).toContain('$fx_count = [int](2)');
+    expect(bodyOf('tail -1 f')).toContain('$fx_count = [int](1)');
+    expect(bodyOf('tail +1 f')).toContain('$fx_from = $true');
+    expect(bodyOf('tail -c 3 f')).toContain('$fx_count = [int](3)');
+    const follow = bodyOf('tail -f f');
+    expect(follow).toContain("option ''-f'' is not supported by fauxnix");
+    expect(follow).toContain('no persistent tty');
+    expect(follow).not.toContain('fx-read');
+  });
+
+  it('wc -l/-w/-c/-m are spec\'d; find/xargs/nl stay unspec\'d', () => {
+    expect(lookupSpec('wc')).toBeTruthy();
+    expect(bodyOf('wc -lwm f')).not.toContain('invalid option');
+    expect(bodyOf('wc -lwm f')).toContain('fx-wcline');
+    expect(lookupSpec('find')).toBeUndefined();
+    expect(lookupSpec('xargs')).toBeUndefined();
+    expect(lookupSpec('nl')).toBeUndefined();
+    expect(lookupSpec('tac')).toBeUndefined();
+  });
+});
+
 describe('find predicates (#130)', () => {
   const bodyOf = (cmd: string): string => translateCommandList(parse(cmd))[0].body;
   const throws = (cmd: string, msg: string) => {
