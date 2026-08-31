@@ -58,6 +58,14 @@ Linux command line — file ops, text processing, process management, archives, 
 maps cleanly onto PowerShell + .NET. fauxnix implements that subset faithfully and *fails loudly
 and helpfully* on what it can't translate, so the agent never gets silently-wrong results.
 
+Labs now train computer-use agents on fleets of real desktops. Reporting in 2026 (*The
+Information*, widely repeated) has OpenAI buying tens of thousands of Mac mini / Mac Studio
+boxes — no screen, no keyboard — to reinforcement-learn agents that click, edit, test, and
+run bash workflows, and Anthropic renting Mac minis through AWS for the same class of work.
+That scoring environment is macOS. Windows users should not have to install a guest Unix to
+keep up: the agent keeps writing bash; fauxnix makes the Windows box answer like the box the
+agent was trained on. See [`docs/rfc-computer-use-windows.md`](docs/rfc-computer-use-windows.md).
+
 ## Install
 
 ```bash
