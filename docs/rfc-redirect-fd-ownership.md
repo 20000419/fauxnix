@@ -33,6 +33,9 @@ the caller's stdout.
   consume the previous stage's stream (the previous stage still runs).
 - `< /dev/null` on any stage is empty input. `>/dev/null` / `&>/dev/null` on
   the last stage discards captured stdout (and stderr for `&>`).
+- Successive stdout redirects last-win: `>/dev/null >file` writes the command
+  output to `file`; `>file >/dev/null` truncates `file` and discards output.
+  `2>/dev/null` must not undo a prior `>/dev/null`.
 - Non-last-stage **stdout** redirects (`echo hi >f \| cat`) stay a documented
   follow-up: they need the stage to write the file inside PowerShell instead of
   the pipe. Not silent-wrong for the audit's two cases.
@@ -46,5 +49,7 @@ the caller's stdout.
 ## Tests
 
 - `echo hi >/dev/null` → empty stdout, no `NUL` file in cwd.
+- `echo hi >/dev/null > lastwins.txt` → file contains `hi`.
+- `cat missing.txt &>/dev/null` → empty stderr.
 - `printf x | cat < fruits.txt | head -1` → `apple`.
 - Existing `> >> 2>/dev/null 2>&1` and failed-`>` order tests stay green.

@@ -257,6 +257,21 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect(existsSync(join(dir, 'null'))).toBe(false);
   });
 
+  it('>/dev/null last-wins against a later file redirect', async () => {
+    const lastFile = await run('echo hi >/dev/null > lastwins.txt');
+    expect(lastFile.stdout).toBe('');
+    expect(readFileSync(join(dir, 'lastwins.txt'), 'utf8').trim()).toBe('hi');
+    const lastNull = await run('echo hi > lastnull.txt >/dev/null');
+    expect(lastNull.stdout).toBe('');
+    expect(readFileSync(join(dir, 'lastnull.txt'), 'utf8')).toBe('');
+  });
+
+  it('&>/dev/null discards stdout and stderr', async () => {
+    const r = await run('cat missing.txt &>/dev/null; echo OK');
+    expect(r.stdout.trim()).toBe('OK');
+    expect(r.stderr).toBe('');
+  });
+
   it('middle-stage < overrides the pipe as that stage stdin', async () => {
     const r = await run('printf x | cat < fruits.txt | head -1');
     expect(r.exitCode).toBe(0);
