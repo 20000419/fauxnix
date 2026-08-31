@@ -556,6 +556,23 @@ describe('translator', () => {
     expect(script).toContain("if ($null -eq $argv) { $argv = @() }");
   });
 
+  it('curl translation uses fx-native, not call-operator splat', () => {
+    const plan = translateCommandList(parse('curl -s https://example.com/x'))[0];
+    expect(plan.body).toContain('fx-native');
+    expect(plan.body).not.toContain("& 'curl.exe' @");
+    expect(plan.body.indexOf('fx-netguard')).toBeGreaterThan(-1);
+    expect(plan.body.indexOf('fx-netguard')).toBeLessThan(plan.body.indexOf('fx-native'));
+    expect(plan.script).toContain('function fx-native');
+  });
+
+  it('tar translation uses fx-native, not call-operator splat', () => {
+    const plan = translateCommandList(parse('tar -tf a.tar'))[0];
+    expect(plan.body).toContain('fx-native');
+    expect(plan.body).toContain('$env:SystemRoot\\System32\\tar.exe');
+    expect(plan.body).not.toContain('& $fx_tar @($fx_args)');
+    expect(plan.script).toContain('function fx-native');
+  });
+
   it('re-splits printf-style stdin for grep and other text-filters', () => {
     const split = 'fx-splitlines $fx_it';
     const cmds = ['grep b', "sed 's/a/A/'", "awk '{print}'", 'sort', 'uniq', 'tr a b'];
