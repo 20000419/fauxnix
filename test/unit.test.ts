@@ -885,6 +885,24 @@ describe('find predicates (#130)', () => {
   });
 });
 
+describe('hard links are not symlinks', () => {
+  const bodyOf = (cmd: string): string => translateCommandList(parse(cmd))[0].body;
+  const isLink = (v: string) =>
+    `${v}.LinkType -eq 'SymbolicLink' -or ${v}.LinkType -eq 'Junction'`;
+
+  it('ls/stat/file/find/readlink treat only SymbolicLink and Junction as links', () => {
+    expect(bodyOf('ls -l')).toContain(isLink('$it'));
+    expect(bodyOf('ls -F')).toContain(isLink('$it'));
+    expect(bodyOf('stat -c %F x')).toContain(isLink('$fx_it'));
+    expect(bodyOf('file x')).toContain(isLink('$fx_it'));
+    expect(bodyOf('readlink x')).toContain(isLink('$fx_it'));
+    expect(bodyOf('find . -type l')).toContain(isLink('$fx_i'));
+    expect(bodyOf('find . -type l')).not.toContain('([bool]$fx_i.LinkType)');
+    expect(bodyOf('ln a b')).toContain('HardLink');
+    expect(bodyOf('ln -s a b')).toContain('SymbolicLink');
+  });
+});
+
 describe('MCP structured results (#129)', () => {
   it('keeps whitespace-only stdout instead of collapsing to (no output)', () => {
     expect(
