@@ -31,6 +31,7 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
       'utf8',
     );
     writeFileSync(join(dir, 'hit.cmd'), '@echo off\r\necho CMDHIT\r\n');
+    writeFileSync(join(dir, 'dump-args.cmd'), '@echo off\r\necho ARGS:%*\r\necho DONE\r\n');
     writeFileSync(join(dir, 'letters.txt'), 'a\nb\nc\n', 'utf8');
     writeFileSync(join(dir, 'nums.txt'), '1 2\n3 4\n5 6\n', 'utf8');
     writeFileSync(join(dir, 'dups.txt'), 'aaa\naaa\nbbb\n', 'utf8');
@@ -1146,6 +1147,22 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     const r = await run('./hit.cmd');
     expect(r.exitCode).toBe(0);
     expect(r.stdout.trim()).toBe('CMDHIT');
+  });
+
+  it('native .cmd args keep cmd metacharacters without splitting', async () => {
+    const amp = await run("./dump-args.cmd 'a&b'");
+    expect(amp.exitCode).toBe(0);
+    expect(amp.stdout).toContain('a&b');
+    expect(amp.stdout).toContain('DONE');
+    const flag = await run("./dump-args.cmd '--flag=a&b'");
+    expect(flag.exitCode).toBe(0);
+    expect(flag.stdout).toContain('--flag=a&b');
+    expect(flag.stdout).toContain('DONE');
+    const inject = await run("./dump-args.cmd 'a&echo INJECTED'");
+    expect(inject.exitCode).toBe(0);
+    expect(inject.stdout).toContain('a&echo INJECTED');
+    expect(inject.stdout).toContain('DONE');
+    expect(inject.stdout).not.toMatch(/^INJECTED$/m);
   });
 
   it('xargs runs native commands', async () => {
