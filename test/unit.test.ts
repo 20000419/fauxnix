@@ -14,7 +14,11 @@ import {
 } from '../src/translator.js';
 import { listCommandsJson, lookup, lookupSpec, parseWords, psStr } from '../src/registry.js';
 import { decodeOutput, encodeCommand, normalizeHostNewlines } from '../src/encoding.js';
-import { normalizeStderr } from '../src/errors.js';
+import {
+  normalizeStderr,
+  PYTHON3_WINDOWS_HINT,
+  SH_SCRIPT_WINDOWS_HINT,
+} from '../src/errors.js';
 import { decodeHostResponse, encodeHostRequest, parseHostLine } from '../src/ps-host.js';
 import { bashToolResult, formatBashText } from '../src/mcp.js';
 import '../src/commands/install-all.js';
@@ -556,6 +560,32 @@ describe('translator', () => {
     expect(script).toContain("if ($null -eq $argv) { $argv = @() }");
   });
 
+  it('python3 --version fx-native miss hints python/py and exits 127 (no alias)', () => {
+    const plan = translateCommandList(parse('python3 --version'))[0];
+    expect(plan.body).toContain("fx-native 'python3' $fx_na");
+    expect(plan.body).not.toContain("fx-native 'python' $fx_na");
+    expect(plan.script).toContain("if ($fx_n -eq 'python3' -or $fx_n -eq 'python3.exe')");
+    expect(plan.script).toContain(PYTHON3_WINDOWS_HINT);
+    expect(plan.script).toContain('$script:fx_exit = 127');
+    const exe = translateCommandList(parse('python3.exe --version'))[0];
+    expect(exe.body).toContain("fx-native 'python3.exe' $fx_na");
+    expect(exe.script).toContain(PYTHON3_WINDOWS_HINT);
+  });
+
+  it('foo.sh fx-native miss includes the .sh Windows hint and 127', () => {
+    const plan = translateCommandList(parse('foo.sh'))[0];
+    expect(plan.body).toContain("fx-native 'foo.sh' $fx_na");
+    expect(plan.script).toContain("$fx_n -like '*.sh'");
+    expect(plan.script).toContain(SH_SCRIPT_WINDOWS_HINT);
+    expect(plan.script).toContain('$script:fx_exit = 127');
+  });
+
+  it('python --version still uses fx-native (not rewritten to python3)', () => {
+    const plan = translateCommandList(parse('python --version'))[0];
+    expect(plan.body).toContain("fx-native 'python' $fx_na");
+    expect(plan.script).toContain('function fx-native');
+  });
+
   it('re-splits printf-style stdin for grep and other text-filters', () => {
     const split = 'fx-splitlines $fx_it';
     const cmds = ['grep b', "sed 's/a/A/'", "awk '{print}'", 'sort', 'uniq', 'tr a b'];
@@ -719,6 +749,15 @@ describe('normalizeStderr', () => {
   it('rewrites command-not-found (en)', () => {
     expect(normalizeStderr("The term 'foo' is not recognized as a name of a cmdlet")).toBe(
       'bash: foo: command not found',
+    );
+  });
+
+  it('appends python3 / .sh hints on not-recognized rewrites', () => {
+    expect(normalizeStderr("The term 'python3' is not recognized as a name of a cmdlet")).toBe(
+      'bash: python3: command not found' + PYTHON3_WINDOWS_HINT,
+    );
+    expect(normalizeStderr("The term 'foo.sh' is not recognized as a name of a cmdlet")).toBe(
+      'bash: foo.sh: command not found' + SH_SCRIPT_WINDOWS_HINT,
     );
   });
 
@@ -980,6 +1019,23 @@ describe('find predicates (#130)', () => {
     throws('find . -o -name a', "find: invalid expression; you have used a binary operator '-o' with nothing before it.");
     throws('find . -name a -o', "find: expected an expression after '-o'");
     throws("find . -name '*.ts' extra", "find: paths must precede expression: 'extra'");
+  });
+
+  it('find -exec fails loud with -delete / grep -r, not xargs rm', () => {
+    const body = bodyOf("find . -name '*.log' -exec rm {} +");
+    expect(body).toContain('-exec is not supported by fauxnix');
+    expect(body).toContain('-delete');
+    expect(body).toContain('grep -r');
+    expect(body).not.toContain('xargs rm');
+    expect(body).toContain('$script:fx_exit = 1');
+  });
+});
+
+describe('xargs -0', () => {
+  it('fails loud instead of silently ignoring -0', () => {
+    const body = translateCommandList(parse('xargs -0 rm'))[0].body;
+    expect(body).toContain('xargs: -0 is not supported by fauxnix');
+    expect(body).toContain('$script:fx_exit = 1');
   });
 });
 

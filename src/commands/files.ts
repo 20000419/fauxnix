@@ -803,7 +803,9 @@ const find: Handler = (args) => {
   if (preds.includes('-exec') || preds.includes('-execdir')) {
     return (
       '[Console]::Error.WriteLine(' +
-      psStr('find: -exec is not supported by fauxnix; pipe into the command instead (e.g. `find . -name "*.log" | xargs rm`)') +
+      psStr(
+        'find: -exec is not supported by fauxnix; use `find . -name "*.log" -delete` or grep -r instead',
+      ) +
       '); $script:fx_exit = 1'
     );
   }

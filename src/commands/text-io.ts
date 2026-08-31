@@ -1244,7 +1244,9 @@ const xargs: Handler = (args) => {
         const ch = body[c];
         if (ch === 'r') noRunIfEmpty = true;
         else if (ch === 't') trace = true;
-        else if (ch === 'n' || ch === 'I' || ch === 'L') {
+        else if (ch === '0') {
+          return psErrExpr(psStr('xargs: -0 is not supported by fauxnix'));
+        } else if (ch === 'n' || ch === 'I' || ch === 'L') {
           const restv = body.slice(c + 1);
           let val: string;
           if (restv) val = restv;
