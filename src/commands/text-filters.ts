@@ -134,6 +134,50 @@ function collectLongValues(args: Word[], names: string[]): LongOptionValue[] {
   return out;
 }
 
+/**
+ * Collect EVERY value of a short option and its long aliases, in argv order.
+ * parseWords keeps only the last; grep -e/--regexp must OR-accumulate.
+ * Handles -e PAT, -ePAT, -ie PAT (bundled), --regexp PAT, --regexp=PAT.
+ */
+function collectRepeatOptionValues(args: Word[], short: string, longs: string[]): string[] {
+  const out: string[] = [];
+  let onlyOps = false;
+  for (let i = 0; i < args.length; i++) {
+    const t = wordToString(args[i]);
+    if (t === '--') {
+      onlyOps = true;
+      continue;
+    }
+    if (onlyOps) continue;
+    if (t.startsWith('--')) {
+      const eq = t.indexOf('=');
+      const name = eq >= 0 ? t.slice(0, eq) : t;
+      if (!longs.includes(name)) continue;
+      if (eq >= 0) {
+        out.push(t.slice(eq + 1));
+      } else if (i + 1 < args.length) {
+        out.push(wordToString(args[i + 1]));
+        i++;
+      }
+      continue;
+    }
+    if (!(t.startsWith('-') && t.length > 1 && !/^-?\d/.test(t.slice(1, 2)))) continue;
+    const body = t.slice(1);
+    for (let c = 0; c < body.length; c++) {
+      if (body[c] !== short) continue;
+      const rest = body.slice(c + 1);
+      if (rest) {
+        out.push(rest);
+      } else if (i + 1 < args.length) {
+        out.push(wordToString(args[i + 1]));
+        i++;
+      }
+      break;
+    }
+  }
+  return out;
+}
+
 /** Build the "collect file operands through fx-glob" PS prologue. */
 function psCollectSources(
   filesExpr: string,
@@ -331,29 +375,47 @@ const grep: Handler = (args) => {
   const ctxA = Math.max(toInt(values.get('-A')), toInt(values.get('-C')));
   const ctxB = Math.max(toInt(values.get('-B')), toInt(values.get('-C')));
 
-  const ePat = values.get('-e') ?? values.get('--regexp');
-  if (ePat === undefined && operandWords.length === 0) {
+  const regexpPats = collectRepeatOptionValues(args, 'e', ['--regexp']);
+  if (regexpPats.length === 0 && operandWords.length === 0) {
     return (
       "[Console]::Error.WriteLine('usage: grep [OPTION]... PATTERN [FILE]...'); $script:fx_exit = 2"
     );
   }
-  const patternWord: Word =
-    ePat !== undefined ? [{ kind: 'Text', text: ePat }] : operandWords[0];
-  const fileWords = ePat !== undefined ? operandWords : operandWords.slice(1);
-  const patLit = literalOfWord(patternWord);
-  let patExpr: string;
-  if (fixed || patLit === null) {
-    patExpr = textExpr(patternWord);
-  } else {
-    patExpr = psStr(ere ? ereToDotNet(patLit) : breToDotNet(patLit));
+  const fileWords = regexpPats.length > 0 ? operandWords : operandWords.slice(1);
+  const multiFixed = fixed && regexpPats.length > 1;
+  let patExpr = "''";
+  if (!multiFixed) {
+    if (regexpPats.length > 1) {
+      patExpr = psStr(
+        regexpPats.map((p) => '(?:' + (ere ? ereToDotNet(p) : breToDotNet(p)) + ')').join('|'),
+      );
+    } else {
+      const patternWord: Word =
+        regexpPats.length === 1 ? [{ kind: 'Text', text: regexpPats[0] }] : operandWords[0];
+      const patLit = literalOfWord(patternWord);
+      if (fixed || patLit === null) {
+        patExpr = textExpr(patternWord);
+      } else {
+        patExpr = psStr(ere ? ereToDotNet(patLit) : breToDotNet(patLit));
+      }
+    }
   }
 
   const lines: string[] = [PS_READTEXT_FN, PS_SPLITLINES_FN];
 
   // --- pattern objects -------------------------------------------------
   if (fixed) {
-    lines.push('$fx_needle = ' + patExpr);
-    if (ci) lines.push('$fx_needle_ll = $fx_needle.ToLower()');
+    if (multiFixed) {
+      lines.push(
+        '$fx_needles = @(' +
+          regexpPats.map((p) => textExpr([{ kind: 'Text', text: p }])).join(', ') +
+          ')',
+      );
+      if (ci) lines.push('$fx_needles_ll = @($fx_needles | ForEach-Object { $_.ToLower() })');
+    } else {
+      lines.push('$fx_needle = ' + patExpr);
+      if (ci) lines.push('$fx_needle_ll = $fx_needle.ToLower()');
+    }
   } else {
     lines.push('$fx_pat = ' + patExpr);
     if (word) lines.push("$fx_pat = '(?<!\\w)(?:' + $fx_pat + ')(?!\\w)'");
@@ -364,24 +426,50 @@ const grep: Handler = (args) => {
     );
   }
 
-  // --- fx-gmatch: line test (-v applied) -------------------------------
+  // --- fx-gmatch: line test (-v applied once to the combined OR) --------
   lines.push('function fx-gmatch($l) {');
   if (fixed) {
     if (word) {
       if (ci) lines.push('  $lx = $l.ToLower()');
       const hay = ci ? '$lx' : '$l';
-      const needle = ci ? '$fx_needle_ll' : '$fx_needle';
-      lines.push('  $p = ' + hay + '.IndexOf(' + needle + ')');
-      lines.push('  while ($p -ge 0) {');
-      lines.push('    $ok = $true');
-      lines.push(
-        "    if ($p -gt 0) { $c = " + hay + "[$p - 1]; $ok = -not ([char]::IsLetterOrDigit($c) -or $c -eq '_') }",
-      );
-      lines.push(
-        '    if ($ok) { $e = $p + ' + needle + '.Length; if ($e -lt ' + hay + '.Length) { $c = ' + hay + "[$e]; $ok = -not ([char]::IsLetterOrDigit($c) -or $c -eq '_') } }",
-      );
-      lines.push('    if ($ok) { return ' + pb(!inv) + ' }');
-      lines.push('    $p = ' + hay + '.IndexOf(' + needle + ', $p + 1)');
+      if (multiFixed) {
+        const arr = ci ? '$fx_needles_ll' : '$fx_needles';
+        lines.push('  foreach ($fx_needle in ' + arr + ') {');
+        lines.push('    $p = ' + hay + '.IndexOf($fx_needle)');
+        lines.push('    while ($p -ge 0) {');
+        lines.push('      $ok = $true');
+        lines.push(
+          "      if ($p -gt 0) { $c = " + hay + "[$p - 1]; $ok = -not ([char]::IsLetterOrDigit($c) -or $c -eq '_') }",
+        );
+        lines.push(
+          '      if ($ok) { $e = $p + $fx_needle.Length; if ($e -lt ' + hay + '.Length) { $c = ' + hay + "[$e]; $ok = -not ([char]::IsLetterOrDigit($c) -or $c -eq '_') } }",
+        );
+        lines.push('      if ($ok) { return ' + pb(!inv) + ' }');
+        lines.push('      $p = ' + hay + '.IndexOf($fx_needle, $p + 1)');
+        lines.push('    }');
+        lines.push('  }');
+        lines.push('  return ' + pb(inv));
+      } else {
+        const needle = ci ? '$fx_needle_ll' : '$fx_needle';
+        lines.push('  $p = ' + hay + '.IndexOf(' + needle + ')');
+        lines.push('  while ($p -ge 0) {');
+        lines.push('    $ok = $true');
+        lines.push(
+          "    if ($p -gt 0) { $c = " + hay + "[$p - 1]; $ok = -not ([char]::IsLetterOrDigit($c) -or $c -eq '_') }",
+        );
+        lines.push(
+          '    if ($ok) { $e = $p + ' + needle + '.Length; if ($e -lt ' + hay + '.Length) { $c = ' + hay + "[$e]; $ok = -not ([char]::IsLetterOrDigit($c) -or $c -eq '_') } }",
+        );
+        lines.push('    if ($ok) { return ' + pb(!inv) + ' }');
+        lines.push('    $p = ' + hay + '.IndexOf(' + needle + ', $p + 1)');
+        lines.push('  }');
+        lines.push('  return ' + pb(inv));
+      }
+    } else if (multiFixed) {
+      const hay = ci ? '$l.ToLower()' : '$l';
+      const arr = ci ? '$fx_needles_ll' : '$fx_needles';
+      lines.push('  foreach ($fx_needle in ' + arr + ') {');
+      lines.push('    if (' + hay + '.Contains($fx_needle)) { return ' + pb(!inv) + ' }');
       lines.push('  }');
       lines.push('  return ' + pb(inv));
     } else {
@@ -543,33 +631,53 @@ const grep: Handler = (args) => {
     if (maxCount !== null) scan.push('    $fx_mleft--');
     if (onlyMatch && !inv) {
       if (fixed) {
-        if (ci) {
-          scan.push('    $lx = $fx_l.ToLower()');
-          scan.push('    $p = $lx.IndexOf($fx_needle_ll)');
-        } else {
-          scan.push('    $p = $fx_l.IndexOf($fx_needle)');
-        }
+        if (ci) scan.push('    $lx = $fx_l.ToLower()');
         const hay = ci ? '$lx' : '$fx_l';
-        const needle = ci ? '$fx_needle_ll' : '$fx_needle';
-        scan.push('    while ($p -ge 0) {');
-        scan.push('      $ok = $true');
-        if (word) {
-          scan.push(
-            "      if ($p -gt 0) { $c = " + hay + "[$p - 1]; $ok = -not ([char]::IsLetterOrDigit($c) -or $c -eq '_') }",
-          );
-          scan.push(
-            '      if ($ok) { $e = $p + ' + needle + '.Length; if ($e -lt ' + hay + '.Length) { $c = ' + hay + "[$e]; $ok = -not ([char]::IsLetterOrDigit($c) -or $c -eq '_') } }",
-          );
-          scan.push(
-            '      if ($ok) { fx-emitline $fx_i (' + hay + '.Substring($p, ' + needle + '.Length)) }',
-          );
+        const emitFixedHits = (needle: string, indent: string) => {
+          scan.push(indent + '$p = ' + hay + '.IndexOf(' + needle + ')');
+          scan.push(indent + 'while ($p -ge 0) {');
+          scan.push(indent + '  $ok = $true');
+          if (word) {
+            scan.push(
+              indent +
+                "  if ($p -gt 0) { $c = " +
+                hay +
+                "[$p - 1]; $ok = -not ([char]::IsLetterOrDigit($c) -or $c -eq '_') }",
+            );
+            scan.push(
+              indent +
+                '  if ($ok) { $e = $p + ' +
+                needle +
+                '.Length; if ($e -lt ' +
+                hay +
+                '.Length) { $c = ' +
+                hay +
+                "[$e]; $ok = -not ([char]::IsLetterOrDigit($c) -or $c -eq '_') } }",
+            );
+            scan.push(
+              indent +
+                '  if ($ok) { fx-emitline $fx_i (' +
+                hay +
+                '.Substring($p, ' +
+                needle +
+                '.Length)) }',
+            );
+          } else {
+            scan.push(
+              indent + '  fx-emitline $fx_i (' + hay + '.Substring($p, ' + needle + '.Length))',
+            );
+          }
+          scan.push(indent + '  $p = ' + hay + '.IndexOf(' + needle + ', $p + 1)');
+          scan.push(indent + '}');
+        };
+        if (multiFixed) {
+          const arr = ci ? '$fx_needles_ll' : '$fx_needles';
+          scan.push('    foreach ($fx_needle in ' + arr + ') {');
+          emitFixedHits('$fx_needle', '      ');
+          scan.push('    }');
         } else {
-          scan.push(
-            '      fx-emitline $fx_i (' + hay + '.Substring($p, ' + needle + '.Length))',
-          );
+          emitFixedHits(ci ? '$fx_needle_ll' : '$fx_needle', '    ');
         }
-        scan.push('      $p = ' + hay + '.IndexOf(' + needle + ', $p + 1)');
-        scan.push('    }');
       } else {
         scan.push(
           '    foreach ($fx_m in $fx_re.Matches($fx_l)) { fx-emitline $fx_i $fx_m.Value }',
