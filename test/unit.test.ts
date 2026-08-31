@@ -544,6 +544,15 @@ describe('translator', () => {
   it('feeds stdin for < redirects', () => {
     const plan = translateCommandList(parse('wc -l < f.txt'))[0];
     expect(plan.script).toContain('fx-readlines $env:FAUXNIX_STDIN_FILE |');
+    expect(plan.stdinRedirects).toEqual([{ op: '<', target: 'f.txt' }]);
+  });
+
+  it('middle-stage < is owned by that stage, not stage zero', () => {
+    const plan = translateCommandList(parse('printf x | cat < fruits.txt | head -1'))[0];
+    expect(plan.stdinRedirects).toEqual([]);
+    expect(plan.body).toContain('fx-readlines');
+    expect(plan.body).toContain('fruits.txt');
+    expect(plan.body).not.toContain('fx-readlines $env:FAUXNIX_STDIN_FILE');
   });
 
   it('uses functions for multi-stage pipelines (PS 5.1 rule)', () => {

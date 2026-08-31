@@ -48,6 +48,12 @@ function winTarget(target: string): string {
   return p;
 }
 
+/** Windows NUL device — `NUL`, `\\.\NUL`, and `cwd\NUL` after path.resolve. */
+function isNulPath(p: string): boolean {
+  const base = p.split(/[/\\]/).pop() ?? p;
+  return /^NUL$/i.test(base);
+}
+
 interface SegmentRedirects {
   stdinFile: string | null;
   stdoutFile: string | null;
@@ -56,6 +62,7 @@ interface SegmentRedirects {
   appendStderr: boolean;
   mergeStderr: boolean;
   devNull: boolean;
+  swallowStderr: boolean;
 }
 
 /** Where a fd points during left-to-right redirect setup. */
@@ -132,49 +139,72 @@ function planRedirects(redirects: Redirect[]): SegmentRedirects {
     appendStderr: false,
     mergeStderr: false,
     devNull: false,
+    swallowStderr: false,
   };
   for (const red of redirects) {
     const target = winTarget(red.target);
     switch (red.op) {
       case '<':
-        r.stdinFile = target;
+        r.stdinFile = isNulPath(target) ? null : target;
         break;
       case '>':
       case '&>':
-        if (target === 'NUL') r.devNull = true;
-        else {
+        if (isNulPath(target)) {
+          r.devNull = true;
+          r.stdoutFile = null;
+          if (red.op === '&>') {
+            r.swallowStderr = true;
+            r.stderrFile = null;
+          }
+        } else {
+          r.devNull = false;
           r.stdoutFile = target;
           r.appendStdout = false;
-          if (red.op === '&>') r.stderrFile = target;
+          if (red.op === '&>') {
+            r.stderrFile = target;
+            r.swallowStderr = false;
+          }
         }
         break;
       case '>>':
       case '&>>':
-        if (target === 'NUL') r.devNull = true;
-        else {
+        if (isNulPath(target)) {
+          r.devNull = true;
+          r.stdoutFile = null;
+          if (red.op === '&>>') {
+            r.swallowStderr = true;
+            r.stderrFile = null;
+          }
+        } else {
+          r.devNull = false;
           r.stdoutFile = target;
           r.appendStdout = true;
           if (red.op === '&>>') {
             r.stderrFile = target;
             r.appendStderr = true;
+            r.swallowStderr = false;
           }
         }
         break;
       case '2>':
-        if (target === 'NUL') {
-          // 2>/dev/null swallows stderr only
+        if (isNulPath(target)) {
+          // stderr only — must not undo a prior >/dev/null
           r.stderrFile = null;
-          r.devNull = false;
-          (r as { swallowStderr?: boolean }).swallowStderr = true;
+          r.swallowStderr = true;
         } else {
           r.stderrFile = target;
           r.appendStderr = false;
+          r.swallowStderr = false;
         }
         break;
       case '2>>':
-        if (target !== 'NUL') {
+        if (isNulPath(target)) {
+          r.stderrFile = null;
+          r.swallowStderr = true;
+        } else {
           r.stderrFile = target;
           r.appendStderr = true;
+          r.swallowStderr = false;
         }
         break;
       case '2>&1':
@@ -370,7 +400,9 @@ async function runPlans(
       break;
     }
 
-    const red = planRedirects(plan.redirects);
+    const red = planRedirects(plan.outputRedirects);
+    const inRed = planRedirects(plan.stdinRedirects);
+    red.stdinFile = inRed.stdinFile;
     red.stdinFile = red.stdinFile ? resolveTarget(red.stdinFile) : null;
     red.stdoutFile = red.stdoutFile ? resolveTarget(red.stdoutFile) : null;
     red.stderrFile = red.stderrFile ? resolveTarget(red.stderrFile) : null;
@@ -403,6 +435,7 @@ async function runPlans(
       }
       const target = resolveTarget(winTarget(r.target));
       if (r.op === '<') {
+        if (isNulPath(target)) continue;
         if (!existsSync(target)) {
           emitPrepError('bash: ' + target + ': No such file or directory\n');
           redirectPrepFailed = true;
@@ -410,7 +443,7 @@ async function runPlans(
         }
         continue;
       }
-      if (target === 'NUL') {
+      if (isNulPath(target)) {
         if (r.op === '>' || r.op === '>>') prepStdout = { kind: 'nul' };
         else if (r.op === '2>' || r.op === '2>>') prepStderr = { kind: 'nul' };
         else if (r.op === '&>' || r.op === '&>>') {
@@ -515,8 +548,8 @@ async function runPlans(
       segErr += segOut;
       segOut = '';
     }
-    const swallowStderr = (red as { swallowStderr?: boolean }).swallowStderr;
-    if (swallowStderr) segErr = '';
+    if (red.swallowStderr) segErr = '';
+    if (red.devNull) segOut = '';
 
     // Write captured streams through the fds opened during preflight
     // (bash: the redirect refers to the open file, not the path). Reopening
