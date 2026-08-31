@@ -331,6 +331,23 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect(r.stderr).toBe('');
   });
 
+  it('2>&1 >/dev/null keeps stderr on the caller stdout snapshot', async () => {
+    const silent = await run('echo hi 2>&1 >/dev/null');
+    expect(silent.exitCode).toBe(0);
+    expect(silent.stdout).toBe('');
+    expect(silent.stderr).toBe('');
+    // 2>&1 dups stderr onto caller stdout, then >/dev/null replaces stdout only.
+    const r = await run('cat missing.txt 2>&1 >/dev/null');
+    expect(r.stdout).toMatch(/No such file or directory/);
+    expect(r.stderr).toBe('');
+  });
+
+  it('>/dev/null 2>&1 discards both streams', async () => {
+    const r = await run('cat missing.txt >/dev/null 2>&1; echo OK');
+    expect(r.stdout.trim()).toBe('OK');
+    expect(r.stderr).toBe('');
+  });
+
   it('middle-stage < overrides the pipe as that stage stdin', async () => {
     const r = await run('printf x | cat < fruits.txt | head -1');
     expect(r.exitCode).toBe(0);
@@ -943,7 +960,10 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
   it('2>&1 snapshots stdout; later > does not take the setup error', async () => {
     const r = await run('echo x 2>&1 >ok.txt >nosuch/out.txt');
     expect(r.exitCode).not.toBe(0);
-    expect(r.stderr).toMatch(/No such file or directory/);
+    // After 2>&1, fd2 is the original caller stdout; the failed `>` diagnostic
+    // is written there, not to ok.txt and not to caller stderr.
+    expect(r.stdout).toMatch(/No such file or directory/);
+    expect(r.stderr).toBe('');
     expect(existsSync(join(dir, 'ok.txt'))).toBe(true);
     expect(readFileSync(join(dir, 'ok.txt'), 'utf8')).toBe('');
   });
