@@ -334,7 +334,9 @@ const readlink: Handler = (args) => {
     '  if (' + (canon ? '$true' : '$false') + ') { (Resolve-Path -LiteralPath $fx_p).ProviderPath }',
     '  else {',
     '    $fx_it = Get-Item -LiteralPath $fx_p -Force',
-    '    if ' + psIsLink('$fx_it') + ' { $fx_it.Target }',
+    '    if ' +
+      psIsLink('$fx_it') +
+      ' { $fx_tgt = \'\'; try { $fx_tgt = [string](@($fx_it.Target)[0]) } catch {}; $fx_tgt }',
     '    else { $script:fx_exit = 1 }',
     '  }',
     '}',
@@ -443,7 +445,9 @@ const file: Handler = (args) => {
     '    if (-not (Test-Path -LiteralPath $fx_g)) { [Console]::Error.WriteLine($fx_g + ": cannot open (No such file or directory)"); $script:fx_exit = 1; continue }',
     '    $fx_it = Get-Item -LiteralPath $fx_g -Force',
     '    if ($fx_it.PSIsContainer) { "$fx_g: directory"; continue }',
-    '    if ' + psIsLink('$fx_it') + ' { "$fx_g: symbolic link to " + $fx_it.Target; continue }',
+    '    if ' +
+      psIsLink('$fx_it') +
+      ' { $fx_tgt = \'\'; try { $fx_tgt = [string](@($fx_it.Target)[0]) } catch {}; "$fx_g: symbolic link to $fx_tgt"; continue }',
     '    $fx_ext = $fx_it.Extension.ToLower()',
     '    if (@(\'.exe\', \'.dll\', \'.sys\') -contains $fx_ext) { "$fx_g: PE32+ executable (console) Intel 80386, for MS Windows"; continue }',
     '    $fx_bytes = [IO.File]::ReadAllBytes($fx_g)',
