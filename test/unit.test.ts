@@ -765,6 +765,23 @@ describe('bounded output flags (#130)', () => {
     expect(bodyOf('head fruits.txt')).toContain('$fx_count = [int](10)');
   });
 
+  it('head --lines=-N uses count+length (all but last N lines)', () => {
+    const body = bodyOf('head --lines=-1 fruits.txt');
+    expect(body).toContain('$fx_count = [int](-1)');
+    expect(body).toContain('$fx_ls.Count + $fx_count');
+  });
+
+  it('head --bytes=-N uses length + negative count (not Min/clamp-to-0 first)', () => {
+    const body = bodyOf('head --bytes=-1 fruits.txt');
+    expect(body).toContain('$fx_count = [int](-1)');
+    expect(body).toContain('$fx_txt.Length + $fx_count');
+    expect(body).toMatch(/if \(\$fx_count -lt 0\)/);
+    // old bug: Min(-N, length) then clamp $fx_len to 0 → empty output
+    expect(body).not.toMatch(
+      /\$fx_len = \[math\]::Min\(\$fx_count, \$fx_txt\.Length\)\s+if \(\$fx_len -lt 0\) \{ \$fx_len = 0 \}/,
+    );
+  });
+
   it('du --max-depth filters subdirectory rows', () => {
     expect(bodyOf('du --max-depth=0')).toContain('if ($true)');
     expect(bodyOf('du --max-depth=0')).not.toContain('$fx_ddepth');
