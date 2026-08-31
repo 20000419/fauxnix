@@ -961,3 +961,13 @@ describe('MCP structured results (#129)', () => {
     expect('isError' in r && r.isError).toBeFalsy();
   });
 });
+
+describe('cli check spawn error', () => {
+  it('runCheck attaches an error listener so missing powershell.exe prints FAILED', () => {
+    const src = readFileSync('src/cli.ts', 'utf8');
+    const check = src.slice(src.indexOf('async function runCheck'));
+    expect(check).toContain("probe.on('error'");
+    expect(check).toMatch(/FAILED to run powershell\.exe:.*e\.message/);
+    expect(check).toContain('process.exit(1)');
+  });
+});
