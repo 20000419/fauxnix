@@ -799,6 +799,33 @@ describe('bounded output flags (#130)', () => {
     expect(body).not.toContain('return -not ($fx_re.IsMatch($l))\n  return -not');
   });
 
+  it('grep -F -o with multiple -e collects matches by position then length', () => {
+    const body = bodyOf('grep -F -o -e a -e b');
+    expect(body).toContain('$fx_needles = @(');
+    expect(body).toContain('$fx_cands');
+    expect(body).toContain('Sort-Object Start');
+    expect(body).toContain('Descending = $true');
+    expect(body).toContain('$fx_c.Start -ge $fx_end');
+    expect(body).toContain('fx-emitline $fx_i ($fx_l.Substring($fx_c.Start, $fx_c.Len))');
+    expect(body).not.toMatch(/foreach \(\$fx_needle in \$fx_needles\) \{[\s\S]*fx-emitline \$fx_i \(\$fx_l\.Substring\(\$p/);
+  });
+
+  it('grep -F -o single pattern still emits via position-ordered candidates', () => {
+    const body = bodyOf('grep -F -o a f');
+    expect(body).toContain('$fx_cands');
+    expect(body).toContain('$fx_needle = ');
+    expect(body).not.toContain('$fx_needles');
+    expect(body).toContain('fx-emitline $fx_i ($fx_l.Substring($fx_c.Start, $fx_c.Len))');
+  });
+
+  it('grep -F -e a -e b without -o still ORs whole lines', () => {
+    const body = bodyOf('grep -F -e a -e b f');
+    expect(body).not.toContain('$fx_cands');
+    expect(body).toContain('$fx_needles = @(');
+    expect(body).toContain('.Contains($fx_needle)');
+    expect(body).toContain('fx-gmatch');
+  });
+
   it('grep with no pattern fails loud with usage', () => {
     const body = bodyOf('grep');
     expect(body).toContain('usage: grep [OPTION]... PATTERN [FILE]...');

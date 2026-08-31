@@ -262,6 +262,20 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect(r.stdout).not.toContain('b');
   });
 
+  it('grep -F -o -e a -e b emits matches left-to-right', async () => {
+    const r = await run("printf 'ba\\n' | grep -F -o -e a -e b");
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.trim().split(/\r?\n/)).toEqual(['b', 'a']);
+
+    const overlap = await run("printf 'aaa\\n' | grep -F -o -e a -e aa");
+    expect(overlap.exitCode).toBe(0);
+    expect(overlap.stdout.trim().split(/\r?\n/)).toEqual(['aa', 'a']);
+
+    const single = await run("printf 'ba\\n' | grep -F -o a");
+    expect(single.exitCode).toBe(0);
+    expect(single.stdout.trim()).toBe('a');
+  });
+
   it('grep --regexp repeats OR-accumulate', async () => {
     const spaced = await run('grep --regexp a --regexp c letters.txt');
     expect(spaced.exitCode).toBe(0);
