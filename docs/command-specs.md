@@ -56,6 +56,131 @@ Effects: `read`
 | `-h`, `--human-readable` | flag | implemented |
 | `-d`, `--max-depth` | required | implemented |
 
+## `ls` / `ll`
+
+Effects: `read`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-l`, `--long` | flag | implemented |
+| `--format` | required | implemented |
+| `-a`, `--all` | flag | implemented |
+| `-A`, `--almost-all` | flag | implemented |
+| `-d`, `--directory` | flag | implemented |
+| `-h`, `--human-readable` | flag | implemented |
+| `-F`, `--classify` | flag | implemented |
+| `-p` | flag | implemented |
+| `-t` | flag | implemented |
+| `-S` | flag | implemented |
+| `-r` | flag | implemented |
+| `-R`, `--recursive` | flag | unsupported (recursive listing) |
+
+## `mkdir`
+
+Effects: `write`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-p`, `--parents` | flag | implemented |
+| `-v`, `--verbose` | flag | implemented |
+
+## `rmdir`
+
+Effects: `delete`
+
+No options declared.
+
+## `mktemp`
+
+Effects: `write`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-d`, `--directory` | flag | implemented |
+
+## `ln`
+
+Effects: `read`, `write`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-s`, `--symbolic` | flag | implemented |
+
+## `readlink`
+
+Effects: `read`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-f`, `--canonicalize` | flag | implemented |
+
+## `realpath`
+
+Effects: `read`
+
+No options declared.
+
+## `basename`
+
+Effects: `read`
+
+No options declared.
+
+## `dirname`
+
+Effects: `read`
+
+No options declared.
+
+## `stat`
+
+Effects: `read`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-c` | required | implemented |
+| `--format` | required | implemented |
+| `--printf` | required | implemented |
+
+## `file`
+
+Effects: `read`
+
+No options declared.
+
+## `df`
+
+Effects: `read`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-h`, `--human-readable` | flag | implemented |
+| `-H` | flag | implemented |
+
+## `chmod`
+
+Effects: `write`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-R`, `--recursive` | flag | unsupported (recursive chmod) |
+
+## `chown`
+
+Effects: `write`
+
+No options declared.
+
+## `diff`
+
+Effects: `read`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-q`, `--brief` | flag | implemented |
+| `-u`, `--unified` | flag | implemented |
+| `-U` | flag | implemented |
+
 ## `tee`
 
 Effects: `read`, `write`
@@ -107,4 +232,4 @@ Effects: `read`
 
 ## Unspec'd commands
 
-`.`, `:`, `[`, `[[`, `alias`, `awk`, `base64`, `basename`, `cat`, `cd`, `chmod`, `chown`, `clear`, `command`, `curl`, `cut`, `date`, `df`, `diff`, `dig`, `dirname`, `dirs`, `echo`, `egrep`, `env`, `eval`, `exit`, `export`, `false`, `file`, `find`, `free`, `groups`, `gunzip`, `gzip`, `history`, `host`, `hostname`, `id`, `ifconfig`, `ip`, `kill`, `less`, `ll`, `ln`, `ls`, `man`, `md5sum`, `mkdir`, `mktemp`, `more`, `netstat`, `nl`, `nproc`, `nslookup`, `pgrep`, `ping`, `pkill`, `popd`, `printenv`, `printf`, `ps`, `pushd`, `pwd`, `read`, `readlink`, `realpath`, `rmdir`, `sed`, `seq`, `set`, `sha1sum`, `sha256sum`, `sleep`, `sort`, `source`, `ss`, `stat`, `sudo`, `tac`, `tail`, `tar`, `test`, `timeout`, `tr`, `true`, `type`, `uname`, `uniq`, `unset`, `unzip`, `uptime`, `wc`, `wget`, `which`, `whoami`, `xargs`, `yes`, `zcat`, `zip`
+`.`, `:`, `[`, `[[`, `alias`, `awk`, `base64`, `cat`, `cd`, `clear`, `command`, `curl`, `cut`, `date`, `dig`, `dirs`, `echo`, `egrep`, `env`, `eval`, `exit`, `export`, `false`, `find`, `free`, `groups`, `gunzip`, `gzip`, `history`, `host`, `hostname`, `id`, `ifconfig`, `ip`, `kill`, `less`, `man`, `md5sum`, `more`, `netstat`, `nl`, `nproc`, `nslookup`, `pgrep`, `ping`, `pkill`, `popd`, `printenv`, `printf`, `ps`, `pushd`, `pwd`, `read`, `sed`, `seq`, `set`, `sha1sum`, `sha256sum`, `sleep`, `sort`, `source`, `ss`, `sudo`, `tac`, `tail`, `tar`, `test`, `timeout`, `tr`, `true`, `type`, `uname`, `uniq`, `unset`, `unzip`, `uptime`, `wc`, `wget`, `which`, `whoami`, `xargs`, `yes`, `zcat`, `zip`
