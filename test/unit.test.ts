@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { FauxnixParseError, isUnquotedLiteral, wordToString } from '../src/ast.js';
 import { parseCommand as parse, tokenize } from '../src/parser.js';
@@ -925,5 +926,15 @@ describe('MCP structured results (#129)', () => {
     expect(r.structuredContent.exitCode).toBe(1);
     expect(r.content[0].text).toContain('Exit code: 1');
     expect('isError' in r && r.isError).toBeFalsy();
+  });
+});
+
+describe('cli check spawn error', () => {
+  it('runCheck attaches an error listener so missing powershell.exe prints FAILED', () => {
+    const src = readFileSync('src/cli.ts', 'utf8');
+    const check = src.slice(src.indexOf('async function runCheck'));
+    expect(check).toContain("probe.on('error'");
+    expect(check).toMatch(/FAILED to run powershell\.exe:.*e\.message/);
+    expect(check).toContain('process.exit(1)');
   });
 });
