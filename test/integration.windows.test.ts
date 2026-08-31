@@ -25,6 +25,11 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
   beforeAll(async () => {
     dir = mkdtempSync(join(tmpdir(), 'fauxnix-it-'));
     writeFileSync(join(dir, 'fruits.txt'), 'apple\nBanana\napple pie\ncherry\n', 'utf8');
+    writeFileSync(
+      join(dir, 'dump-argv.js'),
+      'process.stdout.write(JSON.stringify(process.argv.slice(2)))\n',
+      'utf8',
+    );
     writeFileSync(join(dir, 'nums.txt'), '1 2\n3 4\n5 6\n', 'utf8');
     writeFileSync(join(dir, 'dups.txt'), 'aaa\naaa\nbbb\n', 'utf8');
     mkdirSync(join(dir, 'sub'));
@@ -1021,6 +1026,20 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
   it('native passthrough (node) with argv safety', async () => {
     const r = await run('node --version');
     expect(r.stdout.trim()).toMatch(/^v\d+\.\d+/);
+  });
+
+  it('native argv keeps empty strings, spaces, and embedded quotes', async () => {
+    // A script file (not `node -e`) so user args are always argv.slice(2) on
+    // Windows too — `node -e` omits `-e` from process.argv here.
+    const dump = 'node dump-argv.js';
+    const empty = await run(dump + " '' 'a b'");
+    expect(empty.exitCode).toBe(0);
+    expect(JSON.parse(empty.stdout.trim())).toEqual(['', 'a b']);
+    const quoted = await run(dump + " 'a\"b'");
+    expect(quoted.exitCode).toBe(0);
+    expect(JSON.parse(quoted.stdout.trim())).toEqual(['a"b']);
+    const dashed = await run(dump + ' --foo');
+    expect(JSON.parse(dashed.stdout.trim())).toEqual(['--foo']);
   });
 
   it('xargs runs native commands', async () => {
