@@ -995,6 +995,16 @@ describe('CommandSpec files leftovers (#130)', () => {
     expect(bodyOf('ls --recursive')).toContain('not supported by fauxnix');
   });
 
+  it('ls --color=auto is an implemented no-op; still lists; -Z still fails loud', () => {
+    const color = bodyOf('ls --color=auto');
+    expect(color).not.toContain('invalid option');
+    expect(color).not.toContain('unrecognized option');
+    expect(color).toContain('Get-ChildItem');
+    expect(color).not.toContain('\u001b');
+    expect(color).not.toContain('[0;');
+    expect(bodyOf('ls -Z')).toContain("invalid option -- ''Z''");
+  });
+
   it('chmod -R is unsupported; find stays unspec\'d so -name still compiles', () => {
     expect(bodyOf('chmod -R 644 x')).toContain('not supported by fauxnix');
     expect(bodyOf("find . -name '*.ts'")).toContain('-clike');

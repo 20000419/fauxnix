@@ -74,6 +74,7 @@ Effects: `read`
 | `-S` | flag | implemented |
 | `-r` | flag | implemented |
 | `-R`, `--recursive` | flag | unsupported (recursive listing) |
+| `--color` | required | implemented |
 
 ## `mkdir`
 
