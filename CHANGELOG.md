@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.9.3 — 2026-08-31
+
+Windows computer-use parity wave #1 (RFC #156, #158-#167 by r3wretrhy):
+
+- **Strategic RFC**: "computer-use agents are trained on Mac fleets" —
+  docs/rfc-windows-computer-use-parity.md anchors translate-don't-emulate as
+  the v1.0 narrative (#156/#158)
+- **fx-native everywhere**: curl/wget/tar/ping and xargs now launch through
+  the argv-faithful path (CRT quoting, no PS 5.1 splat) (#159/#160)
+- `2>&1 >/dev/null` keeps the already-dup'd stderr — per-fd last-wins
+  matching bash dup semantics (#164)
+- `.cmd`/`.bat` argv: cmd.exe metacharacters are quoted (#163)
+- `grep -F -o` emits matches in input order across multiple -e (#162)
+- CommandSpec: text-io family (echo/printf/cat/tail/wc…) fails loud on
+  unknown flags (#161); `ls --color` accepted as a no-op (#166)
+- command-not-found for `python3`/`.sh` rewrites carry Windows hints (#167)
+- Docs: native passthrough described as fx-native/CRT, stale argv text
+  killed (#165); blog drafts finalized in-tree
+
+251 tests.
 ## v0.9.2 — 2026-08-31
 
 The #131 audit backlog, cleared (#147-#154, by r3wretrhy):
