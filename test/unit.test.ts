@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { FauxnixParseError, isUnquotedLiteral, wordToString } from '../src/ast.js';
 import { parseCommand as parse, tokenize } from '../src/parser.js';
@@ -17,6 +18,7 @@ import { normalizeStderr } from '../src/errors.js';
 import { decodeHostResponse, encodeHostRequest, parseHostLine } from '../src/ps-host.js';
 import { bashToolResult, formatBashText } from '../src/mcp.js';
 import '../src/commands/install-all.js';
+import { specsMarkdown } from '../src/registry.js';
 
 /* ---------------------------- parser ---------------------------- */
 
@@ -856,6 +858,16 @@ describe('CommandSpec files leftovers (#130)', () => {
   it('mkdir --verbose and ln --symbolic are implemented longs', () => {
     expect(bodyOf('mkdir --verbose d')).toContain('if ($true)');
     expect(bodyOf('ln --symbolic a b')).toContain('SymbolicLink');
+  });
+});
+
+describe('command-specs.md (#143)', () => {
+  it('equals specsMarkdown() from the live registry', () => {
+    const onDisk = readFileSync(new URL('../docs/command-specs.md', import.meta.url), 'utf8').replace(
+      /\r\n/g,
+      '\n',
+    );
+    expect(onDisk).toBe(specsMarkdown());
   });
 });
 
