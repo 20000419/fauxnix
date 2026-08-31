@@ -1146,6 +1146,33 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect(r.stdout.trim()).toMatch(/^v\d+\.\d+/);
   });
 
+  it('python3 --version hints python/py when missing (no alias)', async () => {
+    const r = await run('python3 --version');
+    if (r.exitCode === 0) {
+      expect(r.stdout + r.stderr).toMatch(/Python/i);
+      return;
+    }
+    expect(r.exitCode).toBe(127);
+    expect(r.stderr).toContain('bash: python3: command not found');
+    expect(r.stderr).toContain('try `python` or `py` on Windows');
+    expect(r.stderr).not.toMatch(/Python \d/i);
+  });
+
+  it('foo.sh not-found includes the .sh native hint', async () => {
+    const r = await run('foo.sh');
+    expect(r.exitCode).toBe(127);
+    expect(r.stderr).toContain('bash: foo.sh: command not found');
+    expect(r.stderr).toContain('.sh scripts cannot run natively on Windows');
+  });
+
+  it('python --version still works via fx-native when python exists', async () => {
+    const probe = spawnSync('python', ['--version'], { encoding: 'utf8', shell: false });
+    if (probe.status !== 0) return;
+    const r = await run('python --version');
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout + r.stderr).toMatch(/Python\s+\d/);
+  });
+
   it('native argv keeps empty strings, spaces, and embedded quotes', async () => {
     // A script file (not `node -e`) so user args are always argv.slice(2) on
     // Windows too — `node -e` omits `-e` from process.argv here.

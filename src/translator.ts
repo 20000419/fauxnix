@@ -13,6 +13,7 @@ import {
 } from './ast.js';
 import { parseCommand } from './parser.js';
 import { PipelineCtx, lookup, psStr } from './registry.js';
+import { PYTHON3_WINDOWS_HINT, SH_SCRIPT_WINDOWS_HINT } from './errors.js';
 
 /* ------------------------------------------------------------------ */
 /* Variable mapping                                                    */
@@ -1394,7 +1395,14 @@ export function wrapScript(body: string, opts: WrapScriptOptions = {}): string {
       // operator is only for names that are not executables.
       '    $cmd = Get-Command -Name $name -ErrorAction SilentlyContinue | Select-Object -First 1',
       '    if ($null -eq $cmd) {',
-      "      [Console]::Error.WriteLine('bash: ' + $name + ': command not found')",
+      "      $fx_nf = 'bash: ' + $name + ': command not found'",
+      "      $fx_n = [string]$name",
+      // Hint only — never alias python3→python (wrong interpreter).
+      "      if ($fx_n -eq 'python3' -or $fx_n -eq 'python3.exe') { $fx_nf += '" +
+        PYTHON3_WINDOWS_HINT +
+        "' }",
+      "      elseif ($fx_n -like '*.sh') { $fx_nf += '" + SH_SCRIPT_WINDOWS_HINT + "' }",
+      '      [Console]::Error.WriteLine($fx_nf)',
       '      $script:fx_exit = 127',
       '      return',
       '    }',
