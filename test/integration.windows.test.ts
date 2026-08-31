@@ -1139,6 +1139,12 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect(r.stdout.trim()).toMatch(/^v\d+\.\d+/);
   });
 
+  it('xargs splits stdin words onto native argv', async () => {
+    const r = await run("printf -- 'a b\\n' | xargs node dump-argv.js");
+    expect(r.exitCode).toBe(0);
+    expect(JSON.parse(r.stdout.trim())).toEqual(['a', 'b']);
+  });
+
   it('host guard refuses loopback URLs for curl', async () => {
     const r = await run('curl -s http://127.0.0.1:9/x');
     expect(r.stderr).toContain('refused private/loopback address');

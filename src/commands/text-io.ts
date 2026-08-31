@@ -1292,12 +1292,12 @@ const xargs: Handler = (args) => {
   const n = chunkN !== null && Number.isFinite(chunkN) && chunkN > 0 ? chunkN : 0;
   const replExpr = repl !== null ? psStr(repl) : null;
 
+  // fx-native already records $script:fx_exit from ExitCode.
   const invoke = [
     '    if (' +
       pb(trace) +
       ") { [Console]::Error.WriteLine(((@($fx_cmd) + @($fx_argv)) -join ' ')) }",
-    '    & $fx_cmd @fx_argv',
-    '    if ($LASTEXITCODE -ne 0 -and $script:fx_exit -eq 0) { $script:fx_exit = $LASTEXITCODE }',
+    '    fx-native $fx_cmd $fx_argv',
   ];
 
   let dispatch: string[];
@@ -1307,7 +1307,7 @@ const xargs: Handler = (args) => {
     dispatch = [
       guard,
       '  foreach ($fx_l in $fx_args) {',
-      '    $fx_argv = @()',
+      '    $fx_argv = [object[]]@()',
       '    $fx_hit = $false',
       '    foreach ($fx_a in $fx_base) {',
       '      if ($fx_a.Contains(' + replExpr + ')) {',
@@ -1327,7 +1327,7 @@ const xargs: Handler = (args) => {
       '  $fx_i = 0',
       '  $fx_ran = $false',
       '  while ($fx_i -lt $fx_args.Count) {',
-      '    $fx_argv = @($fx_base)',
+      '    $fx_argv = [object[]]@($fx_base)',
       '    $fx_j = 0',
       '    while ($fx_j -lt ' + n + ' -and $fx_i -lt $fx_args.Count) {',
       '      $fx_argv += $fx_args[$fx_i]',
@@ -1337,28 +1337,38 @@ const xargs: Handler = (args) => {
       ...invoke,
       '  }',
       '  if (-not $fx_ran) {',
-      '    $fx_argv = @($fx_base)',
-      '    ' + invoke[0],
-      '    ' + invoke[1],
-      '    ' + invoke[2],
+      '    $fx_argv = [object[]]@($fx_base)',
+      ...invoke.map((line) => '  ' + line),
       '  }',
       '  }',
     ];
   } else {
     dispatch = [
       guard,
-      '  $fx_argv = @($fx_base) + @($fx_args)',
+      '  $fx_argv = [object[]](@($fx_base) + @($fx_args))',
       ...invoke,
       '  }',
     ];
   }
+
+  // Default GNU xargs splits on blanks; -I keeps whole lines as one item.
+  const collectArgs =
+    replExpr !== null
+      ? "$fx_args = @($fx_in | Where-Object { $_ -ne '' })"
+      : [
+          '$fx_args = @()',
+          'foreach ($fx_l in $fx_in) {',
+          "  if ($fx_l -eq '') { continue }",
+          "  $fx_args += @($fx_l -split '[ \\t]+' | Where-Object { $_ -ne '' })",
+          '}',
+        ].join('\n');
 
   return [
     PS_SPLITLINES_FN,
     STDIN_INLINES,
     '$fx_tg = ' + argListExpr(target, exprOfWord),
     "if ($fx_tg.Count -eq 0) { $fx_cmd = ''; $fx_base = @() } else { $fx_cmd = [string]$fx_tg[0]; $fx_base = $(if ($fx_tg.Count -gt 1) { @($fx_tg[1..($fx_tg.Count - 1)]) } else { @() }) }",
-    "$fx_args = @($fx_in | Where-Object { $_ -ne '' })",
+    collectArgs,
     ...dispatch,
   ].join('\n');
 };
