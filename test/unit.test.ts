@@ -541,6 +541,18 @@ describe('translator', () => {
     expect(body).toContain('$script:fx_exit = 2');
   });
 
+  it('re-splits printf-style stdin for grep and other text-filters', () => {
+    const split = 'fx-splitlines $fx_it';
+    const cmds = ['grep b', "sed 's/a/A/'", "awk '{print}'", 'sort', 'uniq', 'tr a b'];
+    for (const cmd of cmds) {
+      const body = translateCommandList(parse(cmd))[0].body;
+      expect(body, cmd).toContain(split);
+      expect(body, cmd).toContain('$input | ForEach-Object { [string]$_ }');
+    }
+    const grepHi = translateCommandList(parse('grep hi'))[0].body;
+    expect(grepHi).toContain('$fx_ls = $fx_in');
+  });
+
   it('feeds stdin for < redirects', () => {
     const plan = translateCommandList(parse('wc -l < f.txt'))[0];
     expect(plan.script).toContain('fx-readlines $env:FAUXNIX_STDIN_FILE |');
