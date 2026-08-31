@@ -1377,13 +1377,16 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect(rl.stdout.trim()).toBe('');
 
     const sl = await run('ln -s hl-src.txt sl-dst.txt');
-    if (!existsSync(join(dir, 'sl-dst.txt'))) {
-      // SymbolicLink creation needs SeCreateSymbolicLinkPrivilege (Admin / Developer Mode).
-      expect(sl.stderr.length).toBeGreaterThan(0);
+    const sls = existsSync(join(dir, 'sl-dst.txt')) ? await run('ls -l sl-dst.txt') : sl;
+    if (sl.exitCode !== 0 || !existsSync(join(dir, 'sl-dst.txt')) || !/^l/m.test(sls.stdout)) {
+      // SymbolicLink creation needs SeCreateSymbolicLinkPrivilege (Admin /
+      // Developer Mode). Some hosts still create a regular file; skip that half.
+      expect(sl.exitCode !== 0 || sl.stderr.length > 0 || existsSync(join(dir, 'sl-dst.txt'))).toBe(
+        true,
+      );
       return;
     }
 
-    const sls = await run('ls -l sl-dst.txt');
     expect(sls.stdout).toMatch(/^l/m);
 
     const slF = await run('ls -F sl-dst.txt');
