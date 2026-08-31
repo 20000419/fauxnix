@@ -95,8 +95,8 @@ fauxnix check
 fauxnix mcp
 ```
 
-Unknown commands (git, node, npm, python, cargo, gh, docker, ...) are **passed through natively**
-with argv-style quoting — no string re-parsing, no quoting bugs.
+Unknown commands (git, node, npm, python, cargo…) are passed through via Win32 argv
+(`fx-native`, CRT quoting) so empty args and embedded quotes survive. No string re-parsing.
 
 ## Use with your agent harness
 

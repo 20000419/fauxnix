@@ -53,8 +53,9 @@ errors (`cat: x: No such file or directory`, not a CategoryInfo dump),
 coreutils exit codes, per-file UTF-8/GBK sniffing (Chinese Windows' GBK
 files break every default config — ours just work), POSIX path mapping.
 
-Unknown commands (git, node, npm, python...) pass through natively with
-argv-style quoting. Unsupported bash constructs fail loudly with the
+Unknown commands (git, node, npm, python, cargo…) are passed through via Win32 argv
+(`fx-native`, CRT quoting) so empty args and embedded quotes survive. No string re-parsing.
+Unsupported bash constructs fail loudly with the
 construct named — never silently misbehave. ~105 commands translated;
 correctness is verified differentially against real Git Bash (52/53
 byte-identical on our battery; the one divergence is documented).

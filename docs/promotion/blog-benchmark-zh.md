@@ -47,7 +47,7 @@ npm install -g fauxnix-cli
 - **逐文件编码嗅探**：GBK 和 UTF-8 的中文文件 grep 都正确——这个是
   Git Bash 都做不到的（实测 GBK 文件 `grep 连接` Git Bash 0 命中、fauxnix 1）
 - 会话持久：cd/环境变量跨调用保持
-- 不认识的命令（git/node/npm）argv 透传；不支持的 bash 构造**大声报错**
+- 不认识的命令（git/node/npm）经 Win32 argv（`fx-native`，CRT quoting）透传，空参数和内嵌引号都会保留；不支持的 bash 构造**大声报错**
   并给替代方案，绝不静默出错
 - 正确性对照真实 Git Bash 差分验证：53 例中 52 例逐字一致
 
