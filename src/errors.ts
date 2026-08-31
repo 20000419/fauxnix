@@ -3,6 +3,20 @@
  * so agents can pattern-match on familiar Linux error styles.
  */
 
+/** Missing `python3` on Windows (Mac/Linux agents emit this; do not alias). */
+export const PYTHON3_WINDOWS_HINT = ' (fauxnix: try `python` or `py` on Windows)';
+
+/** `.sh` cannot be CreateProcess'd; fx-native never emits the PS not-recognized line. */
+export const SH_SCRIPT_WINDOWS_HINT = ' (fauxnix: .sh scripts cannot run natively on Windows)';
+
+function commandNotFound(name: string): string {
+  const msg = 'bash: ' + name + ': command not found';
+  const base = name.replace(/^.*[/\\]/, '');
+  if (/^python3(\.exe)?$/i.test(base)) return msg + PYTHON3_WINDOWS_HINT;
+  if (/\.sh$/i.test(name)) return msg + SH_SCRIPT_WINDOWS_HINT;
+  return msg;
+}
+
 /** Lines produced by PowerShell error formatting that bash would never show. */
 const PS_NOISE = [
   /^\s*\+ CategoryInfo\s*:/,
@@ -63,15 +77,15 @@ export function normalizeStderr(stderr: string): string {
   const out = lines.map((line) => {
     // "The term 'x' is not recognized as a name of a cmdlet, function, ..."
     let m = line.match(/^The term '(.+?)' is not recognized/);
-    if (m) return 'bash: ' + m[1] + ': command not found';
+    if (m) return commandNotFound(m[1]);
 
     // zh-CN: 无法将"x"项识别为 cmdlet、函数、脚本文件或可运行程序的名称
     m = line.match(/^无法将["'”]?([^"'”]+)["'”]?项识别为/);
-    if (m) return 'bash: ' + m[1] + ': command not found';
+    if (m) return commandNotFound(m[1]);
 
     // "x : The term 'y' is not recognized ..." (with source prefix)
     m = line.match(/^(\S+)\s*:\s*The term '(.+?)' is not recognized/);
-    if (m) return 'bash: ' + m[2] + ': command not found';
+    if (m) return commandNotFound(m[2]);
 
     // "cat : Cannot find path 'D:\x' because it does not exist."
     m = line.match(/^(\S+)\s*:\s*Cannot find path '(.+?)' because it does not exist\.?$/);
@@ -99,9 +113,9 @@ export function normalizeStderr(stderr: string): string {
     m = line.match(/^(\S+)\s*:\s*(.*)Access to the path '(.+?)' is denied\.?$/);
     if (m) return m[1].toLowerCase() + ': cannot remove \'' + m[3] + '\': Permission denied';
 
-    // helpful hint for bash scripts
+    // leftover PS not-recognized lines that the rewrites above did not catch
     if (/\.sh'?/.test(line) && /is not recognized/.test(line)) {
-      return line + ' (fauxnix: .sh scripts cannot run natively on Windows)';
+      return line + SH_SCRIPT_WINDOWS_HINT;
     }
 
     return line;

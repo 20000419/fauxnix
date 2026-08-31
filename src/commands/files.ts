@@ -71,7 +71,7 @@ function psIsLink(it: string): string {
 /* ------------------------------------------------------------------ */
 
 const ls: Handler = (args) => {
-  const { flags, longs, values, operandWords } = parseWords(args, [], ['--format']);
+  const { flags, longs, values, operandWords } = parseWords(args, [], ['--format', '--color']);
   const long =
     flags.has('l') || longs.has('--long') || values.get('--format') === 'long';
   const all = flags.has('a') || longs.has('--all');
@@ -803,7 +803,9 @@ const find: Handler = (args) => {
   if (preds.includes('-exec') || preds.includes('-execdir')) {
     return (
       '[Console]::Error.WriteLine(' +
-      psStr('find: -exec is not supported by fauxnix; pipe into the command instead (e.g. `find . -name "*.log" | xargs rm`)') +
+      psStr(
+        'find: -exec is not supported by fauxnix; use `find . -name "*.log" -delete` or grep -r instead',
+      ) +
       '); $script:fx_exit = 1'
     );
   }
@@ -1083,6 +1085,8 @@ export const specs: CommandSpec[] = [
       opt('S', undefined),
       opt('r', undefined),
       opt('R', '--recursive', 'unsupported', { reason: 'recursive listing' }),
+      // GNU optional WHEN; takesValue so --color=auto is valid. No ANSI.
+      opt(undefined, '--color', 'implemented', { takesValue: true }),
     ],
     ls,
   ),

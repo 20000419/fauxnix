@@ -13,6 +13,7 @@ import {
 } from './ast.js';
 import { parseCommand } from './parser.js';
 import { PipelineCtx, lookup, psStr } from './registry.js';
+import { PYTHON3_WINDOWS_HINT, SH_SCRIPT_WINDOWS_HINT } from './errors.js';
 
 /* ------------------------------------------------------------------ */
 /* Variable mapping                                                    */
@@ -1349,8 +1350,9 @@ export function wrapScript(body: string, opts: WrapScriptOptions = {}): string {
       '}',
     ],
     'fx-winargv': [
-      'function fx-winargv($argv) {',
+      'function fx-winargv($argv, $cmdmeta) {',
       // Empty [object[]] unwraps to $null on PS 5.1; @($null) is one empty arg.
+      // $cmdmeta: also quote & | () <> ^ so cmd.exe /c does not split the tail.
       '  if ($null -eq $argv) { $argv = @() }',
       '  $parts = New-Object System.Collections.Generic.List[string]',
       '  foreach ($a in @($argv)) {',
@@ -1359,6 +1361,7 @@ export function wrapScript(body: string, opts: WrapScriptOptions = {}): string {
       '    $need = $false',
       '    foreach ($ch in $s.ToCharArray()) {',
       "      if ($ch -eq ' ' -or $ch -eq ([char]9) -or $ch -eq [char]34) { $need = $true; break }",
+      "      if ($cmdmeta -and ($ch -eq '&' -or $ch -eq '|' -or $ch -eq '(' -or $ch -eq ')' -or $ch -eq '<' -or $ch -eq '>' -or $ch -eq '^')) { $need = $true; break }",
       '    }',
       '    if (-not $need) { $parts.Add($s); continue }',
       '    $sb = New-Object System.Text.StringBuilder',
@@ -1392,7 +1395,14 @@ export function wrapScript(body: string, opts: WrapScriptOptions = {}): string {
       // operator is only for names that are not executables.
       '    $cmd = Get-Command -Name $name -ErrorAction SilentlyContinue | Select-Object -First 1',
       '    if ($null -eq $cmd) {',
-      "      [Console]::Error.WriteLine('bash: ' + $name + ': command not found')",
+      "      $fx_nf = 'bash: ' + $name + ': command not found'",
+      "      $fx_n = [string]$name",
+      // Hint only — never alias python3→python (wrong interpreter).
+      "      if ($fx_n -eq 'python3' -or $fx_n -eq 'python3.exe') { $fx_nf += '" +
+        PYTHON3_WINDOWS_HINT +
+        "' }",
+      "      elseif ($fx_n -like '*.sh') { $fx_nf += '" + SH_SCRIPT_WINDOWS_HINT + "' }",
+      '      [Console]::Error.WriteLine($fx_nf)',
       '      $script:fx_exit = 127',
       '      return',
       '    }',
@@ -1405,6 +1415,8 @@ export function wrapScript(body: string, opts: WrapScriptOptions = {}): string {
       '  $psi = New-Object System.Diagnostics.ProcessStartInfo',
       '  $ext = [IO.Path]::GetExtension([string]$app.Source)',
       // CreateProcess cannot launch .cmd/.bat with UseShellExecute=false (npm.cmd).
+      // /s strips one outer quote pair from the /c tail; CRT-quote cmd
+      // metacharacters so `&`/`|`/`()` do not start a second command.
       "  if ($ext -eq '.cmd' -or $ext -eq '.bat') {",
       '    $comspec = Get-Command -Name cmd -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1',
       '    if ($null -eq $comspec) {',
@@ -1413,8 +1425,10 @@ export function wrapScript(body: string, opts: WrapScriptOptions = {}): string {
       '      return',
       '    }',
       '    $psi.FileName = $comspec.Source',
-      '    $fx_rest = fx-winargv $argv',
-      "    if ($fx_rest.Length -gt 0) { $psi.Arguments = '/d /s /c ' + (fx-winargv $app.Source) + ' ' + $fx_rest } else { $psi.Arguments = '/d /s /c ' + (fx-winargv $app.Source) }",
+      '    $fx_app = fx-winargv $app.Source $true',
+      '    $fx_rest = fx-winargv $argv $true',
+      "    if ($fx_rest.Length -gt 0) { $fx_tail = $fx_app + ' ' + $fx_rest } else { $fx_tail = $fx_app }",
+      '    $psi.Arguments = \'/d /s /c "\' + $fx_tail + \'"\'',
       '  } else {',
       '    $psi.FileName = $app.Source',
       '    $psi.Arguments = fx-winargv $argv',

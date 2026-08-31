@@ -14,7 +14,11 @@ import {
 } from '../src/translator.js';
 import { listCommandsJson, lookup, lookupSpec, parseWords, psStr } from '../src/registry.js';
 import { decodeOutput, encodeCommand, normalizeHostNewlines } from '../src/encoding.js';
-import { normalizeStderr } from '../src/errors.js';
+import {
+  normalizeStderr,
+  PYTHON3_WINDOWS_HINT,
+  SH_SCRIPT_WINDOWS_HINT,
+} from '../src/errors.js';
 import { decodeHostResponse, encodeHostRequest, parseHostLine } from '../src/ps-host.js';
 import { bashToolResult, formatBashText } from '../src/mcp.js';
 import '../src/commands/install-all.js';
@@ -556,6 +560,87 @@ describe('translator', () => {
     expect(script).toContain("if ($null -eq $argv) { $argv = @() }");
   });
 
+  it('curl translation uses fx-native, not call-operator splat', () => {
+    const plan = translateCommandList(parse('curl -s https://example.com/x'))[0];
+    expect(plan.body).toContain('fx-native');
+    expect(plan.body).not.toContain("& 'curl.exe' @");
+    expect(plan.body.indexOf('fx-netguard')).toBeGreaterThan(-1);
+    expect(plan.body.indexOf('fx-netguard')).toBeLessThan(plan.body.indexOf('fx-native'));
+    expect(plan.script).toContain('function fx-native');
+  });
+
+  it('tar translation uses fx-native, not call-operator splat', () => {
+    const plan = translateCommandList(parse('tar -tf a.tar'))[0];
+    expect(plan.body).toContain('fx-native');
+    expect(plan.body).toContain('$env:SystemRoot\\System32\\tar.exe');
+    expect(plan.body).not.toContain('& $fx_tar @($fx_args)');
+    expect(plan.script).toContain('function fx-native');
+  });
+
+  it('xargs native invoke uses fx-native instead of call-operator splat', () => {
+    const plan = translateCommandList(parse('xargs node'))[0];
+    expect(plan.body).toContain('fx-native $fx_cmd $fx_argv');
+    expect(plan.body).not.toContain('@fx_argv');
+    expect(plan.body).not.toContain('& $fx_cmd');
+    expect(plan.body).not.toContain('$LASTEXITCODE');
+    expect(plan.body).toContain("-split '[ \\t]+'");
+    expect(plan.script).toContain('function fx-native');
+    const n = translateCommandList(parse('xargs -n 1 node'))[0].body;
+    expect(n).toContain('fx-native $fx_cmd $fx_argv');
+    expect(n).toContain('$fx_j -lt 1');
+    const repl = translateCommandList(parse('xargs -I {} node dump-argv.js {}'))[0].body;
+    expect(repl).toContain('fx-native $fx_cmd $fx_argv');
+    expect(repl).toContain(".Contains('{}')");
+    expect(repl).not.toContain("-split '[ \\t]+'");
+    const empty = translateCommandList(parse('xargs --no-run-if-empty node'))[0].body;
+    expect(empty).toContain('$fx_args.Count -eq 0');
+    expect(empty).toContain('fx-native $fx_cmd $fx_argv');
+    const trace = translateCommandList(parse('xargs -t node'))[0].body;
+    expect(trace).toContain('[Console]::Error.WriteLine');
+    expect(trace).toContain('$true');
+    const builtin = translateCommandList(parse('xargs grep'))[0].body;
+    expect(builtin).toContain('xargs currently passes arguments to native commands');
+  });
+
+  it('quotes cmd metacharacters on the .cmd /c tail', () => {
+    const script = translateCommandList(parse('node --version'))[0].script;
+    expect(script).toContain('fx-winargv $argv $true');
+    expect(script).toContain('/d /s /c "');
+    expect(script).toContain("'&'");
+    expect(script).toContain("'|'");
+    const list = parse("./hit.cmd 'a&b'");
+    expect(list.segments).toHaveLength(1);
+    const body = translateCommandList(list)[0].body;
+    expect(body).toContain('fx-native');
+    expect(body).toContain('a&b');
+  });
+
+  it('python3 --version fx-native miss hints python/py and exits 127 (no alias)', () => {
+    const plan = translateCommandList(parse('python3 --version'))[0];
+    expect(plan.body).toContain("fx-native 'python3' $fx_na");
+    expect(plan.body).not.toContain("fx-native 'python' $fx_na");
+    expect(plan.script).toContain("if ($fx_n -eq 'python3' -or $fx_n -eq 'python3.exe')");
+    expect(plan.script).toContain(PYTHON3_WINDOWS_HINT);
+    expect(plan.script).toContain('$script:fx_exit = 127');
+    const exe = translateCommandList(parse('python3.exe --version'))[0];
+    expect(exe.body).toContain("fx-native 'python3.exe' $fx_na");
+    expect(exe.script).toContain(PYTHON3_WINDOWS_HINT);
+  });
+
+  it('foo.sh fx-native miss includes the .sh Windows hint and 127', () => {
+    const plan = translateCommandList(parse('foo.sh'))[0];
+    expect(plan.body).toContain("fx-native 'foo.sh' $fx_na");
+    expect(plan.script).toContain("$fx_n -like '*.sh'");
+    expect(plan.script).toContain(SH_SCRIPT_WINDOWS_HINT);
+    expect(plan.script).toContain('$script:fx_exit = 127');
+  });
+
+  it('python --version still uses fx-native (not rewritten to python3)', () => {
+    const plan = translateCommandList(parse('python --version'))[0];
+    expect(plan.body).toContain("fx-native 'python' $fx_na");
+    expect(plan.script).toContain('function fx-native');
+  });
+
   it('re-splits printf-style stdin for grep and other text-filters', () => {
     const split = 'fx-splitlines $fx_it';
     const cmds = ['grep b', "sed 's/a/A/'", "awk '{print}'", 'sort', 'uniq', 'tr a b'];
@@ -722,6 +807,15 @@ describe('normalizeStderr', () => {
     );
   });
 
+  it('appends python3 / .sh hints on not-recognized rewrites', () => {
+    expect(normalizeStderr("The term 'python3' is not recognized as a name of a cmdlet")).toBe(
+      'bash: python3: command not found' + PYTHON3_WINDOWS_HINT,
+    );
+    expect(normalizeStderr("The term 'foo.sh' is not recognized as a name of a cmdlet")).toBe(
+      'bash: foo.sh: command not found' + SH_SCRIPT_WINDOWS_HINT,
+    );
+  });
+
   it('rewrites command-not-found (zh-CN)', () => {
     expect(normalizeStderr('无法将"foo"项识别为 cmdlet、函数、脚本文件或可运行程序的名称')).toBe(
       'bash: foo: command not found',
@@ -797,6 +891,33 @@ describe('bounded output flags (#130)', () => {
     expect(body).toContain("$fx_pat = '(?:a)|(?:c)'");
     expect(body).toContain('return -not ($fx_re.IsMatch($l))');
     expect(body).not.toContain('return -not ($fx_re.IsMatch($l))\n  return -not');
+  });
+
+  it('grep -F -o with multiple -e collects matches by position then length', () => {
+    const body = bodyOf('grep -F -o -e a -e b');
+    expect(body).toContain('$fx_needles = @(');
+    expect(body).toContain('$fx_cands');
+    expect(body).toContain('Sort-Object Start');
+    expect(body).toContain('Descending = $true');
+    expect(body).toContain('$fx_c.Start -ge $fx_end');
+    expect(body).toContain('fx-emitline $fx_i ($fx_l.Substring($fx_c.Start, $fx_c.Len))');
+    expect(body).not.toMatch(/foreach \(\$fx_needle in \$fx_needles\) \{[\s\S]*fx-emitline \$fx_i \(\$fx_l\.Substring\(\$p/);
+  });
+
+  it('grep -F -o single pattern still emits via position-ordered candidates', () => {
+    const body = bodyOf('grep -F -o a f');
+    expect(body).toContain('$fx_cands');
+    expect(body).toContain('$fx_needle = ');
+    expect(body).not.toContain('$fx_needles');
+    expect(body).toContain('fx-emitline $fx_i ($fx_l.Substring($fx_c.Start, $fx_c.Len))');
+  });
+
+  it('grep -F -e a -e b without -o still ORs whole lines', () => {
+    const body = bodyOf('grep -F -e a -e b f');
+    expect(body).not.toContain('$fx_cands');
+    expect(body).toContain('$fx_needles = @(');
+    expect(body).toContain('.Contains($fx_needle)');
+    expect(body).toContain('fx-gmatch');
   });
 
   it('grep with no pattern fails loud with usage', () => {
@@ -913,6 +1034,16 @@ describe('CommandSpec files leftovers (#130)', () => {
     expect(bodyOf('ls --recursive')).toContain('not supported by fauxnix');
   });
 
+  it('ls --color=auto is an implemented no-op; still lists; -Z still fails loud', () => {
+    const color = bodyOf('ls --color=auto');
+    expect(color).not.toContain('invalid option');
+    expect(color).not.toContain('unrecognized option');
+    expect(color).toContain('Get-ChildItem');
+    expect(color).not.toContain('\u001b');
+    expect(color).not.toContain('[0;');
+    expect(bodyOf('ls -Z')).toContain("invalid option -- ''Z''");
+  });
+
   it('chmod -R is unsupported; find stays unspec\'d so -name still compiles', () => {
     expect(bodyOf('chmod -R 644 x')).toContain('not supported by fauxnix');
     expect(bodyOf("find . -name '*.ts'")).toContain('-clike');
@@ -932,6 +1063,77 @@ describe('command-specs.md (#143)', () => {
       '\n',
     );
     expect(onDisk).toBe(specsMarkdown());
+  });
+});
+
+describe('CommandSpec text-io leftovers (#143)', () => {
+  const bodyOf = (cmd: string): string => translateCommandList(parse(cmd))[0].body;
+
+  it('echo is spec\'d; unknown -z is a usage error with exit 2', () => {
+    expect(lookupSpec('echo')).toBeTruthy();
+    const z = bodyOf('echo -z');
+    expect(z).toContain("invalid option -- ''z''");
+    expect(z).toContain('$script:fx_exit = 2');
+    expect(z).toContain("Try ''echo --help'' for more information.");
+    expect(z).not.toContain('fx-write');
+  });
+
+  it('echo -n/-e/-E and bundles still compile; operands may look like flags', () => {
+    expect(bodyOf('echo -n abc')).toContain('fx-write $fx_s $fx_term');
+    expect(bodyOf('echo -n abc')).not.toContain('invalid option');
+    expect(bodyOf('echo -e x')).toContain('$fx_s = fx-unesq $fx_s');
+    expect(bodyOf('echo -ne x')).toContain('$fx_s = fx-unesq $fx_s');
+    expect(bodyOf('echo -ne x')).toContain('fx-write $fx_s $fx_term');
+    expect(bodyOf('echo -E x')).not.toContain('$fx_s = fx-unesq $fx_s');
+    expect(bodyOf('echo hello -z')).toContain('fx-write');
+    expect(bodyOf('echo hello -z')).not.toContain('invalid option');
+  });
+
+  it('printf has no option flags; --help fails loud; format operands still work', () => {
+    expect(lookupSpec('printf')).toBeTruthy();
+    const help = bodyOf('printf --help');
+    expect(help).toContain("unrecognized option ''--help''");
+    expect(help).toContain('$script:fx_exit = 2');
+    expect(help).not.toContain('fx-printf');
+    const z = bodyOf('printf -z');
+    expect(z).toContain("invalid option -- ''z''");
+    expect(bodyOf("printf '%s' -n")).toContain('fx-printf');
+    expect(bodyOf("printf '%s' -n")).not.toContain('invalid option');
+    expect(bodyOf("printf '%s=%d\\n' x 42")).toContain('fx-printf');
+  });
+
+  it('cat --no-such fails; implemented shorts still compile', () => {
+    expect(lookupSpec('cat')).toBeTruthy();
+    const unknown = bodyOf('cat --no-such');
+    expect(unknown).toContain("unrecognized option ''--no-such''");
+    expect(unknown).not.toContain('fx-read');
+    expect(bodyOf('cat -n f')).toContain("'all'");
+    expect(bodyOf('cat -n f')).not.toContain('invalid option');
+    expect(bodyOf('cat -nbsETA f')).not.toContain('invalid option');
+    expect(bodyOf('cat -nbsETA f')).toContain('fx-read');
+  });
+
+  it('tail --lines/-n/-c and legacy +/-N still compile; -f is unsupported', () => {
+    expect(lookupSpec('tail')).toBeTruthy();
+    expect(bodyOf('tail --lines=1 f')).toContain('$fx_count = [int](1)');
+    expect(bodyOf('tail -n 2 f')).toContain('$fx_count = [int](2)');
+    expect(bodyOf('tail -1 f')).toContain('$fx_count = [int](1)');
+    expect(bodyOf('tail +1 f')).toContain('$fx_from = $true');
+    expect(bodyOf('tail -c 3 f')).toContain('$fx_count = [int](3)');
+    const follow = bodyOf('tail -f f');
+    expect(follow).toContain("option ''-f'' is not supported by fauxnix");
+    expect(follow).toContain('no persistent tty');
+    expect(follow).not.toContain('fx-read');
+  });
+
+  it('wc -l/-w/-c/-m are spec\'d; find/xargs/nl stay unspec\'d', () => {
+    expect(lookupSpec('wc')).toBeTruthy();
+    expect(bodyOf('wc -lwm f')).not.toContain('invalid option');
+    expect(bodyOf('wc -lwm f')).toContain('fx-wcline');
+    expect(lookupSpec('find')).toBeUndefined();
+    expect(lookupSpec('xargs')).toBeUndefined();
+    expect(lookupSpec('nl')).toBeUndefined();
+    expect(lookupSpec('tac')).toBeUndefined();
   });
 });
 
@@ -980,6 +1182,23 @@ describe('find predicates (#130)', () => {
     throws('find . -o -name a', "find: invalid expression; you have used a binary operator '-o' with nothing before it.");
     throws('find . -name a -o', "find: expected an expression after '-o'");
     throws("find . -name '*.ts' extra", "find: paths must precede expression: 'extra'");
+  });
+
+  it('find -exec fails loud with -delete / grep -r, not xargs rm', () => {
+    const body = bodyOf("find . -name '*.log' -exec rm {} +");
+    expect(body).toContain('-exec is not supported by fauxnix');
+    expect(body).toContain('-delete');
+    expect(body).toContain('grep -r');
+    expect(body).not.toContain('xargs rm');
+    expect(body).toContain('$script:fx_exit = 1');
+  });
+});
+
+describe('xargs -0', () => {
+  it('fails loud instead of silently ignoring -0', () => {
+    const body = translateCommandList(parse('xargs -0 rm'))[0].body;
+    expect(body).toContain('xargs: -0 is not supported by fauxnix');
+    expect(body).toContain('$script:fx_exit = 1');
   });
 });
 

@@ -248,6 +248,8 @@ export interface CommandSpec {
   dispatch?: 'translated' | 'native' | 'dynamic';
   /** GNU usage/syntax exit (grep uses 2; cp/mv/rm use 1). */
   usageExit?: number;
+  /** First non-option operand ends option scanning (echo/printf). */
+  leadingOptions?: boolean;
   handler: Handler;
 }
 
@@ -297,7 +299,10 @@ export function specsMarkdown(): string {
   for (const spec of registeredSpecs()) {
     lines.push('## `' + spec.names.join('` / `') + '`');
     lines.push('');
-    lines.push('Effects: ' + spec.effects.map((e) => '`' + e + '`').join(', '));
+    lines.push(
+      'Effects: ' +
+        (spec.effects.length ? spec.effects.map((e) => '`' + e + '`').join(', ') : 'none'),
+    );
     lines.push('');
     if (!spec.options.length) {
       lines.push('No options declared.');
@@ -428,6 +433,7 @@ export function specOptionError(spec: CommandSpec, args: Word[], cmdName: string
       i++;
       continue;
     }
+    if (spec.leadingOptions) onlyOperands = true;
     i++;
   }
   return null;

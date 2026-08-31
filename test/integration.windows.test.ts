@@ -31,6 +31,7 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
       'utf8',
     );
     writeFileSync(join(dir, 'hit.cmd'), '@echo off\r\necho CMDHIT\r\n');
+    writeFileSync(join(dir, 'dump-args.cmd'), '@echo off\r\necho ARGS:%*\r\necho DONE\r\n');
     writeFileSync(join(dir, 'letters.txt'), 'a\nb\nc\n', 'utf8');
     writeFileSync(join(dir, 'nums.txt'), '1 2\n3 4\n5 6\n', 'utf8');
     writeFileSync(join(dir, 'dups.txt'), 'aaa\naaa\nbbb\n', 'utf8');
@@ -262,6 +263,20 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect(r.stdout).not.toContain('b');
   });
 
+  it('grep -F -o -e a -e b emits matches left-to-right', async () => {
+    const r = await run("printf 'ba\\n' | grep -F -o -e a -e b");
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.trim().split(/\r?\n/)).toEqual(['b', 'a']);
+
+    const overlap = await run("printf 'aaa\\n' | grep -F -o -e a -e aa");
+    expect(overlap.exitCode).toBe(0);
+    expect(overlap.stdout.trim().split(/\r?\n/)).toEqual(['aa', 'a']);
+
+    const single = await run("printf 'ba\\n' | grep -F -o a");
+    expect(single.exitCode).toBe(0);
+    expect(single.stdout.trim()).toBe('a');
+  });
+
   it('grep --regexp repeats OR-accumulate', async () => {
     const spaced = await run('grep --regexp a --regexp c letters.txt');
     expect(spaced.exitCode).toBe(0);
@@ -327,6 +342,23 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
 
   it('&>/dev/null discards stdout and stderr', async () => {
     const r = await run('cat missing.txt &>/dev/null; echo OK');
+    expect(r.stdout.trim()).toBe('OK');
+    expect(r.stderr).toBe('');
+  });
+
+  it('2>&1 >/dev/null keeps stderr on the caller stdout snapshot', async () => {
+    const silent = await run('echo hi 2>&1 >/dev/null');
+    expect(silent.exitCode).toBe(0);
+    expect(silent.stdout).toBe('');
+    expect(silent.stderr).toBe('');
+    // 2>&1 dups stderr onto caller stdout, then >/dev/null replaces stdout only.
+    const r = await run('cat missing.txt 2>&1 >/dev/null');
+    expect(r.stdout).toMatch(/No such file or directory/);
+    expect(r.stderr).toBe('');
+  });
+
+  it('>/dev/null 2>&1 discards both streams', async () => {
+    const r = await run('cat missing.txt >/dev/null 2>&1; echo OK');
     expect(r.stdout.trim()).toBe('OK');
     expect(r.stderr).toBe('');
   });
@@ -943,7 +975,10 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
   it('2>&1 snapshots stdout; later > does not take the setup error', async () => {
     const r = await run('echo x 2>&1 >ok.txt >nosuch/out.txt');
     expect(r.exitCode).not.toBe(0);
-    expect(r.stderr).toMatch(/No such file or directory/);
+    // After 2>&1, fd2 is the original caller stdout; the failed `>` diagnostic
+    // is written there, not to ok.txt and not to caller stderr.
+    expect(r.stdout).toMatch(/No such file or directory/);
+    expect(r.stderr).toBe('');
     expect(existsSync(join(dir, 'ok.txt'))).toBe(true);
     expect(readFileSync(join(dir, 'ok.txt'), 'utf8')).toBe('');
   });
@@ -1111,6 +1146,33 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect(r.stdout.trim()).toMatch(/^v\d+\.\d+/);
   });
 
+  it('python3 --version hints python/py when missing (no alias)', async () => {
+    const r = await run('python3 --version');
+    if (r.exitCode === 0) {
+      expect(r.stdout + r.stderr).toMatch(/Python/i);
+      return;
+    }
+    expect(r.exitCode).toBe(127);
+    expect(r.stderr).toContain('bash: python3: command not found');
+    expect(r.stderr).toContain('try `python` or `py` on Windows');
+    expect(r.stderr).not.toMatch(/Python \d/i);
+  });
+
+  it('foo.sh not-found includes the .sh native hint', async () => {
+    const r = await run('foo.sh');
+    expect(r.exitCode).toBe(127);
+    expect(r.stderr).toContain('bash: foo.sh: command not found');
+    expect(r.stderr).toContain('.sh scripts cannot run natively on Windows');
+  });
+
+  it('python --version still works via fx-native when python exists', async () => {
+    const probe = spawnSync('python', ['--version'], { encoding: 'utf8', shell: false });
+    if (probe.status !== 0) return;
+    const r = await run('python --version');
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout + r.stderr).toMatch(/Python\s+\d/);
+  });
+
   it('native argv keeps empty strings, spaces, and embedded quotes', async () => {
     // A script file (not `node -e`) so user args are always argv.slice(2) on
     // Windows too — `node -e` omits `-e` from process.argv here.
@@ -1134,9 +1196,31 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect(r.stdout.trim()).toBe('CMDHIT');
   });
 
+  it('native .cmd args keep cmd metacharacters without splitting', async () => {
+    const amp = await run("./dump-args.cmd 'a&b'");
+    expect(amp.exitCode).toBe(0);
+    expect(amp.stdout).toContain('a&b');
+    expect(amp.stdout).toContain('DONE');
+    const flag = await run("./dump-args.cmd '--flag=a&b'");
+    expect(flag.exitCode).toBe(0);
+    expect(flag.stdout).toContain('--flag=a&b');
+    expect(flag.stdout).toContain('DONE');
+    const inject = await run("./dump-args.cmd 'a&echo INJECTED'");
+    expect(inject.exitCode).toBe(0);
+    expect(inject.stdout).toContain('a&echo INJECTED');
+    expect(inject.stdout).toContain('DONE');
+    expect(inject.stdout).not.toMatch(/^INJECTED$/m);
+  });
+
   it('xargs runs native commands', async () => {
     const r = await run("printf -- '--version\\n' | xargs node");
     expect(r.stdout.trim()).toMatch(/^v\d+\.\d+/);
+  });
+
+  it('xargs splits stdin words onto native argv', async () => {
+    const r = await run("printf -- 'a b\\n' | xargs node dump-argv.js");
+    expect(r.exitCode).toBe(0);
+    expect(JSON.parse(r.stdout.trim())).toEqual(['a', 'b']);
   });
 
   it('host guard refuses loopback URLs for curl', async () => {

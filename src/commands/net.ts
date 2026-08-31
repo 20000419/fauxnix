@@ -84,10 +84,9 @@ function synthWord(text: string): Word {
 
 /** A native-exe invocation obeying the fauxnix contract (string lines + exit code). */
 function nativeCall(exe: string, argArray: string): string {
-  return [
-    '& ' + psStr(exe) + ' @(' + argArray + ') | ForEach-Object { [string]$_ }',
-    'if ($LASTEXITCODE -gt 0) { $script:fx_exit = $LASTEXITCODE }',
-  ].join('\n');
+  // fx-native captures stdout as pipeline strings and sets fx_exit.
+  // [object[]]@(...) keeps an empty argv from unwrapping to $null on PS 5.1.
+  return 'fx-native ' + psStr(exe) + ' ([object[]]@(' + argArray + '))';
 }
 
 /* ------------------------------------------------------------------ */
