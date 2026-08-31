@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.9.2 — 2026-08-31
+
+The #131 audit backlog, cleared (#147-#154, by r3wretrhy):
+
+- **Per-stage redirect ownership** (#147, RFC in docs/rfc-redirect-fd-ownership.md):
+  last stage owns output apply, first stage owns stdin feed, middle-stage `<`
+  replaces the pipe; `>/dev/null` discards; last-win for successive redirects.
+  `echo hi >/dev/null` prints nothing; `printf x | cat < f | head -1` reads f
+- **Native argv fidelity** (#148): literal native invocations go through
+  fx-native (System.Diagnostics.Process + Win32 command-line builder, CRT
+  quoting; async reads before stdin write; .cmd/.bat via cmd.exe). Empty
+  args, spaces, and embedded quotes now survive byte-exact
+- `docs/command-specs.md` regenerated in lockstep with the registry (#149)
+- `fauxnix check` prints FAILED on spawn errors instead of an unhandled
+  stack (#150)
+- `head -n -N` / `--lines=-N` / `--bytes=-N` print all but the last N (#151)
+- `grep -e` repeats OR-accumulate patterns (#152)
+- printf-style exact-writer output re-splits into lines for pipeline
+  consumers (grep/sed/awk/sort/uniq/tr) (#153)
+- hard links report as regular files, not symlinks (#154)
+
+223 tests.
 ## v0.9.1 — 2026-08-23
 
 Hotfix for the two P1 findings from the Codex review of #145 (both verified
