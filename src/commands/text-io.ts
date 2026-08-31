@@ -559,8 +559,9 @@ const head: Handler = (args, ctx) => {
       "    [void]$fx_out.Append('==> ' + $fx_disp + ' <==' + [string][char]10)",
       '  }',
       '  $fx_first = $false',
-      '  $fx_len = [math]::Min($fx_count, $fx_txt.Length)',
-      '  if ($fx_len -lt 0) { $fx_len = 0 }',
+      // GNU: --bytes=-N prints all but last N; -0 / N≥size → empty
+      '  if ($fx_count -lt 0) { $fx_len = [math]::Max(0, $fx_txt.Length + $fx_count) }',
+      '  else { $fx_len = [math]::Min($fx_count, $fx_txt.Length) }',
       '  if ($fx_len -gt 0) { [void]$fx_out.Append($fx_txt.Substring(0, $fx_len)) }',
       '}',
       'fx-write $fx_out.ToString() $fx_term',

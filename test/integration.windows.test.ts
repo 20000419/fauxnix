@@ -207,6 +207,24 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect((await run('wc -l < fruits.txt')).stdout.trim()).toBe('4');
   });
 
+  it('head --lines=-N / --bytes=-N print all but last N (GNU)', async () => {
+    const droppedLine = await run('head --lines=-1 fruits.txt');
+    expect(droppedLine.exitCode).toBe(0);
+    expect(droppedLine.stdout.split(/\r?\n/).filter(Boolean)).toEqual([
+      'apple',
+      'Banana',
+      'apple pie',
+    ]);
+
+    writeFileSync(join(dir, 'head-bytes.txt'), 'abc', 'utf8');
+    const droppedByte = await run('head --bytes=-1 head-bytes.txt');
+    expect(droppedByte.exitCode).toBe(0);
+    expect(droppedByte.stdout).toBe('ab');
+
+    expect((await run('head --bytes=2 head-bytes.txt')).stdout).toBe('ab');
+    expect((await run('head --lines=1 fruits.txt')).stdout.trim()).toBe('apple');
+  });
+
   it('grep -m1 stops after the first match', async () => {
     const r = await run('grep -m1 apple fruits.txt');
     expect(r.exitCode).toBe(0);
