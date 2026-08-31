@@ -35,7 +35,10 @@ That violates fail-loud / never silently-wrong.
   Application (e.g. splat that expands to `echo`), fall back to `&` so PS
   aliases still run; empty-argv fidelity applies to executables.
 - Translated builtins are unchanged (they never went through `& @array`).
-- `xargs` composing a native command is a follow-up (it still builds `&`).
+- `xargs` composing a native command uses `fx-native $fx_cmd $fx_argv` (typed
+  object array, no splat). Built-ins are still rejected; `-t`/`-n`/`-I`/
+  `--no-run-if-empty` are unchanged. `fx-native` already records
+  `$script:fx_exit` from ExitCode, so xargs does not also copy `$LASTEXITCODE`.
 
 ## Non-goals
 
@@ -49,3 +52,4 @@ That violates fail-loud / never silently-wrong.
 empty arg, space, embedded `"`, leading `--foo`.
 (`node -e` is a bad oracle on Windows: `-e` is omitted from `process.argv`,
 so `slice(2)` drops the first user argument.)
+`printf -- 'a b\n' | xargs node dump-argv.js` → `["a","b"]` (xargs splits on blanks).

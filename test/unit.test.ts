@@ -573,6 +573,31 @@ describe('translator', () => {
     expect(plan.script).toContain('function fx-native');
   });
 
+  it('xargs native invoke uses fx-native instead of call-operator splat', () => {
+    const plan = translateCommandList(parse('xargs node'))[0];
+    expect(plan.body).toContain('fx-native $fx_cmd $fx_argv');
+    expect(plan.body).not.toContain('@fx_argv');
+    expect(plan.body).not.toContain('& $fx_cmd');
+    expect(plan.body).not.toContain('$LASTEXITCODE');
+    expect(plan.body).toContain("-split '[ \\t]+'");
+    expect(plan.script).toContain('function fx-native');
+    const n = translateCommandList(parse('xargs -n 1 node'))[0].body;
+    expect(n).toContain('fx-native $fx_cmd $fx_argv');
+    expect(n).toContain('$fx_j -lt 1');
+    const repl = translateCommandList(parse('xargs -I {} node dump-argv.js {}'))[0].body;
+    expect(repl).toContain('fx-native $fx_cmd $fx_argv');
+    expect(repl).toContain(".Contains('{}')");
+    expect(repl).not.toContain("-split '[ \\t]+'");
+    const empty = translateCommandList(parse('xargs --no-run-if-empty node'))[0].body;
+    expect(empty).toContain('$fx_args.Count -eq 0');
+    expect(empty).toContain('fx-native $fx_cmd $fx_argv');
+    const trace = translateCommandList(parse('xargs -t node'))[0].body;
+    expect(trace).toContain('[Console]::Error.WriteLine');
+    expect(trace).toContain('$true');
+    const builtin = translateCommandList(parse('xargs grep'))[0].body;
+    expect(builtin).toContain('xargs currently passes arguments to native commands');
+  });
+
   it('re-splits printf-style stdin for grep and other text-filters', () => {
     const split = 'fx-splitlines $fx_it';
     const cmds = ['grep b', "sed 's/a/A/'", "awk '{print}'", 'sort', 'uniq', 'tr a b'];
