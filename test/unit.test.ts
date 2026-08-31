@@ -615,8 +615,6 @@ describe('translator', () => {
     expect(body).toContain('a&b');
   });
 
-  });
-
   it('python3 --version fx-native miss hints python/py and exits 127 (no alias)', () => {
     const plan = translateCommandList(parse('python3 --version'))[0];
     expect(plan.body).toContain("fx-native 'python3' $fx_na");
