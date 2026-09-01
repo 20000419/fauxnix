@@ -252,6 +252,10 @@ executor wrapper) · `src/executor.ts` (spawn, redirects, session persistence) �
 Roadmap: [docs/rfc-roadmap-to-1.0.md](docs/rfc-roadmap-to-1.0.md) — tracks, milestones,
 and the RFC process for proposing waves.
 
+## Acknowledgments
+
+- [LINUX DO 社区](https://linux.do) — 本项目在中文社区的第一次分享发生在那里，感谢佬友们的反馈。
+
 ## License
 
 MIT © 20000419
