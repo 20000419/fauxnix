@@ -1,6 +1,7 @@
 import {
   Assignment,
   CommandList,
+  FauxnixParseError,
   Redirect,
   ShellCommand,
   SimpleCommand,
