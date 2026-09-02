@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.10.0 — 2026-09-02
+
+First wave claimed against the 1.0 roadmap v2 (all by r3wretrhy):
+
+- **C-4**: multi-segment command substitution `$(cmd1; cmd2)` (#179)
+- **C-5 (partial)**: CommandSpec for the text-filters family — sort/uniq/
+  cut/tr and friends fail loud on unknown options (#177)
+- **C-6 (interim)**: stdout redirects on non-last pipeline stages reject
+  loudly with the #157 workaround in the message (#175)
+- **C-7 scaffold**: `test/differential/` corpus + oracle-gated runner
+  (`FAUXNIX_DIFF_ORACLE=1`, skip-safe without Git Bash); 25-seed corpus,
+  ≥95% identity gate; the 200-case 1.0 target grows from here (#176)
+- **T-1**: SECURITY.md — trust model, host protocol, kill semantics,
+  network guard, reporting policy (#174)
+- **T-2**: CONTRIBUTING gains the RFC rule (#173)
+- **U-2**: `fauxnix doctor` — PowerShell/encoding checks plus harness
+  config detection with fix hints (verified detecting real Claude/Codex/
+  OpenCode configs) (#178)
+- C-3 mini-RFC: session-scoped positional parameters proposed
+  (docs/rfc-positional-params.md) — implementation awaits #118 discussion
+
+271 tests (251 + differential corpus suite).
 ## v0.9.3 — 2026-08-31
 
 Windows computer-use parity wave #1 (RFC #156, #158-#167 by r3wretrhy):
