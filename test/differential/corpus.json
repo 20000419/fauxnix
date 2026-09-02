@@ -210,6 +210,31 @@
       "id": "echo-pipe-grep",
       "cmd": "echo hi | grep hi",
       "source": "#153"
+    },
+    {
+      "id": "case-hit",
+      "cmd": "case x in x) echo HIT;; esac",
+      "source": "#118 C-1 case"
+    },
+    {
+      "id": "case-alt",
+      "cmd": "case x in a|x) echo HIT;; esac",
+      "source": "#118 C-1 case"
+    },
+    {
+      "id": "case-star",
+      "cmd": "case z in a) echo A;; *) echo D;; esac",
+      "source": "#118 C-1 case"
+    },
+    {
+      "id": "case-nomatch-status",
+      "cmd": "case x in y) echo NO;; esac; echo $?",
+      "source": "#118 C-1 case"
+    },
+    {
+      "id": "case-false-status",
+      "cmd": "case x in x) false;; esac; echo $?",
+      "source": "#118 C-1 case"
     }
   ]
 }

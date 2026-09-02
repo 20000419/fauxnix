@@ -1178,6 +1178,17 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     );
   });
 
+  it('case ... esac matches the first arm and keeps compound status', async () => {
+    const hit = await run('case x in x) echo HIT;; esac');
+    expect(hit.stdout.trim()).toBe('HIT');
+    expect(hit.exitCode).toBe(0);
+    expect((await run('case x in a|x) echo HIT;; esac')).stdout.trim()).toBe('HIT');
+    expect((await run('case z in a) echo A;; *) echo D;; esac')).stdout.trim()).toBe('D');
+    expect((await run('case x in y) echo NO;; esac; echo $?')).stdout.trim()).toBe('0');
+    expect((await run('case x in x) false;; esac; echo $?')).stdout.trim()).toBe('1');
+    expect((await run('if true; then case x in x) echo Y;; esac; fi')).stdout.trim()).toBe('Y');
+  });
+
   it('date format tokens', async () => {
     expect((await run('date +%Y')).stdout).toMatch(/^\d{4}/);
   });

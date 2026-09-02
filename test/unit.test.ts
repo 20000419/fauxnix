@@ -164,6 +164,46 @@ describe('parser', () => {
     expect(c.words).toHaveLength(3);
   });
 
+  it('parses case x in x) echo HIT;; esac', () => {
+    const list = parse('case x in x) echo HIT;; esac');
+    expect(list.segments).toHaveLength(1);
+    const c = list.segments[0].pipeline.commands[0];
+    expect(c.kind).toBe('Case');
+    if (c.kind !== 'Case') return;
+    expect(wordToString(c.word)).toBe('x');
+    expect(c.arms).toHaveLength(1);
+    expect(c.arms[0].patterns.map(wordToString)).toEqual(['x']);
+  });
+
+  it('parses case pattern alternation a|x)', () => {
+    const list = parse('case x in a|x) echo HIT;; esac');
+    const c = list.segments[0].pipeline.commands[0];
+    expect(c.kind).toBe('Case');
+    if (c.kind !== 'Case') return;
+    expect(c.arms).toHaveLength(1);
+    expect(c.arms[0].patterns.map(wordToString)).toEqual(['a', 'x']);
+  });
+
+  it('parses case default *) arm', () => {
+    const list = parse('case x in *) echo D;; esac');
+    const c = list.segments[0].pipeline.commands[0];
+    expect(c.kind).toBe('Case');
+    if (c.kind !== 'Case') return;
+    expect(c.arms).toHaveLength(1);
+    expect(c.arms[0].patterns.map(wordToString)).toEqual(['*']);
+  });
+
+  it('rejects case fallthrough ;& / ;;&', () => {
+    expect(() => parse('case x in x) echo HIT;& esac')).toThrow(/case fallthrough/);
+    expect(() => parse('case x in x) echo HIT;;& esac')).toThrow(/case fallthrough/);
+  });
+
+  it('rejects case in a pipeline', () => {
+    expect(() => parse('echo hi | case x in x) echo y;; esac')).toThrow(
+      /case in a pipeline is not supported/,
+    );
+  });
+
   it('parses ${name[index]} subscripts', () => {
     const cmd = parse('echo ${BASH_REMATCH[1]} ${PATH[0]} ${x[@]}').segments[0].pipeline.commands[0];
     expect(cmd.args[0]).toEqual([{ kind: 'Var', name: 'BASH_REMATCH', index: '1' }]);
@@ -222,6 +262,9 @@ describe('parser', () => {
     expect(() => parse('echo A;; echo B')).toThrow(/unexpected token `;;'/);
     expect(() => parse('echo A; ; echo B')).toThrow(/unexpected token `;;'/);
     expect(parse('echo A; echo B').segments).toHaveLength(2);
+    const toks = tokenize('echo A;; echo B');
+    expect(toks.filter((t) => t.type === 'OP' && t.op === ';;')).toHaveLength(1);
+    expect(toks.filter((t) => t.type === 'OP' && t.op === ';')).toHaveLength(0);
   });
 
   it('env -i is a loud usage error, not a silent ignore', () => {
@@ -522,6 +565,18 @@ describe('translator', () => {
     expect(s).not.toContain('function fx-csub');
     expect(s).not.toContain('function fx-readlines');
     expect(s).not.toContain('function fx-subget');
+  });
+
+  it('translates case to fx-casematch if/elseif', () => {
+    const one = translateCommandList(parse('case x in x) echo HIT;; esac'))[0];
+    expect(one.body).toContain('fx-casematch');
+    expect(one.body).toMatch(/if \(fx-casematch/);
+    expect(one.body).not.toContain('elseif (fx-casematch');
+    expect(one.script).toContain('function fx-casematch');
+    const two = translateCommandList(parse('case z in a) echo A;; *) echo D;; esac'))[0];
+    expect(two.body).toContain('fx-casematch');
+    expect(two.body).toMatch(/if \(fx-casematch/);
+    expect(two.body).toContain('elseif (fx-casematch');
   });
 
   it('emits only the wrapScript helpers a translation actually calls', () => {

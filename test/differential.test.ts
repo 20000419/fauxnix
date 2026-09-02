@@ -24,7 +24,7 @@ describe('differential corpus scaffold (C-7 / #118)', () => {
     expect(corpus.gate.targetCases).toBe(200);
     expect(corpus.gate.identity).toBe(0.95);
     expect(corpus.cases.length).toBeGreaterThanOrEqual(15);
-    expect(corpus.cases.length).toBeLessThanOrEqual(40);
+    expect(corpus.cases.length).toBeLessThan(200);
     const ids = corpus.cases.map((c) => c.id);
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids).toEqual(expect.arrayContaining([

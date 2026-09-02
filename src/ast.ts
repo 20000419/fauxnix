@@ -12,7 +12,7 @@
  *   - env assignment prefix: VAR=value cmd
  *
  * Explicitly unsupported (parser throws a helpful FauxnixError):
- *   heredocs, subshells (...), background &, while/until/case,
+ *   heredocs, subshells (...), background &, while/until,
  *   globs inside quotes, process substitution <(...).
  */
 
@@ -28,7 +28,7 @@ export interface ListSegment {
   op: ';' | '&&' | '||';
 }
 
-export type ShellCommand = SimpleCommand | IfCommand | ForCommand;
+export type ShellCommand = SimpleCommand | IfCommand | ForCommand | CaseCommand;
 
 export interface Pipeline {
   kind: 'Pipeline';
@@ -48,6 +48,18 @@ export interface ForCommand {
   name: string;
   words: Word[];
   body: CommandList;
+  redirects: Redirect[];
+}
+
+export interface CaseArm {
+  patterns: Word[];
+  body: CommandList;
+}
+
+export interface CaseCommand {
+  kind: 'Case';
+  word: Word;
+  arms: CaseArm[];
   redirects: Redirect[];
 }
 
