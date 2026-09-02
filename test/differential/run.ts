@@ -20,7 +20,7 @@ export interface CorpusCase {
 }
 
 export interface Corpus {
-  gate: { targetCases: number; identity: number; note: string };
+  gate: { targetCases: number; identity: number; knownMismatchIds: string[]; note: string };
   files: Record<string, string>;
   cases: CorpusCase[];
 }
@@ -174,7 +174,7 @@ export function formatSummary(run: CorpusRun): string {
   const pct = (run.identity * 100).toFixed(1);
   const lines = [
     `differential: ${run.identical}/${run.total} identical (${pct}%) vs ${run.bashPath}`,
-    `gate for this corpus: ≥${(run.gate * 100).toFixed(0)}%  |  1.0 gate: ≥200 cases at ≥95% (not this corpus)`,
+    `1.0 corpus gate: ≥200 cases at ≥${(run.gate * 100).toFixed(0)}%  |  release evidence: two consecutive green scheduled runs`,
   ];
   const mismatches = run.results.filter((r) => !r.identical);
   for (const m of mismatches) {
@@ -202,12 +202,20 @@ export async function runCorpus(opts: {
   const session = new FauxnixSession();
   const results: CaseResult[] = [];
   try {
-    writeTree(dir, corpus.files ?? {});
     await session.prewarm();
-    await session.run(translateCommandList(parseCommand('cd "' + dir + '"')));
 
-    for (const c of corpus.cases) {
-      if (c.files) writeTree(dir, c.files);
+    for (const [index, c] of corpus.cases.entries()) {
+      // Never let the first engine mutate the second engine's oracle input.
+      // A fresh pair of trees per case also prevents files created by an
+      // earlier case from changing a later case's result.
+      const caseName = String(index + 1).padStart(3, '0') + '-' + c.id.replace(/[^a-z0-9_.-]/gi, '_');
+      const fauxnixDir = join(dir, 'fauxnix', caseName);
+      const bashDir = join(dir, 'bash', caseName);
+      const files = { ...(corpus.files ?? {}), ...(c.files ?? {}) };
+      writeTree(fauxnixDir, files);
+      writeTree(bashDir, files);
+      await session.run(translateCommandList(parseCommand('cd "' + fauxnixDir + '"')));
+
       let fauxnix: Streams;
       let error: string | undefined;
       try {
@@ -217,7 +225,7 @@ export async function runCorpus(opts: {
         error = e instanceof Error ? e.message : String(e);
         fauxnix = { stdout: '', stderr: error, exitCode: 2 };
       }
-      const bash = runBash(opts.bashPath, dir, c.cmd);
+      const bash = runBash(opts.bashPath, bashDir, c.cmd);
       results.push({
         id: c.id,
         cmd: c.cmd,
