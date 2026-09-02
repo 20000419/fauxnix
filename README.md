@@ -98,6 +98,7 @@ fauxnix translate "find . -name '*.log' -mtime +7 -delete"
 
 # check your environment
 fauxnix check
+fauxnix doctor                   # check + encoding, harness config, MCP
 
 # run the MCP stdio server (what agent harnesses connect to)
 fauxnix mcp
