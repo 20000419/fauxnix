@@ -3,7 +3,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { FauxnixParseError, Word, wordToString } from '../ast.js';
 import { CommandSpec, Handler, parseWords, psStr } from '../registry.js';
-import { argListExpr, exprOfWord, literalOfWord, operandExpr } from '../translator.js';
+import {
+  argListExpr,
+  exprOfWord,
+  literalOfWord,
+  operandExpr,
+  PURE_SED_FILE_MESSAGE,
+} from '../translator.js';
 
 /* ------------------------------------------------------------------ */
 /* Shared PS snippets (same shape as files.ts)                         */
@@ -1056,7 +1062,7 @@ function parseSedScript(src: string, isEre: boolean): SedCmd[] {
   return out;
 }
 
-const sed: Handler = (args) => {
+const sed: Handler = (args, ctx) => {
   // custom argv parse: -i takes an ATTACHED suffix; -e/-f take attached or next
   const raw = args.map((w) => wordToString(w));
   let noPrint = false;
@@ -1095,6 +1101,9 @@ const sed: Handler = (args) => {
             throw new FauxnixParseError('fauxnix: sed -' + ch + ' requires an argument');
           }
           if (ch === 'f') {
+            if (ctx.translationMode === 'pure') {
+              throw new FauxnixParseError(PURE_SED_FILE_MESSAGE);
+            }
             try {
               val = readFileSync(nodePathOf(val), 'utf8');
             } catch {

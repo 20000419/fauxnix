@@ -1,7 +1,11 @@
 import { spawn } from 'node:child_process';
 import { FauxnixSession } from './executor.js';
 import { parseCommand } from './parser.js';
-import { translateCommandList } from './translator.js';
+import {
+  EXECUTE_TRANSLATION,
+  PURE_TRANSLATION,
+  translateCommandList,
+} from './translator.js';
 import { listCommandsJson, registeredNames, specsMarkdown } from './registry.js';
 import { encodeCommand } from './encoding.js';
 import { startMcpServer } from './mcp.js';
@@ -82,7 +86,7 @@ export async function runCli(argv: string[]): Promise<void> {
   if (verb === 'translate') {
     const cmd = rest.join(' ');
     const list = parseCommand(cmd);
-    const plans = translateCommandList(list);
+    const plans = translateCommandList(list, PURE_TRANSLATION);
     console.log(plans.map((p) => p.script).join('\n# ---- next segment ----\n'));
     return;
   }
@@ -94,7 +98,7 @@ export async function runCli(argv: string[]): Promise<void> {
   }
 
   const list = parseCommand(cmd);
-  const plans = translateCommandList(list);
+  const plans = translateCommandList(list, EXECUTE_TRANSLATION);
   const session = new FauxnixSession();
   const result = await session.run(plans);
   if (result.stdout) process.stdout.write(result.stdout);

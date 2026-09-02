@@ -12,10 +12,176 @@ import {
   Word,
   WordPart,
   isUnquotedLiteral,
+  wordToString,
 } from './ast.js';
 import { parseCommand } from './parser.js';
 import { PipelineCtx, lookup, psStr } from './registry.js';
 import { PYTHON3_WINDOWS_HINT, SH_SCRIPT_WINDOWS_HINT } from './errors.js';
+
+export interface TranslationContext {
+  /** `pure` renders a script without consulting command operands on disk. */
+  mode: 'execute' | 'pure';
+}
+
+export const EXECUTE_TRANSLATION: TranslationContext = Object.freeze({ mode: 'execute' });
+export const PURE_TRANSLATION: TranslationContext = Object.freeze({ mode: 'pure' });
+
+export const PURE_SED_FILE_MESSAGE =
+  'fauxnix: translate does not read sed script files; use -e with the script text, or run the command to use -f';
+
+/** Match the sed option rules without opening the referenced script file. */
+function sedUsesScriptFile(args: Word[]): boolean {
+  const raw = args.map((word) => wordToString(word));
+  let onlyOperands = false;
+  for (let i = 0; i < raw.length; i++) {
+    const arg = raw[i];
+    if (!onlyOperands && arg === '--') {
+      onlyOperands = true;
+      continue;
+    }
+    if (onlyOperands || !arg.startsWith('-') || arg.length === 1 || arg.startsWith('--')) {
+      continue;
+    }
+    const body = arg.slice(1);
+    for (let c = 0; c < body.length; c++) {
+      const flag = body[c];
+      if (flag === 'f') return c < body.length - 1 || i + 1 < raw.length;
+      if (flag === 'e') {
+        if (c === body.length - 1) i++;
+        break;
+      }
+      if (flag === 'i') break;
+      if (!['n', 'E', 'r', 's', 'u', 'z'].includes(flag)) return false;
+    }
+  }
+  return false;
+}
+
+function assertPureWord(word: Word): void {
+  const visitPart = (part: WordPart): void => {
+    if (part.kind === 'CmdSub') {
+      assertPureCommandList(parseCommand(part.cmd));
+    } else if (part.kind === 'DoubleQuoted' || part.kind === 'Arith') {
+      for (const nested of part.parts) visitPart(nested);
+    }
+  };
+  for (const part of word) visitPart(part);
+}
+
+function wrappedSimpleCommand(command: SimpleCommand, name: string): SimpleCommand | null {
+  const raw = command.args.map((word) => wordToString(word));
+  let commandIndex = -1;
+  if (name === 'env') {
+    for (let i = 0; i < raw.length; ) {
+      const arg = raw[i];
+      if (arg === '--') {
+        commandIndex = i + 1;
+        break;
+      }
+      if (arg === '-i' || arg === '--ignore-environment') return null;
+      if (arg === '-u' || arg === '--unset') {
+        i += 2;
+        continue;
+      }
+      if (arg.startsWith('-u=') || arg.startsWith('--unset=')) {
+        i++;
+        continue;
+      }
+      if (arg.startsWith('-')) {
+        i++;
+        continue;
+      }
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(arg)) {
+        i++;
+        continue;
+      }
+      commandIndex = i;
+      break;
+    }
+  } else if (name === 'command') {
+    let identify = false;
+    let i = 0;
+    while (i < raw.length) {
+      const arg = raw[i];
+      if (arg === '-v' || arg === '-V') {
+        identify = true;
+        i++;
+        continue;
+      }
+      if (arg === '--') {
+        i++;
+        break;
+      }
+      if (arg.startsWith('-')) {
+        i++;
+        continue;
+      }
+      break;
+    }
+    if (identify) return null;
+    commandIndex = i;
+  } else if (name === 'timeout') {
+    let i = 0;
+    while (i < raw.length && raw[i].startsWith('-') && raw[i] !== '-' && raw[i] !== '--') i++;
+    if (i < raw.length && raw[i] === '--') i++;
+    commandIndex = i + 1;
+  }
+  if (commandIndex < 0 || commandIndex >= command.args.length) return null;
+  return {
+    kind: 'SimpleCommand',
+    assignments: [],
+    name: command.args[commandIndex],
+    args: command.args.slice(commandIndex + 1),
+    redirects: [],
+  };
+}
+
+function assertPureShellCommand(command: ShellCommand): void {
+  if (command.kind === 'SimpleCommand') {
+    const name = command.name === null ? null : literalOfWord(command.name);
+    if (name === 'sed' && sedUsesScriptFile(command.args)) {
+      throw new FauxnixParseError(PURE_SED_FILE_MESSAGE);
+    }
+    if (command.name) assertPureWord(command.name);
+    for (const arg of command.args) assertPureWord(arg);
+    for (const assignment of command.assignments) {
+      assertPureWord(assignment.value);
+      for (const value of assignment.values ?? []) assertPureWord(value);
+    }
+    if (name === 'env' || name === 'command' || name === 'timeout') {
+      const nested = wrappedSimpleCommand(command, name);
+      if (nested) assertPureShellCommand(nested);
+    }
+    return;
+  }
+  if (command.kind === 'If') {
+    assertPureCommandList(command.test);
+    assertPureCommandList(command.then);
+    if (command.else) assertPureCommandList(command.else);
+    return;
+  }
+  if (command.kind === 'For') {
+    for (const word of command.words) assertPureWord(word);
+    assertPureCommandList(command.body);
+    return;
+  }
+  if (command.kind === 'While') {
+    assertPureCommandList(command.test);
+    assertPureCommandList(command.body);
+    return;
+  }
+  assertPureWord(command.word);
+  for (const arm of command.arms) {
+    for (const pattern of arm.patterns) assertPureWord(pattern);
+    assertPureCommandList(arm.body);
+  }
+}
+
+function assertPureCommandList(list: CommandList): void {
+  for (const segment of list.segments) {
+    for (const command of segment.pipeline.commands) assertPureShellCommand(command);
+  }
+}
 
 /* ------------------------------------------------------------------ */
 /* Variable mapping                                                    */
@@ -465,8 +631,12 @@ export function argListExpr(words: Word[], fn: (w: Word) => string = exprOfWord)
  * Lists (`;` `&&` `||`) reuse translateListInline inside the fx-csub
  * scriptblock so the newline contract is unchanged.
  */
-export function translateCmdSub(cmdText: string, keepNl = false): string {
-  const inner = translateListInline(parseCommand(cmdText));
+export function translateCmdSub(
+  cmdText: string,
+  keepNl = false,
+  translation: TranslationContext = EXECUTE_TRANSLATION,
+): string {
+  const inner = translateListInline(parseCommand(cmdText), translation);
   const collected = '(fx-csub { ' + inner + ' })';
   if (keepNl) return collected;
   return (
@@ -491,6 +661,7 @@ export function translateSimple(
   cmd: SimpleCommand,
   position: PipelineCtx['position'],
   hasStdin: boolean,
+  translation: TranslationContext = EXECUTE_TRANSLATION,
 ): string {
   // assignment-only segment (`X=1; cmd`): bash semantics are "set for the
   // rest of the shell". Reuse the export code path — persist + env shadow —
@@ -509,7 +680,9 @@ export function translateSimple(
         );
       } else {
         const words = [[{ kind: 'Text' as const, text: a.name + '=' }, ...a.value]];
-        if (exportHandler) chunks.push(exportHandler(words, { position, hasStdin }));
+        if (exportHandler) {
+          chunks.push(exportHandler(words, { position, hasStdin, translationMode: translation.mode }));
+        }
       }
     }
     return chunks.join('\n');
@@ -534,6 +707,7 @@ export function translateSimple(
             },
             position,
             hasStdin,
+            translation,
           );
     const emptyCmdLines: string[] = [
       '$fx_cw = @(' + splatLoadCall(nameSplat.name) + ')',
@@ -565,7 +739,7 @@ export function translateSimple(
   } else if (nameLit !== null) {
     const handler = lookup(nameLit);
     if (handler && !(nameLit === '[[' && !isUnquotedLiteral(cmd.name, '[['))) {
-      body = handler(cmd.args, { position, hasStdin });
+      body = handler(cmd.args, { position, hasStdin, translationMode: translation.mode });
     } else {
       // passthrough: native command (git, node, npm, python, cargo, ...)
       // via fx-native (Win32 command line + Process). `& name @array` on
@@ -926,10 +1100,13 @@ export interface PipelineParts {
  * multi-command pipelines become generated functions chained with `|`
  * (PS 5.1 forbids parenthesized expressions as non-first pipeline elements).
  */
-function translateListInline(list: CommandList): string {
+function translateListInline(
+  list: CommandList,
+  translation: TranslationContext = EXECUTE_TRANSLATION,
+): string {
   const chunks: string[] = [];
   for (const seg of list.segments) {
-    const { defs, call } = translatePipelineBody(seg.pipeline);
+    const { defs, call } = translatePipelineBody(seg.pipeline, translation);
     const body = (defs ? defs + '\n' : '') + call;
     if (seg.op === '&&') {
       chunks.push('if ($script:fx_exit -eq 0) {\n' + body + '\n}');
@@ -942,28 +1119,28 @@ function translateListInline(list: CommandList): string {
   return chunks.join('\n');
 }
 
-function translateIf(cmd: IfCommand): string {
+function translateIf(cmd: IfCommand, translation: TranslationContext): string {
   // Branch bodies reset fx_exit first: the compound's exit status must come
   // from the taken branch's last command (bash semantics), not leak the test's
   // failure — `if false; then A; else B; fi` exits 0 in bash.
-  const lines = [translateListInline(cmd.test), 'if ($script:fx_exit -eq 0) {', '  $script:fx_exit = 0'];
-  for (const l of translateListInline(cmd.then).split('\n')) lines.push(l ? '  ' + l : l);
+  const lines = [translateListInline(cmd.test, translation), 'if ($script:fx_exit -eq 0) {', '  $script:fx_exit = 0'];
+  for (const l of translateListInline(cmd.then, translation).split('\n')) lines.push(l ? '  ' + l : l);
   lines.push('} else {', '  $script:fx_exit = 0');
   if (cmd.else) {
-    for (const l of translateListInline(cmd.else).split('\n')) lines.push(l ? '  ' + l : l);
+    for (const l of translateListInline(cmd.else, translation).split('\n')) lines.push(l ? '  ' + l : l);
   }
   lines.push('}');
   return lines.join('\n');
 }
 
-function translateCase(cmd: CaseCommand): string {
+function translateCase(cmd: CaseCommand, translation: TranslationContext): string {
   const lines = ['$script:fx_exit = 0', '$fx_cw = ' + exprOfWord(cmd.word)];
   for (let i = 0; i < cmd.arms.length; i++) {
     const arm = cmd.arms[i];
     const pats = arm.patterns.map((w) => exprOfWord(w)).join(',');
     const head = i === 0 ? 'if' : 'elseif';
     lines.push(head + ' (fx-casematch $fx_cw @(' + pats + ')) {');
-    const body = translateListInline(arm.body);
+    const body = translateListInline(arm.body, translation);
     if (body) {
       for (const l of body.split('\n')) lines.push(l ? '  ' + l : l);
     }
@@ -972,7 +1149,7 @@ function translateCase(cmd: CaseCommand): string {
   return lines.join('\n');
 }
 
-function translateFor(cmd: ForCommand): string {
+function translateFor(cmd: ForCommand, translation: TranslationContext): string {
   const n = cmd.name.replace(/'/g, "''");
   const lines = [
     '$fx_for = ' + argListExpr(cmd.words),
@@ -994,21 +1171,21 @@ function translateFor(cmd: ForCommand): string {
       n +
       "' + [string][char]61 + (fx-svenc ([string]$fx_it))); $env:FAUXNIX_SETVALS = ($fx_sv -join [string][char]10)",
   ];
-  for (const l of translateListInline(cmd.body).split('\n')) lines.push(l ? '  ' + l : l);
+  for (const l of translateListInline(cmd.body, translation).split('\n')) lines.push(l ? '  ' + l : l);
   lines.push('}');
   return lines.join('\n');
 }
 
-function translateWhile(cmd: WhileCommand): string {
+function translateWhile(cmd: WhileCommand, translation: TranslationContext): string {
   // Bash: last executed body owns status; a test that ends the loop does not.
   // Never-entered loops (`while false; do …; done`, `until true; do …; done`)
   // exit 0. Save the body status and restore it on the failing test.
   const fail = cmd.until ? '$script:fx_exit -eq 0' : '$script:fx_exit -ne 0';
   const lines = ['$fx_wst = 0', 'do {'];
-  for (const l of translateListInline(cmd.test).split('\n')) lines.push(l ? '  ' + l : l);
+  for (const l of translateListInline(cmd.test, translation).split('\n')) lines.push(l ? '  ' + l : l);
   lines.push('  if (' + fail + ') { $script:fx_exit = $fx_wst; break }');
   lines.push('  $script:fx_exit = 0');
-  for (const l of translateListInline(cmd.body).split('\n')) lines.push(l ? '  ' + l : l);
+  for (const l of translateListInline(cmd.body, translation).split('\n')) lines.push(l ? '  ' + l : l);
   lines.push('  $fx_wst = $script:fx_exit');
   lines.push('} while ($true)');
   return lines.join('\n');
@@ -1064,7 +1241,10 @@ function rejectNonLastFdRedirects(commands: ShellCommand[]): void {
 
 export function translatePipelineBody(p: {
   commands: Array<SimpleCommand | IfCommand | ForCommand | WhileCommand | CaseCommand>;
-}): PipelineParts {
+}, translation: TranslationContext = EXECUTE_TRANSLATION): PipelineParts {
+  if (translation.mode === 'pure') {
+    for (const command of p.commands) assertPureShellCommand(command);
+  }
   // Last-stage output fds are applied by Node. On an earlier stage they would
   // be prepared but not owned by that stage, so output would still reach the
   // wrong destination. Fail loud until routed in-stage fds land (#157).
@@ -1081,11 +1261,11 @@ export function translatePipelineBody(p: {
     const hasStdin = i > 0 || c.redirects.some((r) => r.op === '<');
     const position: PipelineCtx['position'] =
       i === 0 ? 'first' : i === p.commands.length - 1 ? 'last' : 'middle';
-    if (c.kind === 'If') bodies.push(translateIf(c));
-    else if (c.kind === 'For') bodies.push(translateFor(c));
-    else if (c.kind === 'While') bodies.push(translateWhile(c));
-    else if (c.kind === 'Case') bodies.push(translateCase(c));
-    else bodies.push(translateSimple(c, position, hasStdin));
+    if (c.kind === 'If') bodies.push(translateIf(c, translation));
+    else if (c.kind === 'For') bodies.push(translateFor(c, translation));
+    else if (c.kind === 'While') bodies.push(translateWhile(c, translation));
+    else if (c.kind === 'Case') bodies.push(translateCase(c, translation));
+    else bodies.push(translateSimple(c, position, hasStdin, translation));
   }
 
   if (bodies.length === 1) {
@@ -1163,7 +1343,10 @@ export interface SegmentPlan {
   stdinRedirects: Redirect[];
 }
 
-export function translateCommandList(list: CommandList): SegmentPlan[] {
+export function translateCommandList(
+  list: CommandList,
+  translation: TranslationContext = EXECUTE_TRANSLATION,
+): SegmentPlan[] {
   const plans: SegmentPlan[] = [];
   for (const seg of list.segments) {
     const cmds = seg.pipeline.commands;
@@ -1173,7 +1356,7 @@ export function translateCommandList(list: CommandList): SegmentPlan[] {
     const stdinRedirects = cmds.length
       ? cmds[0].redirects.filter((r) => r.op === '<')
       : [];
-    const { defs, call } = translatePipelineBody(seg.pipeline);
+    const { defs, call } = translatePipelineBody(seg.pipeline, translation);
     let body = defs ? defs + '\n' + call : call;
     // First-stage `< file` feeds stage zero via FAUXNIX_STDIN_FILE.
     // Later-stage `<` is owned inside the pipeline body, not this wrapper.

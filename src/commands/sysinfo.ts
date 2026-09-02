@@ -18,6 +18,8 @@ import {
   arithExpr,
   setArithHelperPreamble,
   isSpecialShellVar,
+  EXECUTE_TRANSLATION,
+  PURE_TRANSLATION,
 } from '../translator.js';
 import { handlers as textIoHandlers } from './text-io.js';
 
@@ -363,6 +365,7 @@ const env: Handler = (args, ctx) => {
         { kind: 'SimpleCommand', assignments: [], name: cmdWords[0], args: cmdWords.slice(1), redirects: [] },
         ctx.position,
         ctx.hasStdin,
+        ctx.translationMode === 'pure' ? PURE_TRANSLATION : EXECUTE_TRANSLATION,
       ),
     );
   } else {
@@ -737,6 +740,7 @@ const commandCmd: Handler = (args, ctx) => {
     },
     ctx.position,
     ctx.hasStdin,
+    ctx.translationMode === 'pure' ? PURE_TRANSLATION : EXECUTE_TRANSLATION,
   );
 };
 
@@ -2627,6 +2631,7 @@ const timeout: Handler = (args, ctx) => {
     { kind: 'SimpleCommand', assignments: [], name: cmdWords[0], args: cmdWords.slice(1), redirects: [] },
     ctx.position,
     false,
+    ctx.translationMode === 'pure' ? PURE_TRANSLATION : EXECUTE_TRANSLATION,
   );
   const innerLines = inner.split('\n').map((l) => (l ? '    ' + l : l));
   return [

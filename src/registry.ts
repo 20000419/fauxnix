@@ -34,6 +34,8 @@ export interface PipelineCtx {
   position: 'first' | 'middle' | 'last';
   /** True when stdin is available (piped input or `< file` redirect). */
   hasStdin: boolean;
+  /** Whether translation is preparing an executable plan or only rendering it. */
+  translationMode?: 'execute' | 'pure';
 }
 
 export type Handler = (args: Word[], ctx: PipelineCtx) => string;

@@ -4,7 +4,13 @@ import { z } from 'zod';
 import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
 import { ExecResult, FauxnixSession } from './executor.js';
 import { parseCommand } from './parser.js';
-import { translateCommandList, wrapScript, translatePipelineBody } from './translator.js';
+import {
+  EXECUTE_TRANSLATION,
+  PURE_TRANSLATION,
+  translateCommandList,
+  wrapScript,
+  translatePipelineBody,
+} from './translator.js';
 import { registeredNames } from './registry.js';
 import { packageVersion } from './version.js';
 import './commands/install-all.js';
@@ -75,6 +81,18 @@ export function bashToolResult(r: ExecResult, sessionId: string, infra: boolean)
   };
 }
 
+export function translateToolResult(command: string) {
+  try {
+    const list = parseCommand(command);
+    const plans = translateCommandList(list, PURE_TRANSLATION);
+    const script = wrapScript(plans.map((p) => p.script).join('\n# ---- next segment ----\n'));
+    return { content: [{ type: 'text' as const, text: script }] };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { content: [{ type: 'text' as const, text: msg }], isError: true as const };
+  }
+}
+
 /** Packed FAUXNIX_POS uses char-30 separators (same as array sidecar). */
 const POS_SEP = '\x1e';
 
@@ -135,7 +153,7 @@ export async function startMcpServer(): Promise<void> {
     EXEC_ANNOTATIONS,
     async ({ command, timeout_ms }, extra) => {
       try {
-        const plans = translateCommandList(parseCommand(command));
+        const plans = translateCommandList(parseCommand(command), EXECUTE_TRANSLATION);
         const result = await session.run(plans, {
           timeoutMs: timeout_ms,
           signal: extra.signal,
@@ -165,17 +183,7 @@ export async function startMcpServer(): Promise<void> {
     'Translate a bash-style command into the equivalent PowerShell script WITHOUT executing it. Useful for learning/debugging what fauxnix does under the hood.',
     { command: z.string().describe('The bash-style command line to translate (never executed)') },
     TRANSLATE_ANNOTATIONS,
-    async ({ command }) => {
-      try {
-        const list = parseCommand(command);
-        const plans = translateCommandList(list);
-        const script = wrapScript(plans.map((p) => p.script).join('\n# ---- next segment ----\n'));
-        return { content: [{ type: 'text', text: script }] };
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        return { content: [{ type: 'text', text: msg }], isError: true };
-      }
-    },
+    async ({ command }) => translateToolResult(command),
   );
 
   server.tool(
