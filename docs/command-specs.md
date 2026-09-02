@@ -335,6 +335,111 @@ Effects: `read`
 | `-c`, `--complement` | flag | unsupported (complement) |
 | `-C` | flag | unsupported (complement) |
 
+## `gzip`
+
+Effects: `read`, `write`, `delete`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-d`, `--decompress` | flag | implemented |
+| `--uncompress` | flag | implemented |
+| `-k`, `--keep` | flag | implemented |
+| `-c`, `--stdout` | flag | implemented |
+| `--to-stdout` | flag | implemented |
+| `-t`, `--test` | flag | implemented |
+| `-1`, `--fast` | flag | implemented |
+| `-2` | flag | implemented |
+| `-3` | flag | implemented |
+| `-4` | flag | implemented |
+| `-5` | flag | implemented |
+| `-6` | flag | implemented |
+| `-7` | flag | implemented |
+| `-8` | flag | implemented |
+| `-9`, `--best` | flag | implemented |
+| `-f`, `--force` | flag | unsupported (force from terminal) |
+| `-q`, `--quiet` | flag | unsupported (quiet) |
+| `-v`, `--verbose` | flag | unsupported (verbose) |
+| `-n`, `--no-name` | flag | unsupported (no-name) |
+| `-r`, `--recursive` | flag | unsupported (recursive) |
+| `-S`, `--suffix` | required | unsupported (suffix) |
+
+## `gunzip`
+
+Effects: `read`, `write`, `delete`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-d`, `--decompress` | flag | implemented |
+| `--uncompress` | flag | implemented |
+| `-k`, `--keep` | flag | implemented |
+| `-c`, `--stdout` | flag | implemented |
+| `--to-stdout` | flag | implemented |
+| `-t`, `--test` | flag | implemented |
+| `-1`, `--fast` | flag | implemented |
+| `-2` | flag | implemented |
+| `-3` | flag | implemented |
+| `-4` | flag | implemented |
+| `-5` | flag | implemented |
+| `-6` | flag | implemented |
+| `-7` | flag | implemented |
+| `-8` | flag | implemented |
+| `-9`, `--best` | flag | implemented |
+| `-f`, `--force` | flag | unsupported (force from terminal) |
+| `-q`, `--quiet` | flag | unsupported (quiet) |
+| `-v`, `--verbose` | flag | unsupported (verbose) |
+| `-n`, `--no-name` | flag | unsupported (no-name) |
+| `-r`, `--recursive` | flag | unsupported (recursive) |
+| `-S`, `--suffix` | required | unsupported (suffix) |
+
+## `zcat`
+
+Effects: `read`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-d`, `--decompress` | flag | implemented |
+| `--uncompress` | flag | implemented |
+| `-k`, `--keep` | flag | implemented |
+| `-c`, `--stdout` | flag | implemented |
+| `--to-stdout` | flag | implemented |
+| `-t`, `--test` | flag | implemented |
+| `-1`, `--fast` | flag | implemented |
+| `-2` | flag | implemented |
+| `-3` | flag | implemented |
+| `-4` | flag | implemented |
+| `-5` | flag | implemented |
+| `-6` | flag | implemented |
+| `-7` | flag | implemented |
+| `-8` | flag | implemented |
+| `-9`, `--best` | flag | implemented |
+| `-f`, `--force` | flag | unsupported (force from terminal) |
+| `-q`, `--quiet` | flag | unsupported (quiet) |
+| `-v`, `--verbose` | flag | unsupported (verbose) |
+| `-n`, `--no-name` | flag | unsupported (no-name) |
+| `-r`, `--recursive` | flag | unsupported (recursive) |
+| `-S`, `--suffix` | required | unsupported (suffix) |
+
+## `zip`
+
+Effects: `read`, `write`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-r` | flag | implemented |
+| `-q` | flag | implemented |
+| `-x`, `--exclude` | required | unsupported (exclude patterns) |
+
+## `unzip`
+
+Effects: `read`, `write`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-l` | flag | implemented |
+| `-o` | flag | implemented |
+| `-q` | flag | implemented |
+| `-d`, `--directory` | required | implemented |
+
 ## Unspec'd commands
 
-`.`, `:`, `[`, `[[`, `alias`, `awk`, `base64`, `cd`, `clear`, `command`, `curl`, `date`, `dig`, `dirs`, `egrep`, `env`, `eval`, `exit`, `export`, `false`, `find`, `free`, `groups`, `gunzip`, `gzip`, `history`, `host`, `hostname`, `id`, `ifconfig`, `ip`, `kill`, `less`, `man`, `md5sum`, `more`, `netstat`, `nl`, `nproc`, `nslookup`, `pgrep`, `ping`, `pkill`, `popd`, `printenv`, `ps`, `pushd`, `pwd`, `read`, `sed`, `seq`, `set`, `sha1sum`, `sha256sum`, `sleep`, `source`, `ss`, `sudo`, `tac`, `tar`, `test`, `timeout`, `true`, `type`, `uname`, `unset`, `unzip`, `uptime`, `wget`, `which`, `whoami`, `xargs`, `yes`, `zcat`, `zip`
+`.`, `:`, `[`, `[[`, `alias`, `awk`, `base64`, `cd`, `clear`, `command`, `curl`, `date`, `dig`, `dirs`, `egrep`, `env`, `eval`, `exit`, `export`, `false`, `find`, `free`, `groups`, `history`, `host`, `hostname`, `id`, `ifconfig`, `ip`, `kill`, `less`, `man`, `md5sum`, `more`, `netstat`, `nl`, `nproc`, `nslookup`, `pgrep`, `ping`, `pkill`, `popd`, `printenv`, `ps`, `pushd`, `pwd`, `read`, `sed`, `seq`, `set`, `sha1sum`, `sha256sum`, `sleep`, `source`, `ss`, `sudo`, `tac`, `tar`, `test`, `timeout`, `true`, `type`, `uname`, `unset`, `uptime`, `wget`, `which`, `whoami`, `xargs`, `yes`
