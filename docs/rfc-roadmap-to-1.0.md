@@ -1,6 +1,8 @@
 # RFC: fauxnix roadmap to 1.0
 
-Status: **proposed** — tracking issue mirrors this file; discussion happens there.
+Status: **superseded (milestones)** — v0.7–v0.9 shipped most tracks; the 1.0.0
+plan now lives in [rfc-1.0-completeness-usability.md](rfc-1.0-completeness-usability.md).
+The track analysis below remains valid history.
 Supersedes the informal "next steps" notes scattered across #81/#111 and the
 v0.4–v0.6 release notes. Process precedent: #111 (wave 2), #113/#114 (wave 3),
 #115 (wave 4) — RFC first, independently reviewable PRs second, integration
