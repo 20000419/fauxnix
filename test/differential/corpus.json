@@ -210,6 +210,31 @@
       "id": "echo-pipe-grep",
       "cmd": "echo hi | grep hi",
       "source": "#153"
+    },
+    {
+      "id": "pos-set-echo",
+      "cmd": "set -- a b; echo $1 $#",
+      "source": "#118 C-3 / docs/rfc-positional-params.md"
+    },
+    {
+      "id": "pos-at-quoted",
+      "cmd": "set -- a b; echo \"$@\"",
+      "source": "#118 C-3 / docs/rfc-positional-params.md"
+    },
+    {
+      "id": "pos-quoted-space",
+      "cmd": "set -- a 'x y'; echo \"$2\"",
+      "source": "#118 C-3 / docs/rfc-positional-params.md"
+    },
+    {
+      "id": "pos-shift",
+      "cmd": "set -- a b c; shift; echo $1 $#",
+      "source": "#118 C-3 / docs/rfc-positional-params.md"
+    },
+    {
+      "id": "pos-clear",
+      "cmd": "set -- a; set --; echo $#",
+      "source": "#118 C-3 / docs/rfc-positional-params.md"
     }
   ]
 }

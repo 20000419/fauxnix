@@ -88,6 +88,12 @@ export function varExpr(
   if (index !== undefined) {
     return '(fx-subget ' + psStr(name) + ' ' + psStr(index) + ')';
   }
+  if (/^[0-9]+$/.test(name)) {
+    if (name === '0') {
+      return "$(if ($env:FAUXNIX_ARG0) { [string]$env:FAUXNIX_ARG0 } else { 'fauxnix' })";
+    }
+    return '(fx-posget ' + name + ')';
+  }
   switch (name) {
     case 'HOME':
       return '$HOME';
@@ -110,9 +116,26 @@ export function varExpr(
       return '[string]$PID';
     case 'HOSTNAME':
       return '$env:COMPUTERNAME';
+    case '#':
+      return '@(fx-posload).Count';
+    case '@':
+    case '*':
+      return '((@(fx-posload) -join (fx-ifs1)))';
     default:
       return '$env:' + name;
   }
+}
+
+/** `$?` `$$` `$0`–`$n` `$#` `$@` `$*` — not ordinary `$env:` names. */
+export function isSpecialShellVar(name: string): boolean {
+  return (
+    name === '?' ||
+    name === '$' ||
+    name === '#' ||
+    name === '@' ||
+    name === '*' ||
+    /^[0-9]+$/.test(name)
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -320,6 +343,7 @@ function wordPartsForSplat(w: Word): { part: WordPart; quoted: boolean }[] {
 /**
  * `${name[@]}` / `"pre${name[@]}post"` — one argv per element.
  * Unquoted `${name[*]}` also splats (bash); quoted `"${name[*]}"` stays one join.
+ * `$@` / unquoted `$*` splat like `${arr[@]}`; quoted `"$@"` still splats.
  */
 export function splatSpec(w: Word): { name: string; prefix: string; suffix: string } | null {
   const parts = wordPartsForSplat(w);
@@ -331,7 +355,10 @@ export function splatSpec(w: Word): { name: string; prefix: string; suffix: stri
     const splat =
       p.kind === 'Var' &&
       !p.length &&
-      (p.index === '@' || (p.index === '*' && !quoted));
+      (p.name === '@' ||
+        (p.name === '*' && !quoted) ||
+        p.index === '@' ||
+        (p.index === '*' && !quoted));
     if (splat) {
       if (seen) return null;
       seen = true;
@@ -345,6 +372,12 @@ export function splatSpec(w: Word): { name: string; prefix: string; suffix: stri
   return name ? { name, prefix, suffix } : null;
 }
 
+/** Load the splat source: positionals (`@`/`*`) vs named arrays. */
+function splatLoadCall(name: string): string {
+  if (name === '@' || name === '*') return 'fx-posload';
+  return 'fx-arrload ' + psStr(name);
+}
+
 /** PS expression of a string[]: `@` words splat, others stay one element. */
 export function argListExpr(words: Word[], fn: (w: Word) => string = exprOfWord): string {
   if (words.length === 0) return '@()';
@@ -354,10 +387,10 @@ export function argListExpr(words: Word[], fn: (w: Word) => string = exprOfWord)
       .map((w) => {
         const s = splatSpec(w);
         if (!s) return '@(' + fn(w) + ')';
-        if (!s.prefix && !s.suffix) return '@(fx-arrload ' + psStr(s.name) + ')';
+        if (!s.prefix && !s.suffix) return '@(' + splatLoadCall(s.name) + ')';
         return (
-          '@($( $fx_sp = @(fx-arrload ' +
-          psStr(s.name) +
+          '@($( $fx_sp = @(' +
+          splatLoadCall(s.name) +
           '); if ($fx_sp.Count -eq 0) { $fx_sp = @(' +
           psStr(s.prefix + s.suffix) +
           ') } else { $fx_sp[0] = ' +
@@ -446,7 +479,7 @@ export function translateSimple(
             hasStdin,
           );
     const emptyCmdLines: string[] = [
-      '$fx_cw = @(fx-arrload ' + psStr(nameSplat.name) + ')',
+      '$fx_cw = @(' + splatLoadCall(nameSplat.name) + ')',
     ];
     if (hasAffix) {
       emptyCmdLines.push(
@@ -1050,6 +1083,10 @@ const WRAP_HELPER_ORDER = [
   'fx-csub',
   'fx-svenc',
   'fx-svdec',
+  'fx-posload',
+  'fx-posset',
+  'fx-posget',
+  'fx-posshift',
   'fx-arrload',
   'fx-scalar0',
   'fx-ifs1',
@@ -1071,6 +1108,10 @@ const WRAP_HELPER_DEPS: Record<WrapHelper, WrapHelper[]> = {
   'fx-csub': [],
   'fx-svenc': [],
   'fx-svdec': [],
+  'fx-posload': ['fx-svdec'],
+  'fx-posset': ['fx-svenc'],
+  'fx-posget': ['fx-posload'],
+  'fx-posshift': ['fx-posload', 'fx-posset'],
   'fx-arrload': ['fx-scalar0', 'fx-svdec'],
   'fx-scalar0': ['fx-svdec'],
   'fx-ifs1': ['fx-scalar0'],
@@ -1244,6 +1285,52 @@ export function wrapScript(body: string, opts: WrapScriptOptions = {}): string {
       '    $i++',
       '  }',
       '  return [string]$sb',
+      '}',
+    ],
+    'fx-posload': [
+      'function fx-posload {',
+      '  if ($null -eq $env:FAUXNIX_POS -or [string]$env:FAUXNIX_POS -eq \'\') { return @() }',
+      '  $out = @()',
+      '  foreach ($el in @($env:FAUXNIX_POS -split [string][char]30)) { $out += ,(fx-svdec $el) }',
+      '  return $out',
+      '}',
+    ],
+    'fx-posset': [
+      'function fx-posset($vals) {',
+      '  if ($null -eq $vals) { $vals = @() }',
+      '  $vals = @($vals)',
+      '  if ($vals.Count -eq 0) { $env:FAUXNIX_POS = \'\'; return }',
+      '  $encs = @(); foreach ($v in $vals) { $encs += (fx-svenc $v) }',
+      '  $env:FAUXNIX_POS = ($encs -join [string][char]30)',
+      '}',
+    ],
+    'fx-posget': [
+      'function fx-posget($i) {',
+      '  $arr = @(fx-posload)',
+      '  $n = 0',
+      '  if (-not [int]::TryParse([string]$i, [ref]$n)) { return \'\' }',
+      '  if ($n -lt 1 -or $n -gt $arr.Count) { return \'\' }',
+      '  return [string]$arr[$n - 1]',
+      '}',
+    ],
+    'fx-posshift': [
+      'function fx-posshift($n) {',
+      '  $arr = @(fx-posload)',
+      '  $i = 1',
+      '  if ($null -ne $n -and [string]$n -ne \'\') {',
+      '    $parsed = 0',
+      '    if (-not [int]::TryParse([string]$n, [ref]$parsed)) {',
+      '      [Console]::Error.WriteLine(\'bash: shift: \' + [string]$n + \': numeric argument required\')',
+      '      $script:fx_exit = 1',
+      '      return',
+      '    }',
+      '    $i = $parsed',
+      '  }',
+      '  if ($i -lt 0 -or $i -gt $arr.Count) { $script:fx_exit = 1; return }',
+      '  if ($i -eq 0) { return }',
+      '  if ($i -eq $arr.Count) { fx-posset @(); return }',
+      '  $new = @($arr[$i..($arr.Count - 1)])',
+      '  fx-posset $new',
       '}',
     ],
     'fx-arrload': [

@@ -25,7 +25,12 @@ import {
   SH_SCRIPT_WINDOWS_HINT,
 } from '../src/errors.js';
 import { decodeHostResponse, encodeHostRequest, parseHostLine } from '../src/ps-host.js';
-import { bashToolResult, formatBashText } from '../src/mcp.js';
+import {
+  bashToolResult,
+  formatBashText,
+  formatSessionStatus,
+  positionalCountFromEnv,
+} from '../src/mcp.js';
 import '../src/commands/install-all.js';
 import { specsMarkdown } from '../src/registry.js';
 
@@ -171,6 +176,24 @@ describe('parser', () => {
     expect(cmd.args[2]).toEqual([{ kind: 'Var', name: 'x', index: '@' }]);
   });
 
+  it('parses positional specials $1 $# $@ $* ${1} ${#}', () => {
+    const cmd = parse('echo $1 $# $@ $* ${1} ${#} ${@} ${*} $0').segments[0].pipeline.commands[0];
+    expect(cmd.args.map((w) => w[0])).toEqual([
+      { kind: 'Var', name: '1' },
+      { kind: 'Var', name: '#' },
+      { kind: 'Var', name: '@' },
+      { kind: 'Var', name: '*' },
+      { kind: 'Var', name: '1' },
+      { kind: 'Var', name: '#' },
+      { kind: 'Var', name: '@' },
+      { kind: 'Var', name: '*' },
+      { kind: 'Var', name: '0' },
+    ]);
+    expect(parse('echo ${#X}').segments[0].pipeline.commands[0].args[0]).toEqual([
+      { kind: 'Var', name: 'X', length: true },
+    ]);
+  });
+
   it('registers command as a builtin', () => {
     expect(lookup('command')).toBeTypeOf('function');
   });
@@ -197,6 +220,25 @@ describe('parser', () => {
   it('splats unquoted ${name[*]}', () => {
     const cmd = parse('printf x ${a[*]}').segments[0].pipeline.commands[0];
     expect(splatSpec(cmd.args[1])).toEqual({ name: 'a', prefix: '', suffix: '' });
+  });
+
+  it('splats $@ and quoted "$@", but not quoted "$*"', () => {
+    expect(splatSpec(parse('echo $@').segments[0].pipeline.commands[0].args[0])).toEqual({
+      name: '@',
+      prefix: '',
+      suffix: '',
+    });
+    expect(splatSpec(parse('echo "$@"').segments[0].pipeline.commands[0].args[0])).toEqual({
+      name: '@',
+      prefix: '',
+      suffix: '',
+    });
+    expect(splatSpec(parse('echo $*').segments[0].pipeline.commands[0].args[0])).toEqual({
+      name: '*',
+      prefix: '',
+      suffix: '',
+    });
+    expect(splatSpec(parse('echo "$*"').segments[0].pipeline.commands[0].args[0])).toBeNull();
   });
 
   it('indexes ${name[0]} through fx-subget, not $env:', () => {
@@ -464,6 +506,26 @@ describe('translator', () => {
     expect(varExpr('PWD')).toBe('$PWD.Path');
     expect(varExpr('USER')).toBe('$env:USERNAME');
     expect(varExpr('?')).toBe('[string]$fx_prev');
+    expect(varExpr('1')).toContain('fx-posget');
+    expect(varExpr('#')).toContain('fx-posload');
+    expect(varExpr('#')).toContain('Count');
+    expect(varExpr('@')).toContain('fx-posload');
+    expect(varExpr('0')).toContain('FAUXNIX_ARG0');
+    expect(varExpr('0')).toContain('fauxnix');
+  });
+
+  it('set -- and echo $1 $# / $@ use fx-pos helpers', () => {
+    const plans = translateCommandList(parse('set -- a b; echo $1 $#'));
+    expect(plans[0].body).toContain('fx-posset');
+    expect(plans[1].body).toContain('fx-posget');
+    expect(plans[1].body).toContain('fx-posload');
+    const splat = translateCommandList(parse('echo $@'))[0];
+    expect(splat.body).toContain('fx-posload');
+    expect(splat.body).not.toContain("fx-arrload '@'");
+    expect(splat.script).toContain('function fx-posload');
+    expect(lookup('shift')).toBeTypeOf('function');
+    expect(translateCommandList(parse('shift'))[0].body).toContain('fx-posshift');
+    expect(translateCommandList(parse('set --'))[0].body).toContain('fx-posset');
   });
 
   it('normalizes POSIX-ish literal paths', () => {
@@ -505,6 +567,10 @@ describe('translator', () => {
   it('host bootstrap loads helpers and speaks JSON lines without exit', () => {
     const boot = hostBootstrapScript();
     expect(boot).toContain('function fx-arrload');
+    expect(boot).toContain('function fx-posload');
+    expect(boot).toContain('function fx-posset');
+    expect(boot).toContain('function fx-posget');
+    expect(boot).toContain('function fx-posshift');
     expect(boot).toContain('function fx-csub');
     expect(boot).toContain('function fx-native');
     expect(boot).toContain('function fx-winargv');
@@ -1381,6 +1447,23 @@ describe('MCP structured results (#129)', () => {
     expect(r.structuredContent.exitCode).toBe(1);
     expect(r.content[0].text).toContain('Exit code: 1');
     expect('isError' in r && r.isError).toBeFalsy();
+  });
+
+  it('session status reports positional count from FAUXNIX_POS', () => {
+    expect(positionalCountFromEnv({})).toBe(0);
+    expect(positionalCountFromEnv({ FAUXNIX_POS: '' })).toBe(0);
+    expect(positionalCountFromEnv({ FAUXNIX_POS: 'a' })).toBe(1);
+    expect(positionalCountFromEnv({ FAUXNIX_POS: 'a\x1eb' })).toBe(2);
+    expect(
+      formatSessionStatus({ cwd: null, env: {}, id: 'abcd1234' }),
+    ).toContain('positionals: 0');
+    expect(
+      formatSessionStatus({
+        cwd: 'D:\\tmp',
+        env: { FAUXNIX_POS: 'a\x1eb\x1ec' },
+        id: 'abcd1234',
+      }),
+    ).toMatch(/positionals: 3/);
   });
 });
 

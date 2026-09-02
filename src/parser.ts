@@ -317,6 +317,10 @@ function readDollar(input: string, i: number): { part: WordPart; next: number } 
         next: end + 1,
       };
     }
+    // ${1} ${#} ${@} ${*} — positional / special params (not ${#name} length)
+    if (name === '#' || name === '@' || name === '*' || /^[0-9]+$/.test(name)) {
+      return { part: { kind: 'Var', name }, next: end + 1 };
+    }
     if (!name || !isNameStart(name[0]) || !name.split('').every(isNameChar)) {
       // ${VAR:=default} etc. still raw text
       return { part: { kind: 'Text', text: input.slice(i, end + 1) }, next: end + 1 };
@@ -388,8 +392,8 @@ function readDollar(input: string, i: number): { part: WordPart; next: number } 
     return { part: { kind: 'Var', name: input.slice(j, j + len) }, next: j + len };
   }
 
-  // special: $? $$ $0-$9 — kept as symbolic Var; the translator maps them
-  if ('?$_'.includes(input[j]) || /[0-9]/.test(input[j])) {
+  // special: $? $$ $0-$9 $# $@ $* — kept as symbolic Var; the translator maps them
+  if ('?$_#@*'.includes(input[j]) || /[0-9]/.test(input[j])) {
     return { part: { kind: 'Var', name: input[j] }, next: j + 1 };
   }
   return null;

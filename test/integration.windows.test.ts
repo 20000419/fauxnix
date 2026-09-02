@@ -1129,6 +1129,22 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect((await run('set --')).exitCode).toBe(0);
   });
 
+  it('set -- writes session positionals for $1 $# "$@" shift', async () => {
+    expect((await run('set -- a b; echo $1 $#')).stdout.trim()).toBe('a 2');
+    expect((await run('echo "$@"')).stdout.trim()).toBe('a b');
+    expect((await run("set -- a 'x y'; echo \"$2\"")).stdout.trim()).toBe('x y');
+    expect((await run('shift')).exitCode).toBe(0);
+    expect((await run('echo $1 $#')).stdout.trim()).toBe('x y 1');
+    expect((await run('set -- p q r')).exitCode).toBe(0);
+    expect((await run('echo $1 $3')).stdout.trim()).toBe('p r');
+    expect(session.env.FAUXNIX_POS).toBe('p' + String.fromCharCode(30) + 'q' + String.fromCharCode(30) + 'r');
+    expect((await run('set --')).exitCode).toBe(0);
+    expect((await run('echo $#')).stdout.trim()).toBe('0');
+    expect((await run('echo "$@"')).stdout.trim()).toBe('');
+    expect((await run('shift')).exitCode).toBe(1);
+    expect((await run('echo $0')).stdout.trim()).toBe('fauxnix');
+  });
+
   it('env -i fails loudly instead of keeping inherited secrets', async () => {
     const r = await run('env -i echo hi');
     expect(r.exitCode).toBe(2);
