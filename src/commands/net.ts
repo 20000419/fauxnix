@@ -114,17 +114,59 @@ const curl: Handler = (args) => {
 /* wget                                                                */
 /* ------------------------------------------------------------------ */
 
-/** GNU wget default output filename derived from a literal URL (index.html when bare). */
-function urlFileName(u: string): string {
-  // keep only the path component (drop scheme, host, query, fragment)
-  let p = u.split('#')[0].split('?')[0];
-  const sm = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.exec(p);
-  if (sm) p = p.slice(sm[0].length);
-  const slash = p.indexOf('/');
-  if (slash >= 0) p = p.slice(slash + 1);
-  else p = '';
-  if (p === '') return 'index.html'; // no path (or trailing /) → GNU default
-  return p;
+const WINDOWS_DEVICE_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
+
+function percentEncodeChar(char: string): string {
+  return Array.from(Buffer.from(char, 'utf8'), (byte) => '%' + byte.toString(16).toUpperCase()).join('');
+}
+
+/**
+ * GNU wget-style default output basename for the curl fallback.
+ *
+ * A valid UTF-8 percent sequence is decoded exactly once. Malformed sequences
+ * remain literal, while characters Windows cannot put in a filename are
+ * percent-encoded again. This keeps encoded separators inside one basename
+ * instead of accidentally turning them into local path components.
+ */
+export function urlFileName(u: string): string {
+  let pathname: string;
+  try {
+    pathname = new URL(u).pathname;
+  } catch {
+    return 'index.html';
+  }
+
+  // URL normalisation handles dot segments. A bare path or trailing slash uses
+  // wget's conventional index filename.
+  if (pathname === '' || pathname.endsWith('/')) return 'index.html';
+  const rawName = pathname.slice(pathname.lastIndexOf('/') + 1);
+
+  let decoded = rawName;
+  try {
+    decoded = decodeURIComponent(rawName);
+  } catch {
+    // Keep malformed percent escapes literal so naming remains deterministic.
+  }
+
+  let safe = '';
+  for (const char of decoded) {
+    const code = char.codePointAt(0) ?? 0;
+    if (code <= 0x1f || code === 0x7f || /[<>:"/\\|?*]/.test(char)) {
+      safe += percentEncodeChar(char);
+    } else {
+      safe += char;
+    }
+  }
+
+  // Windows strips trailing dots/spaces and treats DOS device basenames as
+  // special even when an extension is present. Preserve the intended text in
+  // a stable, ordinary filename instead.
+  safe = safe.replace(/[. ]+$/, (suffix) =>
+    Array.from(suffix, (char) => percentEncodeChar(char)).join(''),
+  );
+  if (safe === '' || safe === '.' || safe === '..') return 'index.html';
+  if (WINDOWS_DEVICE_NAME.test(safe)) safe = '_' + safe;
+  return safe;
 }
 
 interface WgetMap {
