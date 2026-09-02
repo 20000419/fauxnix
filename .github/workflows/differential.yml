@@ -1,0 +1,26 @@
+name: Differential
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+jobs:
+  oracle:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - name: Run Git Bash oracle (skip-safe)
+        shell: pwsh
+        run: |
+          $bash = 'C:\Program Files\Git\bin\bash.exe'
+          if (Test-Path $bash) {
+            $env:FAUXNIX_DIFF_ORACLE = $bash
+            npx vitest run test/differential.test.ts
+          } else {
+            Write-Output 'differential oracle skipped: git-bash bash.exe missing'
+          }

@@ -249,7 +249,7 @@ npm run build
 npx tsx scratch/run.mjs "any bash command"   # quick live check
 ```
 
-Differential vs Git Bash is opt-in (`FAUXNIX_DIFF_ORACLE=1`; skips if unset or `bash.exe` is missing — Git Bash is not required). See [`test/differential/README.md`](test/differential/README.md). This is the RFC C-7 scaffold, not the 200-case 1.0 gate.
+Differential vs Git Bash is opt-in (`FAUXNIX_DIFF_ORACLE=1`; skips if unset or `bash.exe` is missing — Git Bash is not required). See [`test/differential/README.md`](test/differential/README.md). This is grown from the 40-case RFC C-7 scaffold, not the 200-case 1.0 gate. The weekly oracle is opt-in via the scheduled workflow (`.github/workflows/differential.yml`) when Git Bash is on the runner.
 
 Architecture map: `src/parser.ts` (bash subset → AST) · `src/translator.ts` (AST → PowerShell +
 executor wrapper) · `src/executor.ts` (spawn, redirects, session persistence) ·
