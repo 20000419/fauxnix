@@ -5,13 +5,26 @@
 import { beforeAll, afterAll, describe, expect, it } from 'vitest';
 import { getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, existsSync, appendFileSync, realpathSync } from 'node:fs';
+import {
+  mkdtempSync,
+  writeFileSync,
+  mkdirSync,
+  rmSync,
+  readFileSync,
+  existsSync,
+  appendFileSync,
+  readdirSync,
+  statSync,
+  realpathSync,
+  writeSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseCommand } from '../src/parser.js';
 import { translateCommandList } from '../src/translator.js';
 import { FauxnixSession } from '../src/executor.js';
 import { resolvePowerShell } from '../src/powershell.js';
+import { PowerShellHost } from '../src/ps-host.js';
 import '../src/commands/install-all.js';
 
 const onWindows = process.platform === 'win32';
@@ -901,6 +914,7 @@ describe.skipIf(!hasPs)(`integration (real ${selectedPowerShell.executable})`, {
     expect((await run('echo "$(echo a; echo b)"')).stdout).toBe('a\nb\n');
     expect((await run('echo $(false; echo x)')).stdout.trim()).toBe('x');
     expect((await run('echo $(true && echo y)')).stdout.trim()).toBe('y');
+    expect((await run('echo "$(node -p 21+21)"')).stdout).toBe('42\n');
   });
 
   it('VAR=value prefixes do not leak past the command', async () => {
@@ -1207,11 +1221,17 @@ describe.skipIf(!hasPs)(`integration (real ${selectedPowerShell.executable})`, {
     expect(stdout.stdout).toBe('');
   });
 
-  it('printf CRLF without a trailing LF is preserved on redirect', async () => {
-    const r = await run("printf 'a\\r\\nb' > cr.txt; wc -c cr.txt");
+  it('printf CRLF bytes are preserved for redirects and caller output', async () => {
+    const r = await run(
+      "printf 'a\\r\\nb' > cr.txt; printf 'x\\r\\n' > cr-tail.txt; wc -c cr.txt cr-tail.txt",
+    );
     expect(r.exitCode).toBe(0);
     expect(r.stdout.trim()).toMatch(/4 .*cr\.txt/);
+    expect(r.stdout.trim()).toMatch(/3 .*cr-tail\.txt/);
     expect(readFileSync(join(dir, 'cr.txt'))).toEqual(Buffer.from('a\r\nb'));
+    expect(readFileSync(join(dir, 'cr-tail.txt'))).toEqual(Buffer.from('x\r\n'));
+    const caller = await run("printf 'x\\r\\n'");
+    expect(caller.stdout).toBe('x\r\n');
   });
 
   it('cd then redirect writes under the new cwd, not the entry cwd', async () => {
@@ -2092,6 +2112,7 @@ describe.skipIf(!hasPs)(`integration (real ${selectedPowerShell.executable})`, {
       );
       expect(r.exitCode).toBe(0);
       expect(readFileSync(target, 'utf8')).toBe('AAAAAAAAAA');
+      expect(r.truncated).toBe(false);
     } finally {
       await extra.dispose();
     }
@@ -2113,6 +2134,220 @@ describe.skipIf(!hasPs)(`integration (real ${selectedPowerShell.executable})`, {
     }
   }, 30000);
 
+  it('applies output budgets across all list segments', async () => {
+    const extra = new FauxnixSession();
+    try {
+      await extra.prewarm();
+      const r = await extra.run(
+        translateCommandList(parseCommand("printf 'AAAA'; printf 'BBBBBBBB'; printf 'CCCC'")),
+        { stdoutLimit: 8 },
+      );
+      expect(r.stdout).toBe('AAAABBBB');
+      expect(Buffer.byteLength(r.stdout, 'utf8')).toBe(8);
+      expect(r.truncated).toBe(true);
+    } finally {
+      await extra.dispose();
+    }
+  }, 30000);
+
+  it('counts host line endings in caller bytes before truncating', async () => {
+    const extra = new FauxnixSession();
+    try {
+      await extra.prewarm();
+      const r = await extra.run(translateCommandList(parseCommand('echo a; echo b')), {
+        stdoutLimit: 4,
+      });
+      expect(r.stdout).toBe('a\nb\n');
+      expect(Buffer.byteLength(r.stdout, 'utf8')).toBe(4);
+      expect(r.truncated).toBe(false);
+
+      const clipped = await extra.run(
+        translateCommandList(parseCommand('echo A; echo B; echo C')),
+        { stdoutLimit: 4 },
+      );
+      expect(clipped.stdout).toBe('A\nB\n');
+      expect(Buffer.byteLength(clipped.stdout, 'utf8')).toBe(4);
+      expect(clipped.truncated).toBe(true);
+
+      const objectLines = await extra.run(
+        [
+          {
+            op: ';',
+            script: '',
+            body: "'A'; 'B'; 'C'",
+            redirects: [],
+            outputRedirects: [],
+            stdinRedirects: [],
+          },
+        ],
+        { stdoutLimit: 4 },
+      );
+      expect(objectLines.stdout).toBe('A\nB\n');
+      expect(Buffer.byteLength(objectLines.stdout, 'utf8')).toBe(4);
+      expect(objectLines.truncated).toBe(true);
+    } finally {
+      await extra.dispose();
+    }
+  }, 30000);
+
+  it('keeps stdout and stderr caller budgets independent under sustained output', async () => {
+    const extra = new FauxnixSession();
+    try {
+      await extra.prewarm();
+      const r = await extra.run(
+        translateCommandList(
+          parseCommand(
+            `node -e "process.stdout.write('O'.repeat(262144));process.stderr.write('E'.repeat(262144))"`,
+          ),
+        ),
+        { stdoutLimit: 31, stderrLimit: 47 },
+      );
+      expect(r.stdout).toBe('O'.repeat(31));
+      expect(r.stderr).toBe('E'.repeat(47));
+      expect(r.truncated).toBe(true);
+    } finally {
+      await extra.dispose();
+    }
+  }, 30000);
+
+  it('a stdout file redirect does not disable the stderr caller budget', async () => {
+    const extra = new FauxnixSession();
+    const target = join(dir, 'budget-large-stdout.txt');
+    try {
+      await extra.prewarm();
+      const r = await extra.run(
+        translateCommandList(
+          parseCommand(
+            `node -e "process.stdout.write('O'.repeat(262144));process.stderr.write('E'.repeat(262144))" > ${JSON.stringify(target)}`,
+          ),
+        ),
+        { stdoutLimit: 9, stderrLimit: 53 },
+      );
+      expect(readFileSync(target, 'utf8')).toBe('O'.repeat(262144));
+      expect(r.stdout).toBe('');
+      expect(r.stderr).toBe('E'.repeat(53));
+      expect(r.truncated).toBe(true);
+    } finally {
+      await extra.dispose();
+    }
+  }, 30000);
+
+  it('a stderr file redirect does not disable the stdout caller budget', async () => {
+    const extra = new FauxnixSession();
+    const target = join(dir, 'budget-large-stderr.txt');
+    try {
+      await extra.prewarm();
+      const r = await extra.run(
+        translateCommandList(
+          parseCommand(
+            `node -e "process.stdout.write('O'.repeat(262144));process.stderr.write('E'.repeat(262144))" 2> ${JSON.stringify(target)}`,
+          ),
+        ),
+        { stdoutLimit: 59, stderrLimit: 11 },
+      );
+      expect(readFileSync(target, 'utf8')).toBe('E'.repeat(262144));
+      expect(r.stdout).toBe('O'.repeat(59));
+      expect(r.stderr).toBe('');
+      expect(r.truncated).toBe(true);
+    } finally {
+      await extra.dispose();
+    }
+  }, 30000);
+
+  it('keeps UTF-8 boundaries while spending a shared multi-segment budget', async () => {
+    const extra = new FauxnixSession();
+    try {
+      await extra.prewarm();
+      const r = await extra.run(
+        translateCommandList(parseCommand(`printf '你'; printf '好世界'`)),
+        { stdoutLimit: 7 },
+      );
+      expect(r.stdout).toBe('你好');
+      expect(Buffer.byteLength(r.stdout, 'utf8')).toBe(6);
+      expect(r.truncated).toBe(true);
+    } finally {
+      await extra.dispose();
+    }
+  }, 30000);
+
+  it('does not fill a clipped UTF-8 prefix gap with later segments', async () => {
+    const extra = new FauxnixSession();
+    try {
+      await extra.prewarm();
+      for (const [limit, expected] of [
+        [1, ''],
+        [2, ''],
+        [3, '你'],
+      ] as const) {
+        const r = await extra.run(
+          translateCommandList(parseCommand(`printf '你'; printf 'X'`)),
+          { stdoutLimit: limit },
+        );
+        expect(r.stdout).toBe(expected);
+        expect(r.truncated).toBe(true);
+      }
+
+      const stderrPlans = ["[Console]::Error.Write('你')", "[Console]::Error.Write('X')"].map(
+        (body) => ({
+          op: ';' as const,
+          script: '',
+          body,
+          redirects: [],
+          outputRedirects: [],
+          stdinRedirects: [],
+        }),
+      );
+      const stderr = await extra.run(stderrPlans, { stderrLimit: 2 });
+      expect(stderr.stderr).toBe('');
+      expect(stderr.truncated).toBe(true);
+
+      const normalizedAway = [
+        {
+          op: ';' as const,
+          script: '',
+          body: "[Console]::Error.Write((' ' * 100) + 'X')",
+          redirects: [],
+          outputRedirects: [],
+          stdinRedirects: [],
+        },
+        {
+          op: ';' as const,
+          script: '',
+          body: "[Console]::Error.Write('Y')",
+          redirects: [],
+          outputRedirects: [],
+          stdinRedirects: [],
+        },
+      ];
+      const normalized = await extra.run(normalizedAway, { stderrLimit: 1 });
+      expect(normalized.stderr).toBe('');
+      expect(normalized.truncated).toBe(true);
+    } finally {
+      await extra.dispose();
+    }
+  }, 30000);
+
+  it('validates caller output budgets and honors zero and the supported maximum', async () => {
+    const extra = new FauxnixSession();
+    const plans = translateCommandList(parseCommand("printf 'X'"));
+    try {
+      for (const value of [-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_644]) {
+        await expect(extra.run(plans, { stdoutLimit: value })).rejects.toThrow(/stdoutLimit/);
+      }
+      await expect(extra.run(plans, { stderrLimit: -1 })).rejects.toThrow(/stderrLimit/);
+
+      const zero = await extra.run(plans, { stdoutLimit: 0 });
+      expect(zero.stdout).toBe('');
+      expect(zero.truncated).toBe(true);
+
+      const maximum = await extra.run(plans, { stdoutLimit: 2_147_483_643 });
+      expect(maximum.stdout).toBe('X');
+      expect(maximum.truncated).toBe(false);
+    } finally {
+      await extra.dispose();
+    }
+  }, 30000);
+
   it('whitespace-only stdout is preserved', async () => {
     const r = await run("printf '   '");
     expect(r.exitCode).toBe(0);
@@ -2121,16 +2356,183 @@ describe.skipIf(!hasPs)(`integration (real ${selectedPowerShell.executable})`, {
     expect(r.timedOut).toBe(false);
   });
 
-  it('native stderr is returned once and does not leak into the next command', async () => {
-    const noisy = await run(`node -e "process.stderr.write('E'.repeat(4096)); process.exit(7)"`);
-    expect(noisy.exitCode).toBe(7);
-    expect(noisy.stderr).toContain('E'.repeat(64));
-    expect(noisy.stderr.split('E').length - 1).toBeGreaterThanOrEqual(4096);
-    const next = await run('echo hi');
-    expect(next.exitCode).toBe(0);
-    expect(next.stdout.trim()).toBe('hi');
-    expect(next.stderr).not.toContain('E'.repeat(64));
-  });
+  it('bounds native stderr while preserving the marker and next request', async () => {
+    const extra = new FauxnixSession();
+    try {
+      await extra.prewarm();
+      const noisy = await extra.run(
+        translateCommandList(
+          parseCommand(`node -e "process.stderr.write('E'.repeat(1048576)); process.exit(7)"`),
+        ),
+        { stderrLimit: 65 },
+      );
+      expect(noisy.exitCode).toBe(7);
+      expect(noisy.stderr).toBe('E'.repeat(65));
+      expect(noisy.truncated).toBe(true);
+      const next = await extra.run(translateCommandList(parseCommand('echo hi')));
+      expect(next.exitCode).toBe(0);
+      expect(next.stdout.trim()).toBe('hi');
+      expect(next.stderr).not.toContain('E'.repeat(64));
+    } finally {
+      await extra.dispose();
+    }
+  }, 30000);
+
+  it('keeps direct host capture bounded and preserves UTF-8 raw stderr framing', async () => {
+    const hostFile = join(dir, 'budget-direct-host.ps1');
+    const host = new PowerShellHost(hostFile, () => ({ ...process.env }));
+    try {
+      await host.ready();
+      const rawScript = [
+        "$fx_raw = [Text.Encoding]::UTF8.GetBytes(('你好世界' * 65536))",
+        '$fx_rawStream = [Console]::OpenStandardError()',
+        '$fx_off = 0',
+        'while ($fx_off -lt $fx_raw.Length) {',
+        '  $fx_take = [Math]::Min(4093, $fx_raw.Length - $fx_off)',
+        '  $fx_rawStream.Write($fx_raw, $fx_off, $fx_take)',
+        '  $fx_rawStream.Flush()',
+        '  $fx_off += $fx_take',
+        '}',
+      ].join('\n');
+      const raw = await host.invoke(rawScript, {}, 30_000, undefined, {
+        stdoutMode: 'capture',
+        stdoutLimit: 13,
+        stderrMode: 'capture',
+        stderrLimit: 7,
+      });
+      expect(raw.stdout.length).toBe(0);
+      expect(raw.stderr.length).toBe(0);
+      expect(raw.nativeStderr?.toString('utf8')).toBe('你好');
+      expect(raw.truncated).toBe(true);
+
+      const next = await host.invoke("[Console]::Out.Write('ok')", {}, 30_000, undefined, {
+        stdoutMode: 'capture',
+        stdoutLimit: 13,
+        stderrMode: 'capture',
+        stderrLimit: 13,
+      });
+      expect(next.stdout.toString('utf8')).toBe('ok');
+      expect(next.stderr.length).toBe(0);
+    } finally {
+      await host.stop();
+      rmSync(hostFile, { force: true });
+    }
+  }, 30000);
+
+  it('contains native stderr spool write failures and restarts a clean host', async () => {
+    for (const failure of ['ENOSPC', 'SHORT_WRITE'] as const) {
+      const hostFile = join(dir, 'budget-native-write-' + failure.toLowerCase() + '.ps1');
+      let failOnce = true;
+      const host = new PowerShellHost(
+        hostFile,
+        () => ({ ...process.env }),
+        resolvePowerShell(),
+        (fd, buffer, offset, length) => {
+          if (failOnce) {
+            failOnce = false;
+            if (failure === 'SHORT_WRITE') return 0;
+            throw Object.assign(new Error('simulated full device'), { code: 'ENOSPC' });
+          }
+          return writeSync(fd, buffer, offset, length);
+        },
+      );
+      try {
+        await host.ready();
+        const failed = await host.invoke(
+          [
+            "$fx_raw = [Text.Encoding]::UTF8.GetBytes('NATIVE-FAIL')",
+            '$fx_rawStream = [Console]::OpenStandardError()',
+            '$fx_rawStream.Write($fx_raw, 0, $fx_raw.Length)',
+            '$fx_rawStream.Flush()',
+          ].join('\n'),
+          {},
+          30_000,
+          undefined,
+          { stdoutMode: 'capture', stdoutLimit: 17, stderrMode: 'capture', stderrLimit: 17 },
+        );
+        expect(failed.exitCode).toBe(1);
+        expect(failed.timedOut).toBe(false);
+        expect(failed.cancelled).toBe(false);
+        expect(failed.stderr.toString('utf8')).toContain('native stderr spool write failed');
+        if (failure === 'ENOSPC') expect(failed.stderr.toString('utf8')).toContain('ENOSPC');
+        else expect(failed.stderr.toString('utf8')).toContain('short write');
+
+        const leftovers = readdirSync(dir).filter(
+          (name) =>
+            name.startsWith('budget-native-write-' + failure.toLowerCase() + '.ps1.') &&
+            (name.endsWith('.native-stderr') || name.endsWith('.stdout') ||
+              name.endsWith('.stderr') || name.endsWith('.native')),
+        );
+        expect(leftovers).toEqual([]);
+
+        const next = await host.invoke("[Console]::Out.Write('ok')", {}, 30_000, undefined, {
+          stdoutMode: 'capture',
+          stdoutLimit: 17,
+          stderrMode: 'capture',
+          stderrLimit: 17,
+        });
+        expect(next.exitCode).toBe(0);
+        expect(next.stdout.toString('utf8')).toBe('ok');
+        expect(next.stderr.toString('utf8')).not.toContain('NATIVE-FAIL');
+      } finally {
+        await host.stop();
+        rmSync(hostFile, { force: true });
+      }
+    }
+  }, 60000);
+
+  it('lands complete file output in a host spool without response buffering', async () => {
+    const hostFile = join(dir, 'budget-spool-host.ps1');
+    const host = new PowerShellHost(hostFile, () => ({ ...process.env }));
+    let spool: string | undefined;
+    try {
+      await host.ready();
+      const r = await host.invoke(
+        "[Console]::Out.Write(('Z' * 4194304))",
+        {},
+        30_000,
+        undefined,
+        {
+          stdoutMode: 'spool',
+          stdoutLimit: 17,
+          stderrMode: 'capture',
+          stderrLimit: 17,
+        },
+      );
+      spool = r.stdoutSpool;
+      expect(r.stdout.length).toBe(0);
+      expect(spool).toBeTruthy();
+      expect(statSync(spool!).size).toBe(4_194_304);
+      expect(readFileSync(spool!, 'utf8').slice(0, 64)).toBe('Z'.repeat(64));
+    } finally {
+      await host.stop();
+      if (spool) rmSync(spool, { force: true });
+      rmSync(hostFile, { force: true });
+    }
+  }, 30000);
+
+  it('removes native pipeline spools when a host request times out', async () => {
+    const hostFile = join(dir, 'budget-timeout-host.ps1');
+    const host = new PowerShellHost(hostFile, () => ({ ...process.env }));
+    try {
+      await host.ready();
+      const r = await host.invoke(
+        "fx-native 'node' ([object[]]@('-e', 'setTimeout(()=>{},10000)')) $false",
+        {},
+        500,
+        undefined,
+        { stdoutMode: 'capture', stdoutLimit: 17, stderrMode: 'capture', stderrLimit: 17 },
+      );
+      expect(r.timedOut).toBe(true);
+      const leaked = readdirSync(dir).filter(
+        (name) => name.startsWith('budget-timeout-host.ps1.') && name.endsWith('.native'),
+      );
+      expect(leaked).toEqual([]);
+    } finally {
+      await host.stop();
+      rmSync(hostFile, { force: true });
+    }
+  }, 30000);
 
   it('AbortSignal cancel unblocks the next request without running later segments', async () => {
     const extra = new FauxnixSession();

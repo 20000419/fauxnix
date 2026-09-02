@@ -47,7 +47,7 @@ Host → Node:
 {"id":"<uuid>","stdoutB64":"<bytes>","stderrB64":"<bytes>","exitCode":0}
 ```
 
-Captured command streams are the UTF-8 bytes of `[Console]::Out` / `[Console]::Error` after redirecting those writers for the frame. Pipeline objects (`Write-Output` / `fx-write` line mode) are `WriteLine`d to the same `Console.Out` as they arrive so `echo -n` / `printf` exact writes still interleave correctly. Node always decodes these framed bytes as UTF-8. Bytes written directly to the host's OS stderr pipe stay separate and use the selected native-tool decoder before both strings are normalized and joined.
+Captured command streams are the UTF-8 bytes of `[Console]::Out` / `[Console]::Error` after redirecting those writers for the frame. Pipeline objects (`Write-Output` / `fx-write` line mode) are `WriteLine`d with LF to the same `Console.Out` as they arrive so `echo -n` / `printf` exact writes still interleave correctly. Caller-bound streams use a bounded capture, `/dev/null` uses a discard stream, and file-bound streams use a host-owned disk spool that Node copies byte-for-byte to its pre-opened fd. Native child pipes are drained concurrently before bounded replay, so the protocol never needs a complete native `ReadToEnd` string. Node always decodes framed bytes as UTF-8; bytes written directly to the host's OS stderr pipe stay separate and use the selected native-tool decoder before the strings are joined.
 
 The per-frame script is `wrapScript(body, { mode: 'host' })`: same cwd/env persist files and try/catch as spawn mode, **no `exit`**, **no helper re-emit** (the bootstrap already defined every `fx-*`).
 

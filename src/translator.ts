@@ -663,6 +663,10 @@ export function translateSimple(
   hasStdin: boolean,
   translation: TranslationContext = EXECUTE_TRANSLATION,
 ): string {
+  const nativeTerm =
+    "(-not $script:fx_csub -and (($MyInvocation.MyCommand.Name -eq '') -or " +
+    (position === 'last' ? '$true' : '$false') +
+    '))';
   // assignment-only segment (`X=1; cmd`): bash semantics are "set for the
   // rest of the shell". Reuse the export code path — persist + env shadow —
   // so empty values (`X=`) and `[[ -v X ]]` behave like bash (documented
@@ -732,7 +736,10 @@ export function translateSimple(
       '  $fx_na = [object[]](' + argListExpr(cmd.args) + ')',
       '  $fx_cmd = [string]$fx_cw[0]',
       '  if ($fx_cw.Count -gt 1) { $fx_na = [object[]](@($fx_cw[1..($fx_cw.Count - 1)]) + $fx_na) }',
-      '  ' + (hasStdin ? '($input | fx-native $fx_cmd $fx_na)' : 'fx-native $fx_cmd $fx_na'),
+      '  ' +
+        (hasStdin
+          ? '($input | fx-native $fx_cmd $fx_na ' + nativeTerm + ')'
+          : 'fx-native $fx_cmd $fx_na ' + nativeTerm),
       '}',
     );
     body = emptyCmdLines.join('\n');
@@ -745,7 +752,7 @@ export function translateSimple(
       // via fx-native (Win32 command line + Process). `& name @array` on
       // PS 5.1 drops empty argv entries and eats embedded quotes.
       const nameExpr = psStr(nameLit);
-      const invoke = 'fx-native ' + nameExpr + ' $fx_na';
+      const invoke = 'fx-native ' + nameExpr + ' $fx_na ' + nativeTerm;
       body = [
         '$fx_na = [object[]](' + argListExpr(cmd.args) + ')',
         (hasStdin ? '($input | ' + invoke + ')' : invoke),
@@ -754,7 +761,7 @@ export function translateSimple(
   } else {
     // dynamic command name — evaluate it
     const nameExpr = exprOfWord(cmd.name);
-    const invoke = 'fx-native (' + nameExpr + ') $fx_na';
+    const invoke = 'fx-native (' + nameExpr + ') $fx_na ' + nativeTerm;
     body = [
       '$fx_na = [object[]](' + argListExpr(cmd.args) + ')',
       (hasStdin ? '($input | ' + invoke + ')' : invoke),
@@ -1897,7 +1904,30 @@ export function wrapScript(body: string, opts: WrapScriptOptions = {}): string {
       '}',
     ],
     'fx-native': [
-      'function fx-native($name, $argv) {',
+      "if (-not ('FauxnixTextPump' -as [type])) {",
+      "  Add-Type -TypeDefinition @'",
+      'using System;',
+      'using System.IO;',
+      'using System.Text;',
+      'using System.Threading.Tasks;',
+      'public static class FauxnixTextPump {',
+      '  public static async Task CopyAsync(TextReader reader, TextWriter writer) {',
+      '    var buffer = new char[4096];',
+      '    int read;',
+      '    while ((read = await reader.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false)) > 0) {',
+      '      await writer.WriteAsync(buffer, 0, read).ConfigureAwait(false);',
+      '    }',
+      '    await writer.FlushAsync().ConfigureAwait(false);',
+      '  }',
+      '  public static async Task CopyFileAsync(TextReader reader, string path) {',
+      '    using (var writer = new StreamWriter(path, false, new UTF8Encoding(false))) {',
+      '      await CopyAsync(reader, writer).ConfigureAwait(false);',
+      '    }',
+      '  }',
+      '}',
+      "'@",
+      '}',
+      'function fx-native($name, $argv, $term) {',
       '  if ($null -eq $argv) { $argv = @() } else { $argv = [object[]]@($argv) }',
       '  $app = Get-Command -Name $name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1',
       '  if ($null -eq $app) {',
@@ -1956,35 +1986,40 @@ export function wrapScript(body: string, opts: WrapScriptOptions = {}): string {
       '  $psi.RedirectStandardError = $true',
       '  $psi.CreateNoWindow = $true',
       '  $psi.WorkingDirectory = [Environment]::CurrentDirectory',
-      // StreamReader.ReadToEndAsync is .NET 4.5 (PS 5.1). Start readers
-      // before writing stdin so a chatty child cannot fill the 64KB pipe.
+      // Drain both child pipes concurrently into disk-backed spools before
+      // replaying them. This prevents either 64KB OS pipe from blocking the
+      // child and avoids retaining the complete output in a .NET string.
       "  if ($env:FAUXNIX_NATIVE_ENCODING -eq 'ansi') { $enc = [System.Text.Encoding]::GetEncoding(936) } else { $enc = New-Object System.Text.UTF8Encoding $false }",
       '  $psi.StandardOutputEncoding = $enc',
       '  $psi.StandardErrorEncoding = $enc',
       '  $p = New-Object System.Diagnostics.Process',
       '  $p.StartInfo = $psi',
-      '  [void]$p.Start()',
-      '  $outTask = $p.StandardOutput.ReadToEndAsync()',
-      '  $errTask = $p.StandardError.ReadToEndAsync()',
-      '  $ins = @($input)',
-      '  if ($ins.Count -gt 0) {',
-      '    foreach ($fx_ln in $ins) { $p.StandardInput.WriteLine([string]$fx_ln) }',
+      '  $fx_no = $null',
+      '  $fx_spoolUtf8 = New-Object System.Text.UTF8Encoding $false',
+      '  try {',
+      '    if (-not $term) {',
+      "      if ($env:FAUXNIX_NATIVE_SPOOL_DIR) { $fx_no = Join-Path $env:FAUXNIX_NATIVE_SPOOL_DIR (([guid]::NewGuid().ToString('N')) + '.out') }",
+      '      else { $fx_no = [IO.Path]::GetTempFileName() }',
+      '    }',
+      '    [void]$p.Start()',
+      '    if ($term) { $outTask = [FauxnixTextPump]::CopyAsync($p.StandardOutput, [Console]::Out) }',
+      '    else { $outTask = [FauxnixTextPump]::CopyFileAsync($p.StandardOutput, $fx_no) }',
+      '    $errTask = [FauxnixTextPump]::CopyAsync($p.StandardError, [Console]::Error)',
+      '    foreach ($fx_ln in $input) { $p.StandardInput.WriteLine([string]$fx_ln) }',
+      '    $p.StandardInput.Close()',
+      '    [void][System.Threading.Tasks.Task]::WaitAll(@($outTask, $errTask))',
+      '    [void]$p.WaitForExit()',
+      '    if (-not $term) {',
+      '      $fx_or = New-Object System.IO.StreamReader($fx_no, $fx_spoolUtf8)',
+      '      try { while (($fx_line = $fx_or.ReadLine()) -ne $null) { $fx_line } }',
+      '      finally { $fx_or.Dispose() }',
+      '    }',
+      '    $code = [int]$p.ExitCode',
+      '    if ($code -gt 0) { $script:fx_exit = $code } elseif ($code -lt 0) { $script:fx_exit = 1 }',
+      '  } finally {',
+      '    try { $p.Close() } catch {}',
+      '    if ($null -ne $fx_no) { Remove-Item -LiteralPath $fx_no -Force -ErrorAction SilentlyContinue }',
       '  }',
-      '  $p.StandardInput.Close()',
-      '  [void][System.Threading.Tasks.Task]::WaitAll(@($outTask, $errTask))',
-      '  [void]$p.WaitForExit()',
-      '  $errt = [string]$errTask.Result',
-      '  if ($errt.Length -gt 0) { [Console]::Error.Write($errt) }',
-      '  $t = [string]$outTask.Result',
-      "  $t = $t.Replace(([string][char]13 + [string][char]10), [string][char]10).Replace([string][char]13, [string][char]10)",
-      "  if ($t -ne '') {",
-      '    $parts = @($t.Split([char]10))',
-      "    if ($parts.Count -gt 0 -and $parts[$parts.Count - 1] -eq '') { $parts = $parts[0..($parts.Count - 2)] }",
-      '    foreach ($fx_ol in $parts) { $fx_ol }',
-      '  }',
-      '  $code = [int]$p.ExitCode',
-      '  if ($code -gt 0) { $script:fx_exit = $code } elseif ($code -lt 0) { $script:fx_exit = 1 }',
-      '  try { $p.Close() } catch {}',
       '}',
     ],
   };
@@ -2021,6 +2056,46 @@ export function hostBootstrapScript(): string {
 
 /** Raw UTF-8 JSON lines on stdin/stdout; command streams captured per frame. */
 const HOST_RPC_LOOP = `
+if (-not ('FauxnixBoundedStream' -as [type])) {
+  Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+public sealed class FauxnixBoundedStream : Stream {
+  private readonly MemoryStream inner;
+  private readonly long limit;
+  private readonly long storageLimit;
+  private long totalWritten;
+  public bool Truncated { get; private set; }
+  public FauxnixBoundedStream(long limit) {
+    this.limit = Math.Max(0, limit);
+    this.storageLimit = this.limit + 3;
+    this.inner = new MemoryStream((int)Math.Min(this.storageLimit, 65536));
+  }
+  public byte[] ToArray() { return inner.ToArray(); }
+  public override bool CanRead { get { return false; } }
+  public override bool CanSeek { get { return false; } }
+  public override bool CanWrite { get { return true; } }
+  public override long Length { get { return inner.Length; } }
+  public override long Position { get { return inner.Position; } set { throw new NotSupportedException(); } }
+  public override void Flush() { }
+  public override int Read(byte[] buffer, int offset, int count) { throw new NotSupportedException(); }
+  public override long Seek(long offset, SeekOrigin origin) { throw new NotSupportedException(); }
+  public override void SetLength(long value) { throw new NotSupportedException(); }
+  public override void Write(byte[] buffer, int offset, int count) {
+    long remaining = Math.Max(0, storageLimit - inner.Length);
+    int keep = (int)Math.Min((long)count, remaining);
+    if (keep > 0) inner.Write(buffer, offset, keep);
+    totalWritten += count;
+    if (totalWritten > limit) Truncated = true;
+  }
+  public override void WriteByte(byte value) {
+    if (inner.Length < storageLimit) inner.WriteByte(value);
+    totalWritten++;
+    if (totalWritten > limit) Truncated = true;
+  }
+}
+'@
+}
 $fx_utf8 = New-Object System.Text.UTF8Encoding $false
 $fx_in = [Console]::OpenStandardInput()
 $fx_out = [Console]::OpenStandardOutput()
@@ -2040,8 +2115,8 @@ function fx-emit-chunks($type, $id, [byte[]]$bytes, $limit, [ref]$seq) {
   if ($null -ne $bytes) { $n = $bytes.Length }
   $use = $n
   $trunc = $false
-  # limit 0 = uncapped (file-redirected streams must never be budget-clipped)
-  if ($limit -gt 0 -and $use -gt $limit) {
+  # limit -1 = uncapped; zero is a real empty caller budget
+  if ($limit -ge 0 -and $use -gt $limit) {
     $use = $limit
     $trunc = $true
     # back the cut off to a valid UTF-8 boundary — a split codepoint makes
@@ -2066,6 +2141,18 @@ function fx-emit-chunks($type, $id, [byte[]]$bytes, $limit, [ref]$seq) {
     $off += $len
   }
   return $trunc
+}
+function fx-new-capture($mode, $limit, $spoolPath) {
+  if ([string]$mode -eq 'discard') { return [System.IO.Stream]::Null }
+  if ([string]$mode -eq 'spool') {
+    return (New-Object System.IO.FileStream([string]$spoolPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read))
+  }
+  return (New-Object FauxnixBoundedStream ([Math]::Max(0, [long]$limit)))
+}
+function fx-capture-bytes($stream) {
+  if ($stream -is [FauxnixBoundedStream]) { return $stream.ToArray() }
+  if ($stream -is [System.IO.MemoryStream]) { return $stream.ToArray() }
+  return (New-Object byte[] 0)
 }
 while ($true) {
   $fx_line = $fx_reader.ReadLine()
@@ -2094,12 +2181,24 @@ while ($true) {
       }
     }
     $fx_script = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([string]$fx_req.scriptB64))
-    $fx_msOut = New-Object System.IO.MemoryStream
-    $fx_msErr = New-Object System.IO.MemoryStream
+    $fx_outLimit = 8388608
+    $fx_errLimit = 1048576
+    if ($null -ne $fx_req.PSObject.Properties['stdoutLimit']) { $fx_outLimit = [int]$fx_req.stdoutLimit }
+    if ($null -ne $fx_req.PSObject.Properties['stderrLimit']) { $fx_errLimit = [int]$fx_req.stderrLimit }
+    $fx_outMode = 'capture'
+    $fx_errMode = 'capture'
+    $fx_outSpool = ''
+    $fx_errSpool = ''
+    if ($null -ne $fx_req.PSObject.Properties['stdoutMode']) { $fx_outMode = [string]$fx_req.stdoutMode }
+    if ($null -ne $fx_req.PSObject.Properties['stderrMode']) { $fx_errMode = [string]$fx_req.stderrMode }
+    if ($null -ne $fx_req.PSObject.Properties['stdoutSpoolPath']) { $fx_outSpool = [string]$fx_req.stdoutSpoolPath }
+    if ($null -ne $fx_req.PSObject.Properties['stderrSpoolPath']) { $fx_errSpool = [string]$fx_req.stderrSpoolPath }
+    $fx_msOut = fx-new-capture $fx_outMode $fx_outLimit $fx_outSpool
+    $fx_msErr = fx-new-capture $fx_errMode $fx_errLimit $fx_errSpool
     $fx_outW = New-Object System.IO.StreamWriter($fx_msOut, $fx_utf8, 1024, $true)
     $fx_errW = New-Object System.IO.StreamWriter($fx_msErr, $fx_utf8, 1024, $true)
-    $fx_outW.NewLine = [string][char]13 + [string][char]10
-    $fx_errW.NewLine = [string][char]13 + [string][char]10
+    $fx_outW.NewLine = [string][char]10
+    $fx_errW.NewLine = [string][char]10
     $fx_outW.AutoFlush = $true
     $fx_errW.AutoFlush = $true
     [Console]::SetOut($fx_outW)
@@ -2127,24 +2226,29 @@ while ($true) {
   }
   $fx_outBytes = New-Object byte[] 0
   $fx_errBytes = New-Object byte[] 0
-  if ($null -ne $fx_msOut) { $fx_outBytes = $fx_msOut.ToArray() }
-  if ($null -ne $fx_msErr) { $fx_errBytes = $fx_msErr.ToArray() }
+  if ($null -ne $fx_msOut) { $fx_outBytes = fx-capture-bytes $fx_msOut }
+  if ($null -ne $fx_msErr) { $fx_errBytes = fx-capture-bytes $fx_msErr }
+  try { if ($null -ne $fx_outW) { $fx_outW.Dispose() } } catch {}
+  try { if ($null -ne $fx_errW) { $fx_errW.Dispose() } } catch {}
+  try { if ($null -ne $fx_msOut -and $fx_msOut -ne [System.IO.Stream]::Null) { $fx_msOut.Dispose() } } catch {}
+  try { if ($null -ne $fx_msErr -and $fx_msErr -ne [System.IO.Stream]::Null) { $fx_msErr.Dispose() } } catch {}
   if ($fx_v2) {
-    $fx_outLimit = 8388608
-    $fx_errLimit = 1048576
-    if ($null -ne $fx_req.PSObject.Properties['stdoutLimit']) { $fx_outLimit = [int]$fx_req.stdoutLimit }
-    if ($null -ne $fx_req.PSObject.Properties['stderrLimit']) { $fx_errLimit = [int]$fx_req.stderrLimit }
     $fx_outSeq = 0
     $fx_errSeq = 0
-    $fx_trunc = $false
-    if (fx-emit-chunks 'stdout' $fx_id $fx_outBytes $fx_outLimit ([ref]$fx_outSeq)) { $fx_trunc = $true }
-    if (fx-emit-chunks 'stderr' $fx_id $fx_errBytes $fx_errLimit ([ref]$fx_errSeq)) { $fx_trunc = $true }
+    $fx_outTrunc = $false
+    $fx_errTrunc = $false
+    if ($fx_msOut -is [FauxnixBoundedStream] -and $fx_msOut.Truncated) { $fx_outTrunc = $true }
+    if ($fx_msErr -is [FauxnixBoundedStream] -and $fx_msErr.Truncated) { $fx_errTrunc = $true }
+    $fx_outEmitLimit = $(if ($fx_outMode -eq 'capture') { $fx_outLimit } else { -1 })
+    $fx_errEmitLimit = $(if ($fx_errMode -eq 'capture') { $fx_errLimit } else { -1 })
+    if (fx-emit-chunks 'stdout' $fx_id $fx_outBytes $fx_outEmitLimit ([ref]$fx_outSeq)) { $fx_outTrunc = $true }
+    if (fx-emit-chunks 'stderr' $fx_id $fx_errBytes $fx_errEmitLimit ([ref]$fx_errSeq)) { $fx_errTrunc = $true }
     $fx_nativeErr = [Console]::OpenStandardError()
     $fx_mark = $fx_utf8.GetBytes(('FAUXNIX_ERR_END:' + $fx_id + [char]10))
     $fx_nativeErr.Write($fx_mark, 0, $fx_mark.Length)
     $fx_nativeErr.Flush()
-    $fx_end = '{"v":2,"type":"end","id":"' + $fx_id + '","exitCode":' + $fx_code + ',"timedOut":false,"cancelled":false,"truncated":'
-    if ($fx_trunc) { $fx_end = $fx_end + 'true}' } else { $fx_end = $fx_end + 'false}' }
+    $fx_trunc = $fx_outTrunc -or $fx_errTrunc
+    $fx_end = '{"v":2,"type":"end","id":"' + $fx_id + '","exitCode":' + $fx_code + ',"timedOut":false,"cancelled":false,"truncated":' + ([string]$fx_trunc).ToLowerInvariant() + ',"stdoutTruncated":' + ([string]$fx_outTrunc).ToLowerInvariant() + ',"stderrTruncated":' + ([string]$fx_errTrunc).ToLowerInvariant() + '}'
     $fx_proto.WriteLine($fx_end)
   } else {
     $fx_outB64 = ''

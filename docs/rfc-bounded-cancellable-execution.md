@@ -5,7 +5,7 @@ Tracks [#129](https://github.com/20000419/fauxnix/issues/129) as the v0.8 wire/r
 
 ## Why the one-line host frame is now the bottleneck
 
-The resident `powershell.exe` delivered the latency win. The spawn-era convenience of “one JSON line per segment, flatten into one MCP text blob” now crosses several boundaries the suite did not exercise:
+The resident PowerShell host delivered the latency win. The spawn-era convenience of “one JSON line per segment, flatten into one MCP text blob” now crosses several boundaries the suite did not exercise:
 
 1. **Native stderr is outside the frame.** `[Console]::SetError()` captures PowerShell/.NET writes; `git`/`npm`/`node` still write the OS stderr handle. Node appends those bytes to `stderrChunks` and never reads them.
 2. **One result is unbounded.** PowerShell buffers both streams, base64-encodes them, and sends one JSON line. An 11 MB MCP result exceeds the SDK’s 10 MiB read buffer and closes the connection. PS 5.1 `ConvertTo-Json` itself caps at ~2 MiB (`MaxJsonLength`).
@@ -43,10 +43,10 @@ PR-B proposed frames (Node still reassembles into one `ExecResult`; MCP clients 
 
 ```json
 {"v":2,"type":"ready","capabilities":{"cancel":false,"maxChunkBytes":65536,"stderrMarker":true}}
-{"v":2,"type":"run","id":"r1","scriptB64":"…","env":{},"stdoutLimit":8388608,"stderrLimit":1048576}
+{"v":2,"type":"run","id":"r1","scriptB64":"…","env":{},"stdoutLimit":8388608,"stderrLimit":1048576,"stdoutMode":"capture","stderrMode":"capture"}
 {"v":2,"type":"stdout","id":"r1","seq":0,"dataB64":"…"}
 {"v":2,"type":"stderr","id":"r1","seq":0,"dataB64":"…"}
-{"v":2,"type":"end","id":"r1","exitCode":0,"timedOut":false,"cancelled":false,"truncated":false}
+{"v":2,"type":"end","id":"r1","exitCode":0,"timedOut":false,"cancelled":false,"truncated":false,"stdoutTruncated":false,"stderrTruncated":false}
 ```
 
 `capabilities.cancel: false` is honest until a nested runspace can read a cancel frame while `& $fx_sb` is running. Until then Node kills the host process, matching timeout recovery.
@@ -72,6 +72,26 @@ During migration, return both the current text content and versioned structured 
 - Whitespace-only stdout is byte-faithful in `structuredContent.stdout`. The text view may still strip a single trailing newline for display; it must not `.trim()`.
 - Cancel uses exit **130** (`128+SIGINT`). Timeout stays **124**.
 - Default budgets: 8 MiB stdout, 1 MiB stderr. Crossing a budget sets `truncated: true` and must not close the MCP connection.
+- Explicit budgets are non-negative integers up to 2,147,483,643 bytes; invalid
+  values fail before a host request is started.
+- Budgets are shared across every list segment. `capture` retains at most the
+  remaining logical stream budget plus a UTF-8 boundary suffix; `discard`
+  retains nothing. A file destination uses a host-owned disk `spool`, which
+  Node copies to the already-open redirect descriptor in 64 KiB chunks.
+- Once a caller stream crosses its budget, later list segments cannot fill a
+  UTF-8 boundary gap. Pipeline-object lines use LF in the resident host, while
+  exact writers and native text retain their own line endings.
+- The `end` frame reports stdout/stderr truncation separately so normalization
+  of one captured prefix cannot reopen that logical destination or close the
+  other stream.
+- For duplicated descriptors, the final returned byte count is capped by the
+  destination budget. The independently captured sources can each retain that
+  budget before replay; a single shared capture allocation and chronological
+  cross-pipe prefix/order remain the merge-policy follow-up in
+  [#129](https://github.com/20000419/fauxnix/issues/129).
+- Stdout and stderr select their modes independently. Redirecting one stream
+  never removes the caller budget from the other, and duplicated fds consume
+  the remaining budget of their logical destination.
 
 ## Failure modes
 
@@ -81,9 +101,10 @@ During migration, return both the current text content and versioned structured 
 | `ExecOptions.timeoutMs` | Unchanged: kill host, exit 124, session remains usable. |
 | Concurrent `reset` / `run` / `dispose` | One lifecycle lock. Exactly one live host after they settle. `reset()` mutates the existing `FauxnixSession` (does not allocate a second object). |
 | Stdio EOF / SIGINT / SIGTERM | Idempotent `dispose()`: stop host, unlink cwd/env/script/host temp files. |
-| Native stderr on the OS pipe | PR-A: concatenate whatever arrived on the pipe during the frame and **clear** `stderrChunks`. Not deterministic across two OS pipes (stated). PR-B: `FAUXNIX_ERR_END:<id>` marker. |
+| Native stderr on the OS pipe | PR-A: concatenate whatever arrived on the pipe during the frame and **clear** `stderrChunks`. PR-B: find `FAUXNIX_ERR_END:<id>` incrementally while retaining only a marker-length tail; capture shares the logical stderr remainder and file output is spooled. |
+| Native stderr spool open/write failure | Keep scanning in discard mode through this request's marker, fail the request, remove partial spools, and restart the host before the next request. |
 | ConvertTo-Json > ~2 MiB | Loud stderr on that frame (`exit 1`), host loop stays alive. PR-B chunks so this path is unused for payload. |
-| `powershell.exe` missing | Unchanged 127 + sandbox message. Marked as infrastructure in MCP. |
+| Selected PowerShell host missing or invalid | Exit 127 with the host-selection or startup message. Marked as infrastructure in MCP. |
 
 ## Non-goals
 
