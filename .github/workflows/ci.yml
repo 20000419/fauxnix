@@ -5,14 +5,37 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
-    runs-on: windows-latest
+    name: test (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            runner: windows-2025
+            node_arch: x64
+          - name: windows-arm64
+            runner: windows-11-arm
+            node_arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          architecture: ${{ matrix.node_arch }}
+      - name: Verify native Node architecture
+        shell: pwsh
+        run: |
+          $actual = node -p process.arch
+          if ($actual -ne '${{ matrix.node_arch }}') {
+            throw "expected Node architecture ${{ matrix.node_arch }}, got $actual"
+          }
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build

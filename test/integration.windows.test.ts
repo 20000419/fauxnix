@@ -1116,6 +1116,11 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect((await run('uname -r')).stdout.trim()).toBe('6.8.0-fauxnix');
   });
 
+  it('uname reports the native host architecture', async () => {
+    const expected = process.arch === 'arm64' ? 'ARM64' : 'x86_64';
+    expect((await run('uname -m')).stdout.trim()).toBe(expected);
+  });
+
   it('command -v finds builtins and missing names', async () => {
     expect((await run('command -v echo')).stdout.trim()).toBe('/usr/bin/echo');
     expect((await run('command -v definitely_not_a_cmd_xyz')).exitCode).toBe(1);
