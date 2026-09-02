@@ -897,9 +897,29 @@ function stdinReadExpr(target: string): string {
   return '@(fx-readlines ' + pathExpr(n) + ')';
 }
 
+/** `>` `>>` `&>` `&>>` — Node last-stage apply cannot honor these on earlier stages. */
+function isStdoutFileRedirect(op: Redirect['op']): boolean {
+  return op === '>' || op === '>>' || op === '&>' || op === '&>>';
+}
+
+const NONLAST_STDOUT_REDIRECT_MSG =
+  'fauxnix: stdout redirect on a non-last pipeline stage is not supported yet; write the file in a previous list segment (cmd >f; cat f) or wait for per-stage fds (#157)';
+
+function rejectNonLastStdoutRedirects(commands: ShellCommand[]): void {
+  if (commands.length < 2) return;
+  for (let i = 0; i < commands.length - 1; i++) {
+    if (commands[i].redirects.some((r) => isStdoutFileRedirect(r.op))) {
+      throw new FauxnixParseError(NONLAST_STDOUT_REDIRECT_MSG);
+    }
+  }
+}
+
 export function translatePipelineBody(p: {
   commands: Array<SimpleCommand | IfCommand | ForCommand>;
 }): PipelineParts {
+  // Last-stage `>` is Node apply; a non-last `>` would truncate the file and
+  // still feed the pipe. Fail loud until in-stage writes (#157).
+  rejectNonLastStdoutRedirects(p.commands);
   // Every pipeline stage needs its own status slot. Handlers deliberately use
   // `$script:fx_exit` because their helper functions run in child scopes; in a
   // pipeline that shared flag lets an earlier failure leak into a successful

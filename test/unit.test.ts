@@ -667,6 +667,33 @@ describe('translator', () => {
     expect(plan.body).not.toContain('fx-readlines $env:FAUXNIX_STDIN_FILE');
   });
 
+  it('rejects stdout redirect on a non-last pipeline stage', () => {
+    const msg =
+      'fauxnix: stdout redirect on a non-last pipeline stage is not supported yet; write the file in a previous list segment (cmd >f; cat f) or wait for per-stage fds (#157)';
+    const bad = [
+      'echo hi >f | cat',
+      'echo hi >>f | cat',
+      'echo hi &>f | cat',
+      'echo hi &>>f | cat',
+      'echo hi >/dev/null | cat',
+      'echo hi | cat >mid | wc -l',
+    ];
+    for (const cmd of bad) {
+      expect(() => translateCommandList(parse(cmd)), cmd).toThrow(FauxnixParseError);
+      expect(() => translateCommandList(parse(cmd)), cmd).toThrow(msg);
+    }
+  });
+
+  it('allows last-stage stdout redirect and does not reject 2> on a non-last stage', () => {
+    const single = translateCommandList(parse('echo hi >f'))[0];
+    expect(single.outputRedirects).toEqual([{ op: '>', target: 'f' }]);
+    const disc = translateCommandList(parse('echo hi >/dev/null'))[0];
+    expect(disc.outputRedirects).toEqual([{ op: '>', target: '/dev/null' }]);
+    const last = translateCommandList(parse('echo hi | cat >f'))[0];
+    expect(last.outputRedirects).toEqual([{ op: '>', target: 'f' }]);
+    expect(() => translateCommandList(parse('echo hi 2>e | cat'))).not.toThrow();
+  });
+
   it('uses functions for multi-stage pipelines (PS 5.1 rule)', () => {
     const plan = translateCommandList(parse('a | b | c'))[0];
     expect(plan.script).toMatch(/function __fx_s\d+/);
