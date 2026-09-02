@@ -117,6 +117,8 @@ fauxnix ships an MCP stdio server exposing a `bash` tool (plus `fauxnix_translat
 `fauxnix install --claude` (or `--codex` / `--opencode` / `--kimi` / `--qwen`).
 Idempotent; prints what changed. Manual configs below.
 
+- **Quickstarts** — copy-paste config + a 10-command smoke: [`docs/examples/`](docs/examples/)
+
 **Claude Code**
 ```bash
 claude mcp add fauxnix -- fauxnix mcp
