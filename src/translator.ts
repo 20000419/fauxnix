@@ -1035,12 +1035,29 @@ function isStdoutFileRedirect(op: Redirect['op']): boolean {
 
 const NONLAST_STDOUT_REDIRECT_MSG =
   'fauxnix: stdout redirect on a non-last pipeline stage is not supported yet; write the file in a previous list segment (cmd >f; cat f) or wait for per-stage fds (#157)';
+const NONLAST_STDERR_FILE_REDIRECT_MSG =
+  'fauxnix: stderr redirect ({op}) on a non-last pipeline stage is not supported yet; spool the stage first (cmd >out {op}err; cat out | next) or wait for per-stage fds (#157)';
 
-function rejectNonLastStdoutRedirects(commands: ShellCommand[]): void {
+function nonLastFdRedirectMessage(op: Redirect['op']): string | null {
+  if (isStdoutFileRedirect(op)) return NONLAST_STDOUT_REDIRECT_MSG;
+  if (op === '2>' || op === '2>>') {
+    return NONLAST_STDERR_FILE_REDIRECT_MSG.replaceAll('{op}', op);
+  }
+  if (op === '2>&1') {
+    return 'fauxnix: 2>&1 on a non-last pipeline stage is not supported yet; spool the merged output first (cmd >out 2>&1; cat out | next) or wait for per-stage fds (#157)';
+  }
+  if (op === '1>&2') {
+    return 'fauxnix: 1>&2 on a non-last pipeline stage is not supported yet; run the stage separately (cmd 1>&2; next </dev/null) or wait for per-stage fds (#157)';
+  }
+  return null;
+}
+
+function rejectNonLastFdRedirects(commands: ShellCommand[]): void {
   if (commands.length < 2) return;
   for (let i = 0; i < commands.length - 1; i++) {
-    if (commands[i].redirects.some((r) => isStdoutFileRedirect(r.op))) {
-      throw new FauxnixParseError(NONLAST_STDOUT_REDIRECT_MSG);
+    for (const redirect of commands[i].redirects) {
+      const message = nonLastFdRedirectMessage(redirect.op);
+      if (message) throw new FauxnixParseError(message);
     }
   }
 }
@@ -1048,9 +1065,10 @@ function rejectNonLastStdoutRedirects(commands: ShellCommand[]): void {
 export function translatePipelineBody(p: {
   commands: Array<SimpleCommand | IfCommand | ForCommand | WhileCommand | CaseCommand>;
 }): PipelineParts {
-  // Last-stage `>` is Node apply; a non-last `>` would truncate the file and
-  // still feed the pipe. Fail loud until in-stage writes (#157).
-  rejectNonLastStdoutRedirects(p.commands);
+  // Last-stage output fds are applied by Node. On an earlier stage they would
+  // be prepared but not owned by that stage, so output would still reach the
+  // wrong destination. Fail loud until routed in-stage fds land (#157).
+  rejectNonLastFdRedirects(p.commands);
   // Every pipeline stage needs its own status slot. Handlers deliberately use
   // `$script:fx_exit` because their helper functions run in child scopes; in a
   // pipeline that shared flag lets an earlier failure leak into a successful

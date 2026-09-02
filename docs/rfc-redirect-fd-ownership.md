@@ -25,7 +25,10 @@ the caller's stdout.
 #147 applied last-stage output and per-stage `<`. That made a previously
 accidental identity-pipe look wrong (`echo hi >f | cat` truncated `f` empty
 and printed `hi`). C-6 first slice (#157): **fail loud** at translate time
-for non-last `>` `>>` `&>` `&>>`. Full in-stage writes remain the follow-up.
+for non-last `>` `>>` `&>` `&>>` (#175). The safety-completion slice extends
+that rejection to `2>` `2>>` `2>&1` `1>&2`: those operators are just as
+silently wrong when Node applies only the last stage's fds. Full routed
+in-stage stdout/stderr remains the #157 follow-up; this is not C-6 completion.
 
 ## Contract
 
@@ -41,11 +44,14 @@ for non-last `>` `>>` `&>` `&>>`. Full in-stage writes remain the follow-up.
 - Successive stdout redirects last-win: `>/dev/null >file` writes the command
   output to `file`; `>file >/dev/null` truncates `file` and discards output.
   `2>/dev/null` must not undo a prior `>/dev/null`.
-- Non-last-stage **stdout** redirects (`echo hi >f \| cat`) **fail at
-  translate time** with an actionable alternative (`cmd >f; cat f` or wait
-  for per-stage fds). In-stage writes (the stage writes the file inside
-  PowerShell instead of the pipe) stay the #157 follow-up. `2>` on a
-  non-last stage is still silently wrong and is not rejected in this slice.
+- Every output-affecting redirect on a non-last stage — `>` `>>` `2>` `2>>`
+  `&>` `&>>` `2>&1` `1>&2` — **fails at translate time**. The error gives an
+  operation-specific workaround: spool stdout/stderr and feed the next stage,
+  spool merged output for `2>&1`, or run a `1>&2` stage separately with empty
+  input for the next command. `<` remains supported per-stage.
+- These rejections are fail-loud safety while the executor has only
+  last-stage output ownership. They do not implement routed stage fds and do
+  not close #157/C-6.
 
 ## Non-goals
 
@@ -61,4 +67,7 @@ for non-last `>` `>>` `&>` `&>>`. Full in-stage writes remain the follow-up.
 - `printf x | cat < fruits.txt | head -1` → `apple`.
 - Existing `> >> 2>/dev/null 2>&1` and failed-`>` order tests stay green.
 - `echo hi >f | cat` → translate-time `FauxnixParseError` (C-6 first slice).
+- `cat missing 2>e | cat`, `2>>`, `2>&1`, and `1>&2` on any non-last stage →
+  operation-specific translate-time `FauxnixParseError` (safety completion).
 - `echo hi >f` and last-stage `echo hi | cat >f` still write.
+- Last-stage `2>` `2>>` `2>&1` `1>&2` still execute and match Git Bash.

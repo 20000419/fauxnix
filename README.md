@@ -236,9 +236,11 @@ fauxnix optimizes for the commands agents actually run. Documented deviations:
   an unbounded `yes | head` would hang.
 - `tail -f`, `eval`, `alias`, heredocs,
   `env -i`/`--ignore-environment`,
-  background `&`, and stdout redirects (`>` `>>` `&>` `&>>`) on a non-last
-  pipeline stage (`echo hi >f | cat`) are rejected with actionable error
-  messages instead of misbehaving.
+  background `&`, and output/fd redirects (`>` `>>` `2>` `2>>` `&>` `&>>`
+  `2>&1` `1>&2`) on a non-last pipeline stage (`echo hi >f | cat`) are
+  rejected with operation-specific, actionable error messages instead of
+  misbehaving. Per-stage `<` remains supported; fully routed per-stage output
+  fds are still tracked by #157.
   (`if/then/elif/else/fi`, `for x in ...`, `while`/`until`, `case ... esac` (`;;` only; `;&`/`;;&` fail loud),
   backtick substitution, `command -v`, pipeline `read`,
   dotenv-style `source`, word-level `$((...))` arithmetic expansion, `A=(x y z)` arrays, and
