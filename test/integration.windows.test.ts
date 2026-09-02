@@ -1178,6 +1178,34 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     );
   });
 
+  it('array assignment A=(x y z) indexes and counts elements', async () => {
+    expect((await run('A=(a b c); echo ${A[1]}')).stdout.trim()).toBe('b');
+    expect((await run('A=(a b c); echo ${#A[@]}')).stdout.trim()).toBe('3');
+    expect((await run('A=(); echo ${#A[@]}')).stdout.trim()).toBe('0');
+    await run('unset A');
+  });
+
+  it('array assignment persists in the FAUXNIX_ARRS sidecar across run() calls', async () => {
+    expect((await run('A=(a b c)')).exitCode).toBe(0);
+    expect((await run('echo ${A[1]}')).stdout.trim()).toBe('b');
+    expect((await run('echo ${#A[@]}')).stdout.trim()).toBe('3');
+    await run('unset A');
+    expect((await run('echo ${#A[@]}')).stdout.trim()).toBe('0');
+  });
+
+  it('prefix A=(x y) cmd is command-scoped via fx-arrput', async () => {
+    expect((await run('A=(x y) echo ${A[1]}')).stdout.trim()).toBe('y');
+    expect((await run('echo ${#A[@]}')).stdout.trim()).toBe('0');
+  });
+
+  it('${name//pat/str} and ${name:off:len} follow bash replace/slice rules', async () => {
+    expect((await run('X=hello; echo ${X//l/L}; unset X')).stdout.trim()).toBe('heLLo');
+    expect((await run('X=hello; echo ${X/l/L}; unset X')).stdout.trim()).toBe('heLlo');
+    expect((await run('X=abcd; echo ${X:0:2}; unset X')).stdout.trim()).toBe('ab');
+    expect((await run('X=abcd; echo ${X: -1}; unset X')).stdout.trim()).toBe('d');
+    expect((await run('X=abcd; echo ${X:2}; unset X')).stdout.trim()).toBe('cd');
+  });
+
   it('date format tokens', async () => {
     expect((await run('date +%Y')).stdout).toMatch(/^\d{4}/);
   });

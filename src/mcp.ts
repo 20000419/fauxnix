@@ -37,7 +37,7 @@ const TOOL_DESCRIPTION = `Execute a Linux/bash-style command on this Windows mac
 Commands are deterministically translated to PowerShell and executed natively — no WSL or VM.
 Output is formatted to look like GNU/Linux tooling (ls -l, ps aux, df -h ...), errors look like bash errors, and text encoding (UTF-8/GBK) is handled automatically.
 
-Supported: pipes (|), && / || / ;, redirections (> >> 2> 2>&1 < /dev/null), variables ($VAR $HOME ~), command substitution $(...), and ${registeredNames().length}+ coreutils-style commands (${registeredNames().slice(0, 18).join(', ')}...).
+Supported: pipes (|), && / || / ;, redirections (> >> 2> 2>&1 < /dev/null), variables ($VAR $HOME ~), array assignment A=(x y z), \${name[n]} \${#name[@]} \${name//pat/str} \${name:off:len}, command substitution $(...), and ${registeredNames().length}+ coreutils-style commands (${registeredNames().slice(0, 18).join(', ')}...).
 Unknown commands (git, node, npm, python, cargo...) are passed through and executed natively with argv-style quoting.
 Not supported: heredocs, while/until/case, env -i/--ignore-environment, background jobs. if/then/elif/else/fi, for-in loops, and word-level \$((...)) arithmetic expansion are supported.
 

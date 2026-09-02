@@ -210,6 +210,66 @@
       "id": "echo-pipe-grep",
       "cmd": "echo hi | grep hi",
       "source": "#153"
+    },
+    {
+      "id": "arr-index-1",
+      "cmd": "A=(a b c); echo ${A[1]}",
+      "source": "#118 C-2"
+    },
+    {
+      "id": "arr-len",
+      "cmd": "A=(a b c); echo ${#A[@]}",
+      "source": "#118 C-2"
+    },
+    {
+      "id": "arr-empty-len",
+      "cmd": "A=(); echo ${#A[@]}",
+      "source": "#118 C-2"
+    },
+    {
+      "id": "arr-one-elem",
+      "cmd": "A=(x); echo ${A[0]} ${#A[@]}",
+      "source": "#118 C-2"
+    },
+    {
+      "id": "arr-spaces",
+      "cmd": "A=( x y z ); echo ${A[0]} ${A[2]}",
+      "source": "#118 C-2"
+    },
+    {
+      "id": "subst-global-l",
+      "cmd": "X=hello; echo ${X//l/L}",
+      "source": "#118 C-2"
+    },
+    {
+      "id": "subst-first-l",
+      "cmd": "X=hello; echo ${X/l/L}",
+      "source": "#118 C-2"
+    },
+    {
+      "id": "subst-delete-l",
+      "cmd": "X=hello; echo ${X//l}",
+      "source": "#118 C-2"
+    },
+    {
+      "id": "slice-0-2",
+      "cmd": "X=abcd; echo ${X:0:2}",
+      "source": "#118 C-2"
+    },
+    {
+      "id": "slice-neg1",
+      "cmd": "X=abcd; echo ${X: -1}",
+      "source": "#118 C-2"
+    },
+    {
+      "id": "slice-from-2",
+      "cmd": "X=abcd; echo ${X:2}",
+      "source": "#118 C-2"
+    },
+    {
+      "id": "subst-glob-star",
+      "cmd": "X=hello; echo ${X//l*/X}",
+      "source": "#118 C-2"
     }
   ]
 }

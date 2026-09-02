@@ -128,6 +128,68 @@ describe('parser', () => {
     expect(cmd.args[2]).toEqual([{ kind: 'Var', name: 'Z', param: { op: ':?', word: 'err' } }]);
   });
 
+  it('parses A=(x y z) as an array assignment', () => {
+    const cmd = parse('A=(x y z)').segments[0].pipeline.commands[0];
+    expect(cmd.kind).toBe('SimpleCommand');
+    if (cmd.kind !== 'SimpleCommand') return;
+    expect(cmd.name).toBeNull();
+    expect(cmd.assignments).toHaveLength(1);
+    expect(cmd.assignments[0].name).toBe('A');
+    expect(cmd.assignments[0].values).toHaveLength(3);
+    const texts = cmd.assignments[0].values!.map((w) =>
+      w.map((p) => ('text' in p ? p.text : '')).join(''),
+    );
+    expect(texts).toEqual(['x', 'y', 'z']);
+  });
+
+  it('parses A=() / A=(x) / A=( x y z ) and keeps quoted ( ) as scalar', () => {
+    const empty = parse('A=()').segments[0].pipeline.commands[0];
+    expect(empty.kind).toBe('SimpleCommand');
+    if (empty.kind !== 'SimpleCommand') return;
+    expect(empty.assignments[0].values).toEqual([]);
+    const one = parse('A=(x)').segments[0].pipeline.commands[0];
+    if (one.kind !== 'SimpleCommand') return;
+    expect(one.assignments[0].values).toHaveLength(1);
+    const spaced = parse('A=( x y z )').segments[0].pipeline.commands[0];
+    if (spaced.kind !== 'SimpleCommand') return;
+    expect(spaced.assignments[0].values).toHaveLength(3);
+    const q = parse("A='(x y)'").segments[0].pipeline.commands[0];
+    if (q.kind !== 'SimpleCommand') return;
+    expect(q.assignments[0].values).toBeUndefined();
+    const dq = parse('A="(x y)"').segments[0].pipeline.commands[0];
+    if (dq.kind !== 'SimpleCommand') return;
+    expect(dq.assignments[0].values).toBeUndefined();
+  });
+
+  it('parses ${X//a/b} and ${X:0:2} as Var replace/slice, not Text', () => {
+    const cmd = parse('echo ${X//a/b} ${X:0:2} ${X/l/L} ${X: -1}').segments[0].pipeline.commands[0];
+    expect(cmd.args[0]).toEqual([
+      { kind: 'Var', name: 'X', replace: { global: true, pat: 'a', repl: 'b' } },
+    ]);
+    expect(cmd.args[1]).toEqual([{ kind: 'Var', name: 'X', slice: { offset: '0', length: '2' } }]);
+    expect(cmd.args[2]).toEqual([
+      { kind: 'Var', name: 'X', replace: { global: false, pat: 'l', repl: 'L' } },
+    ]);
+    expect(cmd.args[3]).toEqual([{ kind: 'Var', name: 'X', slice: { offset: '-1' } }]);
+    expect(cmd.args[0][0].kind).not.toBe('Text');
+  });
+
+  it('does not steal ${X:-def} as a slice', () => {
+    const cmd = parse('echo ${X:-def} ${Y:+on} ${Z:?err}').segments[0].pipeline.commands[0];
+    expect(cmd.args[0]).toEqual([{ kind: 'Var', name: 'X', param: { op: ':-', word: 'def' } }]);
+    expect(cmd.args[1][0].kind).toBe('Var');
+    if (cmd.args[1][0].kind !== 'Var') return;
+    expect(cmd.args[1][0].slice).toBeUndefined();
+  });
+
+  it('rejects A+=(x) and ${name/#} / ${arr[@]:0:2} with an alternative', () => {
+    expect(() => parse('A+=(x)')).toThrow(/\$\{A\[@\]\} x/);
+    expect(() => parse('A+=(x)')).toThrow(/A=\(x y\)/);
+    expect(() => parse('echo ${X/#a/b}')).toThrow(/\$\{name\/\/pat\/str\}/);
+    expect(() => parse('echo ${X/%a/b}')).toThrow(/\$\{name\/\/pat\/str\}/);
+    expect(() => parse('echo ${A[@]:0:2}')).toThrow(/\$\{name:offset:length\}/);
+  });
+
   it('parses ${#name} and ${#name[@]}', () => {
     const cmd = parse('echo ${#X} ${#Y[@]}').segments[0].pipeline.commands[0];
     expect(cmd.args[0]).toEqual([{ kind: 'Var', name: 'X', length: true }]);
@@ -203,6 +265,16 @@ describe('parser', () => {
     expect(varExpr('bash_rematch', '0')).toContain('fx-subget');
     expect(varExpr('bash_rematch', '0')).not.toMatch(/\$env:bash_rematch/i);
     expect(varExpr('PWD', '0')).toContain('fx-subget');
+  });
+
+  it('translates A=(a b c) via fx-arrput, not export A=(', () => {
+    const body = translateCommandList(parse('A=(a b c)'))[0].body;
+    expect(body).toContain('fx-arrput');
+    expect(body).not.toMatch(/\$env:A\s*=\s*.*\(a/);
+    expect(body).not.toContain("export");
+    const prefix = translateCommandList(parse('A=(x y) echo z'))[0].body;
+    expect(prefix).toContain('fx-arrput');
+    expect(prefix).toContain('fx-arrpackget');
   });
 
   it('rejects heredocs with a helpful message', () => {
@@ -532,6 +604,11 @@ describe('translator', () => {
     expect(splat).toContain('function fx-arrload');
     expect(splat).toContain('function fx-scalar0');
     expect(splat).not.toContain('function fx-csub');
+    const subst = translateCommandList(parse('echo ${X//a/b}'))[0].script;
+    expect(subst).toContain('function fx-subst');
+    expect(subst).toContain('function fx-scalar0');
+    const slice = translateCommandList(parse('echo ${X:0:2}'))[0].script;
+    expect(slice).toContain('function fx-slice');
     const csub = translateCommandList(parse('echo $(echo a)'))[0].script;
     expect(csub).toContain('function fx-csub');
     const stdin = translateCommandList(parse('wc -l < f.txt'))[0].script;
