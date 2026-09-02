@@ -557,6 +557,32 @@
     {
       "id": "posix-test-file",
       "cmd": "[ -f fruits.txt ] && echo yes",
-      "source": "#80 / integration: [[ ]] file and string tests"    }
+      "source": "#80 / integration: [[ ]] file and string tests"
+    },
+    {
+      "id": "case-hit",
+      "cmd": "case x in x) echo HIT;; esac",
+      "source": "#118 C-1 case"
+    },
+    {
+      "id": "case-alt",
+      "cmd": "case x in a|x) echo HIT;; esac",
+      "source": "#118 C-1 case"
+    },
+    {
+      "id": "case-star",
+      "cmd": "case z in a) echo A;; *) echo D;; esac",
+      "source": "#118 C-1 case"
+    },
+    {
+      "id": "case-nomatch-status",
+      "cmd": "case x in y) echo NO;; esac; echo $?",
+      "source": "#118 C-1 case"
+    },
+    {
+      "id": "case-false-status",
+      "cmd": "case x in x) false;; esac; echo $?",
+      "source": "#118 C-1 case"
+    }
   ]
 }

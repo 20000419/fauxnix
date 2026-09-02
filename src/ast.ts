@@ -13,7 +13,7 @@
  *   - control:              if/then/elif/else/fi, for-in, while/until
  *
  * Explicitly unsupported (parser throws a helpful FauxnixError):
- *   heredocs, subshells (...), background &, case,
+ *   heredocs, subshells (...), background &,
  *   globs inside quotes, process substitution <(...).
  */
 
@@ -29,7 +29,7 @@ export interface ListSegment {
   op: ';' | '&&' | '||';
 }
 
-export type ShellCommand = SimpleCommand | IfCommand | ForCommand | WhileCommand;
+export type ShellCommand = SimpleCommand | IfCommand | ForCommand | WhileCommand | CaseCommand;
 
 export interface Pipeline {
   kind: 'Pipeline';
@@ -58,6 +58,18 @@ export interface WhileCommand {
   until: boolean;
   test: CommandList;
   body: CommandList;
+  redirects: Redirect[];
+}
+
+export interface CaseArm {
+  patterns: Word[];
+  body: CommandList;
+}
+
+export interface CaseCommand {
+  kind: 'Case';
+  word: Word;
+  arms: CaseArm[];
   redirects: Redirect[];
 }
 

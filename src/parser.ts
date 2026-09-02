@@ -10,6 +10,8 @@ import {
   IfCommand,
   ForCommand,
   WhileCommand,
+  CaseCommand,
+  CaseArm,
   ShellCommand,
   Word,
   WordPart,
@@ -32,7 +34,7 @@ interface Token {
 }
 
 const OPERATORS = [
-  '&&', '||', '>>', '<<', '2>&1', '1>&2', '2>', '&>>', '&>', '>', '<', '|', ';', '&',
+  '&&', '||', '>>', '<<', '2>&1', '1>&2', '2>', '&>>', '&>', '>', '<', '|', ';;', ';', '&',
 ] as const;
 
 const BACKGROUND_MSG =
@@ -643,16 +645,40 @@ export function parseCommand(input: string): CommandList {
 
   const isListSep = (o?: string) => o === ';' || o === '\n';
 
+  const isAmpWord = (t: Token | undefined): boolean =>
+    !!t && t.type === 'WORD' && !!t.parts && isUnquotedLiteral(t.parts, '&');
+
+  const isCaseFallthrough = (): boolean => {
+    const t = peek();
+    if (t.type !== 'OP') return false;
+    return (t.op === ';' || t.op === ';;') && isAmpWord(tokens[pos + 1]);
+  };
+
+  const throwUnexpectedDsemi = (): never => {
+    throw new FauxnixParseError("fauxnix: syntax error near unexpected token `;;'");
+  };
+
+  const throwCaseFallthrough = (): never => {
+    throw new FauxnixParseError(
+      'fauxnix: case fallthrough (;& / ;;&) is not supported; use ;; (no fallthrough) or duplicate the body',
+    );
+  };
+
   /** Consume `;` / newline / `&&` / `||`. Trailing `&&`/`||` and `;;` fail loud (bash). */
   const consumeListOp = (stops?: Set<string>): ';' | '&&' | '||' | null => {
     const t = peek();
     if (t.type !== 'OP') return null;
     if (t.op === '&') throw new FauxnixParseError(BACKGROUND_MSG);
+    if (t.op === ';;') {
+      if (stops && stops.has(';;')) return null;
+      throwUnexpectedDsemi();
+    }
     if (!(t.op === '&&' || t.op === '||' || isListSep(t.op))) return null;
     if (t.op === ';') {
+      if (stops && stops.has(';;') && isAmpWord(tokens[pos + 1])) return null;
       next();
-      if (peek().type === 'OP' && peek().op === ';') {
-        throw new FauxnixParseError("fauxnix: syntax error near unexpected token `;;'");
+      if (peek().type === 'OP' && (peek().op === ';' || peek().op === ';;')) {
+        throwUnexpectedDsemi();
       }
       return ';';
     }
@@ -683,16 +709,18 @@ export function parseCommand(input: string): CommandList {
     const segments: ListSegment[] = [];
     let op: ';' | '&&' | '||' = ';';
     while (peek().type === 'OP' && isListSep(peek().op)) {
-      if (peek().op === ';' && tokens[pos + 1]?.type === 'OP' && tokens[pos + 1]?.op === ';') {
-        throw new FauxnixParseError("fauxnix: syntax error near unexpected token `;;'");
+      if (peek().op === ';' && tokens[pos + 1]?.type === 'OP' && (tokens[pos + 1]?.op === ';' || tokens[pos + 1]?.op === ';;')) {
+        throwUnexpectedDsemi();
       }
       next();
     }
     while (peek().type !== 'EOF') {
+      if (peek().type === 'OP' && peek().op === ';;') throwUnexpectedDsemi();
       const pipeline = parsePipeline();
       segments.push({ pipeline, op });
       const nextOp = consumeListOp();
       if (nextOp === null) {
+        if (peek().type === 'OP' && peek().op === ';;') throwUnexpectedDsemi();
         if (peek().type === 'EOF') break;
         throw new FauxnixParseError('fauxnix: unexpected token after pipeline');
       }
@@ -727,7 +755,10 @@ export function parseCommand(input: string): CommandList {
         }
         commands.push(parseUntil());
       } else if (kw === 'case') {
-        throw new FauxnixParseError(CASE_MSG);
+        if (commands.length > 0) {
+          throw new FauxnixParseError('fauxnix: case in a pipeline is not supported');
+        }
+        commands.push(parseCase());
       } else if (kw === 'function') {
         throw new FauxnixParseError(FUNCTION_MSG);
       } else {
@@ -765,6 +796,7 @@ export function parseCommand(input: string): CommandList {
       s === 'while' ||
       s === 'until' ||
       s === 'case' ||
+      s === 'esac' ||
       s === 'function'
     ) {
       return s;
@@ -784,21 +816,27 @@ export function parseCommand(input: string): CommandList {
     const segments: ListSegment[] = [];
     let op: ';' | '&&' | '||' = ';';
     while (peek().type === 'OP' && isListSep(peek().op)) {
-      if (peek().op === ';' && tokens[pos + 1]?.type === 'OP' && tokens[pos + 1]?.op === ';') {
-        throw new FauxnixParseError("fauxnix: syntax error near unexpected token `;;'");
+      if (peek().op === ';' && tokens[pos + 1]?.type === 'OP' && (tokens[pos + 1]?.op === ';' || tokens[pos + 1]?.op === ';;')) {
+        throwUnexpectedDsemi();
       }
       next();
     }
     while (peek().type !== 'EOF') {
+      if (stop.has(';;') && isCaseFallthrough()) break;
       const kw = peekKw();
       if (kw && stop.has(kw)) break;
+      const stopOp = peek();
+      if (stopOp.type === 'OP' && stopOp.op && stop.has(stopOp.op)) break;
+      if (stopOp.type === 'OP' && stopOp.op === ';;') throwUnexpectedDsemi();
       const pipeline = parsePipeline();
       segments.push({ pipeline, op });
+      if (stop.has(';;') && isCaseFallthrough()) break;
       const nextOp = consumeListOp(stop);
       if (nextOp === null) break;
       op = nextOp;
     }
     if (segments.length === 0) {
+      if (stop.has(';;')) return { kind: 'CommandList', segments: [] };
       throw new FauxnixParseError('fauxnix: empty command');
     }
     return { kind: 'CommandList', segments };
@@ -873,6 +911,76 @@ export function parseCommand(input: string): CommandList {
     const body = parseListUntil(['done']);
     expectKw('done');
     return { kind: 'While', until, test, body, redirects: [] };
+  };
+  const skipCaseSeps = (): void => {
+    while (peek().type === 'OP' && isListSep(peek().op)) {
+      if (peek().op === ';' && isAmpWord(tokens[pos + 1])) break;
+      next();
+    }
+  };
+
+  /** Strip a trailing unquoted `)` that closes a case pattern list. */
+  const stripTrailingUnquotedParen = (w: Word): Word | null => {
+    if (w.length === 0) return null;
+    const last = w[w.length - 1];
+    if (last.kind !== 'Text' || last.escaped || !last.text.endsWith(')')) return null;
+    const rest = last.text.slice(0, -1);
+    if (rest.length === 0) return w.slice(0, -1);
+    return [...w.slice(0, -1), { kind: 'Text', text: rest, escaped: last.escaped }];
+  };
+
+  const parseCasePatterns = (): Word[] => {
+    const patterns: Word[] = [];
+    for (;;) {
+      while (peek().type === 'OP' && (peek().op === '|' || peek().op === '\n')) next();
+      if (peekKw() === 'esac') {
+        throw new FauxnixParseError("fauxnix: expected `)'");
+      }
+      const t = peek();
+      if (t.type !== 'WORD' || !t.parts) {
+        throw new FauxnixParseError('fauxnix: `case` expected a pattern');
+      }
+      const stripped = stripTrailingUnquotedParen(t.parts);
+      if (stripped !== null) {
+        next();
+        if (stripped.length > 0) patterns.push(stripped);
+        if (patterns.length === 0) {
+          throw new FauxnixParseError('fauxnix: `case` expected a pattern');
+        }
+        return patterns;
+      }
+      patterns.push(t.parts);
+      next();
+    }
+  };
+
+  const parseCase = (): CaseCommand => {
+    expectKw('case');
+    skipCaseSeps();
+    const wt = peek();
+    if (wt.type !== 'WORD' || !wt.parts) {
+      throw new FauxnixParseError('fauxnix: `case` expected a word');
+    }
+    const word = wt.parts;
+    next();
+    skipCaseSeps();
+    expectKw('in');
+    const arms: CaseArm[] = [];
+    skipCaseSeps();
+    while (peek().type !== 'EOF' && peekKw() !== 'esac') {
+      if (isCaseFallthrough()) throwCaseFallthrough();
+      const patterns = parseCasePatterns();
+      const body = parseListUntil(['esac', ';;']);
+      if (isCaseFallthrough()) throwCaseFallthrough();
+      if (peek().type === 'OP' && peek().op === ';;') {
+        next();
+        if (isAmpWord(peek())) throwCaseFallthrough();
+      }
+      arms.push({ patterns, body });
+      skipCaseSeps();
+    }
+    expectKw('esac');
+    return { kind: 'Case', word, arms, redirects: [] };
   };
 
   const parseSimple = (): SimpleCommand => {

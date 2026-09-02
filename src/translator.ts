@@ -8,6 +8,7 @@ import {
   IfCommand,
   ForCommand,
   WhileCommand,
+  CaseCommand,
   Word,
   WordPart,
   isUnquotedLiteral,
@@ -885,6 +886,22 @@ function translateIf(cmd: IfCommand): string {
   return lines.join('\n');
 }
 
+function translateCase(cmd: CaseCommand): string {
+  const lines = ['$script:fx_exit = 0', '$fx_cw = ' + exprOfWord(cmd.word)];
+  for (let i = 0; i < cmd.arms.length; i++) {
+    const arm = cmd.arms[i];
+    const pats = arm.patterns.map((w) => exprOfWord(w)).join(',');
+    const head = i === 0 ? 'if' : 'elseif';
+    lines.push(head + ' (fx-casematch $fx_cw @(' + pats + ')) {');
+    const body = translateListInline(arm.body);
+    if (body) {
+      for (const l of body.split('\n')) lines.push(l ? '  ' + l : l);
+    }
+    lines.push('}');
+  }
+  return lines.join('\n');
+}
+
 function translateFor(cmd: ForCommand): string {
   const n = cmd.name.replace(/'/g, "''");
   const lines = [
@@ -959,7 +976,7 @@ function rejectNonLastStdoutRedirects(commands: ShellCommand[]): void {
 }
 
 export function translatePipelineBody(p: {
-  commands: Array<SimpleCommand | IfCommand | ForCommand | WhileCommand>;
+  commands: Array<SimpleCommand | IfCommand | ForCommand | WhileCommand | CaseCommand>;
 }): PipelineParts {
   // Last-stage `>` is Node apply; a non-last `>` would truncate the file and
   // still feed the pipe. Fail loud until in-stage writes (#157).
@@ -979,6 +996,7 @@ export function translatePipelineBody(p: {
     if (c.kind === 'If') bodies.push(translateIf(c));
     else if (c.kind === 'For') bodies.push(translateFor(c));
     else if (c.kind === 'While') bodies.push(translateWhile(c));
+    else if (c.kind === 'Case') bodies.push(translateCase(c));
     else bodies.push(translateSimple(c, position, hasStdin));
   }
 
@@ -1114,6 +1132,7 @@ const WRAP_HELPER_ORDER = [
   'fx-arrput',
   'fx-arrclr',
   'fx-subget',
+  'fx-casematch',
   'fx-winargv',
   'fx-native',
 ] as const;
@@ -1139,6 +1158,7 @@ const WRAP_HELPER_DEPS: Record<WrapHelper, WrapHelper[]> = {
   'fx-arrput': ['fx-arrdrop', 'fx-svenc'],
   'fx-arrclr': ['fx-arrdrop'],
   'fx-subget': ['fx-arrload', 'fx-ifs1'],
+  'fx-casematch': [],
   'fx-winargv': [],
   'fx-native': ['fx-winargv'],
 };
@@ -1475,6 +1495,19 @@ export function wrapScript(body: string, opts: WrapScriptOptions = {}): string {
       '  if (-not [int]::TryParse($ix, [ref]$i)) { return \'\' }',
       "  if ($i -lt 0 -or $i -ge $arr.Count) { return '' }",
       '  return [string]$arr[$i]',
+      '}',
+    ],
+    'fx-casematch': [
+      'function fx-casematch($w, $pats) {',
+      '  $w = [string]$w',
+      '  foreach ($p in @($pats)) {',
+      '    $pat = [string]$p',
+      '    try {',
+      '      $wp = [WildcardPattern]::new($pat, [System.Management.Automation.WildcardOptions]::None)',
+      '      if ($wp.IsMatch($w)) { return $true }',
+      '    } catch {}',
+      '  }',
+      '  return $false',
       '}',
     ],
     'fx-winargv': [
