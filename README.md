@@ -181,15 +181,14 @@ development:
   translate time (unsupported constructs throw named errors, never silently misbehave)
 - **text I/O**: `echo printf cat head tail wc tee nl tac md5sum sha1sum sha256sum base64 seq yes xargs`
 
-`cp` / `mv` / `rm` / `touch` / `du` / `ls` / `ll` / `mkdir` / `rmdir` / `mktemp` / `ln` /
-`readlink` / `realpath` / `basename` / `dirname` / `stat` / `file` / `df` / `chmod` / `chown` /
-`diff` / `tee` / `grep` / `head` / `echo` / `printf` / `cat` / `tail` / `wc` / `sort` / `uniq` /
-`cut` / `tr` / `gzip` / `gunzip` / `zcat` / `zip` / `unzip` carry a `CommandSpec`: unknown options fail with a GNU-style
-usage error instead of being ignored (`find` stays unspec'd so predicates like `-name` still
-compile; `sed`/`awk`/`egrep` stay unspec'd; `tar` stays unspec'd because it is fx-native to
-`tar.exe` and unknown GNU flags must reach bsdtar). Implemented GNU holes: `cp -n` / `mv -n` / `touch -c` / `tee --append` / `grep -m` /
-`head --lines` / `du --max-depth`. `fauxnix list --json` and `docs/command-specs.md` dump the
-same metadata.
+The curated **agent-daily 60** carry a `CommandSpec`: unknown options fail with a GNU-style
+usage error instead of being ignored. The generated [`docs/command-specs.md`](docs/command-specs.md)
+is the exact list, coverage count, option table, and exclusion rationale; `fauxnix list --json`
+exposes the same per-command metadata. `find` stays unspec'd so predicates like `-name` still
+compile; `sed`/`awk`/`egrep` keep their command-specific parsers; `tar` remains native to
+`tar.exe` so supported bsdtar options reach the executable. Implemented GNU holes include
+`cp -n` / `mv -n` / `touch -c` / `tee --append` / `grep -m` / `head --lines` /
+`du --max-depth` / `env -u` / `ps -f` / `command -V` / `date --date=@SECONDS`.
 - **shell/system**: `cd pwd export unset env printenv ps kill pkill pgrep sleep which type whoami
   id groups date uname hostname uptime free nproc clear true false test [ [[ : pushd popd dirs sudo
   timeout man history less more source . eval exit alias set shift`

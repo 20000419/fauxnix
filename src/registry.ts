@@ -255,6 +255,98 @@ export interface CommandSpec {
 
 const specs = new Map<string, CommandSpec>();
 
+/**
+ * C-5's curated agent-daily command set. Keep this explicit: a raw count of
+ * CommandSpecs is not enough to prove that the commands agents use every day
+ * are the ones protected by fail-loud option validation.
+ */
+export const AGENT_DAILY_60 = [
+  'basename',
+  'cat',
+  'cd',
+  'chmod',
+  'chown',
+  'clear',
+  'command',
+  'cp',
+  'cut',
+  'date',
+  'df',
+  'diff',
+  'dirname',
+  'du',
+  'echo',
+  'env',
+  'export',
+  'file',
+  'free',
+  'grep',
+  'groups',
+  'gunzip',
+  'gzip',
+  'head',
+  'hostname',
+  'id',
+  'll',
+  'ln',
+  'ls',
+  'mkdir',
+  'mktemp',
+  'mv',
+  'nproc',
+  'printenv',
+  'printf',
+  'ps',
+  'pwd',
+  'readlink',
+  'realpath',
+  'rm',
+  'rmdir',
+  'sleep',
+  'sort',
+  'stat',
+  'tail',
+  'tee',
+  'timeout',
+  'touch',
+  'tr',
+  'type',
+  'uname',
+  'uniq',
+  'unset',
+  'unzip',
+  'uptime',
+  'wc',
+  'which',
+  'whoami',
+  'zcat',
+  'zip',
+] as const;
+
+/** Commands deliberately kept outside generic CommandSpec option walking. */
+export const COMMAND_SPEC_EXCLUSIONS = [
+  {
+    names: ['find'],
+    reason:
+      'option-looking predicates are parsed by the find expression compiler; generic short-option bundling would misread -name',
+  },
+  {
+    names: ['sed', 'awk'],
+    reason:
+      'program text and option grammar require command-specific parsing; any remaining unchecked options must be fixed there rather than treated as generic flags',
+  },
+  {
+    names: ['egrep'],
+    reason:
+      'semantic alias injects grep -E through its own handler; it must not be wrapped as an independent generic option parser',
+  },
+  {
+    names: ['tar'],
+    reason:
+      'argv is passed to Windows bsdtar; rejecting unlisted GNU/bsdtar options before native dispatch would reduce compatibility',
+  },
+] as const;
+
 /** Register a spec'd command. Unknown/unsupported options become GNU-style usage errors. */
 export function registerSpec(spec: CommandSpec): void {
   for (const name of spec.names) {
@@ -290,10 +382,32 @@ export function registeredSpecs(): CommandSpec[] {
 
 /** Markdown dump of every CommandSpec — source for docs/command-specs.md. */
 export function specsMarkdown(): string {
+  const dailySpecd = AGENT_DAILY_60.filter((name) => lookupSpec(name));
+  const dailyMissing = AGENT_DAILY_60.filter((name) => !lookupSpec(name));
   const lines = [
     '# Command specs',
     '',
     'Generated from `CommandSpec`. Unlisted commands still use unchecked `parseWords` (unknown flags ignored). Spec\'d commands fail loud on unknown or unsupported options.',
+    '',
+    '## Agent-daily 60 (C-5)',
+    '',
+    'Curated command names: ' + AGENT_DAILY_60.map((name) => '`' + name + '`').join(', '),
+    '',
+    'Coverage: **' + dailySpecd.length + ' / ' + AGENT_DAILY_60.length + ' spec\'d**.',
+    '',
+    ...(dailyMissing.length
+      ? ['Missing specs: ' + dailyMissing.map((name) => '`' + name + '`').join(', '), '']
+      : []),
+    '## Intentional CommandSpec exclusions',
+    '',
+    'These commands stay outside the generic option walker by design. This is a structural rationale, not a claim that every command-specific option path is already strict.',
+    '',
+    '| Command | Rationale |',
+    '| --- | --- |',
+    ...COMMAND_SPEC_EXCLUSIONS.map(
+      (entry) =>
+        '| ' + entry.names.map((name) => '`' + name + '`').join(', ') + ' | ' + entry.reason + ' |',
+    ),
     '',
   ];
   for (const spec of registeredSpecs()) {
@@ -412,7 +526,12 @@ export function specOptionError(spec: CommandSpec, args: Word[], cmdName: string
       i++;
       continue;
     }
-    if (t.startsWith('-') && t.length > 1 && !/^-?\d/.test(t.slice(1, 2))) {
+    const firstShort = t.slice(1, 2);
+    if (
+      t.startsWith('-') &&
+      t.length > 1 &&
+      (!/^\d$/.test(firstShort) || shorts.has(firstShort))
+    ) {
       const body = t.slice(1);
       for (let c = 0; c < body.length; c++) {
         const ch = body[c];

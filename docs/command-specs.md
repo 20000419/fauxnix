@@ -2,6 +2,23 @@
 
 Generated from `CommandSpec`. Unlisted commands still use unchecked `parseWords` (unknown flags ignored). Spec'd commands fail loud on unknown or unsupported options.
 
+## Agent-daily 60 (C-5)
+
+Curated command names: `basename`, `cat`, `cd`, `chmod`, `chown`, `clear`, `command`, `cp`, `cut`, `date`, `df`, `diff`, `dirname`, `du`, `echo`, `env`, `export`, `file`, `free`, `grep`, `groups`, `gunzip`, `gzip`, `head`, `hostname`, `id`, `ll`, `ln`, `ls`, `mkdir`, `mktemp`, `mv`, `nproc`, `printenv`, `printf`, `ps`, `pwd`, `readlink`, `realpath`, `rm`, `rmdir`, `sleep`, `sort`, `stat`, `tail`, `tee`, `timeout`, `touch`, `tr`, `type`, `uname`, `uniq`, `unset`, `unzip`, `uptime`, `wc`, `which`, `whoami`, `zcat`, `zip`
+
+Coverage: **60 / 60 spec'd**.
+
+## Intentional CommandSpec exclusions
+
+These commands stay outside the generic option walker by design. This is a structural rationale, not a claim that every command-specific option path is already strict.
+
+| Command | Rationale |
+| --- | --- |
+| `find` | option-looking predicates are parsed by the find expression compiler; generic short-option bundling would misread -name |
+| `sed`, `awk` | program text and option grammar require command-specific parsing; any remaining unchecked options must be fixed there rather than treated as generic flags |
+| `egrep` | semantic alias injects grep -E through its own handler; it must not be wrapped as an independent generic option parser |
+| `tar` | argv is passed to Windows bsdtar; rejecting unlisted GNU/bsdtar options before native dispatch would reduce compatibility |
+
 ## `cp`
 
 Effects: `read`, `write`
@@ -440,6 +457,246 @@ Effects: `read`, `write`
 | `-q` | flag | implemented |
 | `-d`, `--directory` | required | implemented |
 
+## `cd`
+
+Effects: `read`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-L` | flag | implemented |
+| `-P` | flag | unsupported (physical symlink/junction resolution) |
+| `-e` | flag | unsupported (physical-resolution failure mode) |
+| `-@` | flag | unsupported (extended-attribute directory view) |
+
+## `pwd`
+
+Effects: `read`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-L` | flag | implemented |
+| `-P` | flag | unsupported (physical symlink/junction resolution) |
+| `-W` | flag | unsupported (MSYS Windows-path output) |
+
+## `export`
+
+Effects: `read`, `write`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-f` | flag | unsupported (shell functions are not supported) |
+| `-n` | flag | unsupported (all fauxnix variables live in the session environment) |
+| `-p` | flag | unsupported (declare-style shell output) |
+
+## `unset`
+
+Effects: `write`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-v` | flag | implemented |
+| `-f` | flag | unsupported (shell functions are not supported) |
+| `-n` | flag | unsupported (nameref variables are not supported) |
+
+## `env`
+
+Effects: `process`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-u`, `--unset` | required | implemented (literal variable names only) |
+| `-i`, `--ignore-environment` | flag | unsupported (would silently keep inherited secrets; use env -u NAME or unset first) |
+| `-0`, `--null` | flag | unsupported (NUL-terminated output) |
+| `-C`, `--chdir` | required | unsupported (temporary working directory) |
+| `-S`, `--split-string` | required | unsupported (shell-like string splitting) |
+
+## `printenv`
+
+Effects: `read`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-0`, `--null` | flag | unsupported (NUL-terminated output) |
+
+## `ps`
+
+Effects: `process`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-e`, `--everyone` | flag | implemented |
+| `-A`, `--all` | flag | implemented |
+| `-f` | flag | implemented |
+| `-a` | flag | unsupported (terminal-based process selection) |
+| `-x` | flag | unsupported (terminal-based process selection) |
+| `-u` | flag | unsupported (BSD user-oriented format) |
+| `--user` | required | unsupported (user filtering) |
+| `-p`, `--pid` | required | unsupported (PID filtering) |
+| `-o`, `--format` | required | unsupported (custom output columns) |
+| `--sort` | required | unsupported (custom process ordering) |
+
+## `sleep`
+
+Effects: `process`
+
+No options declared.
+
+## `which`
+
+Effects: `read`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-a`, `--all` | flag | unsupported (all matching PATH entries) |
+| `-s` | flag | unsupported (silent status-only mode) |
+
+## `type`
+
+Effects: `read`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-a` | flag | unsupported (all matching definitions) |
+| `-f` | flag | unsupported (shell functions are not supported) |
+| `-P` | flag | unsupported (forced PATH lookup) |
+| `-p` | flag | unsupported (PATH-only lookup) |
+| `-t` | flag | unsupported (type-name-only output) |
+
+## `command`
+
+Effects: `process`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-v` | flag | implemented |
+| `-V` | flag | implemented |
+| `-p` | flag | unsupported (guaranteed default utility PATH) |
+
+## `whoami`
+
+Effects: `read`
+
+No options declared.
+
+## `id`
+
+Effects: `read`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-u` | flag | implemented |
+| `-g` | flag | implemented |
+| `-n` | flag | implemented |
+| `-G` | flag | unsupported (supplementary group ID mapping) |
+| `-r` | flag | unsupported (real versus effective IDs) |
+| `-z` | flag | unsupported (NUL-terminated output) |
+| `-Z` | flag | unsupported (SELinux security context) |
+
+## `groups`
+
+Effects: `read`
+
+No options declared.
+
+## `date`
+
+Effects: `read`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-u`, `--utc` | flag | implemented |
+| `-d`, `--date` | required | implemented (@SECONDS input only) |
+| `-I`, `--iso-8601` | flag | unsupported (ISO precision selection) |
+| `-R`, `--rfc-email` | flag | unsupported (RFC email formatting) |
+| `--rfc-3339` | required | unsupported (RFC 3339 precision selection) |
+| `-r`, `--reference` | required | unsupported (file timestamp lookup) |
+| `-s`, `--set` | required | unsupported (changing the system clock) |
+
+## `uname`
+
+Effects: `read`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-a`, `--all` | flag | implemented |
+| `-s`, `--kernel-name` | flag | implemented |
+| `-n`, `--nodename` | flag | implemented |
+| `-r`, `--kernel-release` | flag | implemented |
+| `-v`, `--kernel-version` | flag | implemented |
+| `-m`, `--machine` | flag | implemented |
+| `-p`, `--processor` | flag | implemented |
+| `-o`, `--operating-system` | flag | implemented |
+| `-i`, `--hardware-platform` | flag | unsupported (hardware-platform distinction) |
+
+## `hostname`
+
+Effects: `read`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-s`, `--short` | flag | unsupported (short-name selection) |
+| `-f`, `--fqdn` | flag | unsupported (FQDN lookup) |
+| `-d`, `--domain` | flag | unsupported (DNS domain lookup) |
+| `-i`, `--ip-address` | flag | unsupported (address lookup) |
+| `-I`, `--all-ip-addresses` | flag | unsupported (all-address lookup) |
+| `-F`, `--file` | required | unsupported (changing the hostname from a file) |
+
+## `uptime`
+
+Effects: `read`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-p`, `--pretty` | flag | unsupported (pretty duration output) |
+| `-s`, `--since` | flag | unsupported (boot timestamp output) |
+
+## `free`
+
+Effects: `read`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-h`, `--human` | flag | implemented |
+| `-k`, `--kibi` | flag | implemented |
+| `-m`, `--mebi` | flag | implemented |
+| `-g`, `--gibi` | flag | implemented |
+| `-b`, `--bytes` | flag | unsupported (byte-unit output) |
+| `--si` | flag | unsupported (powers-of-1000 units) |
+| `-t`, `--total` | flag | unsupported (total row) |
+| `-w`, `--wide` | flag | unsupported (wide buffer/cache columns) |
+| `-s`, `--seconds` | required | unsupported (repeating output) |
+| `-c`, `--count` | required | unsupported (repeating output) |
+
+## `nproc`
+
+Effects: `read`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `--all` | flag | unsupported (installed versus available processor distinction) |
+| `--ignore` | required | unsupported (processor-count subtraction) |
+
+## `clear`
+
+Effects: none
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-x` | flag | unsupported (scrollback-preserving terminal control) |
+| `-T` | required | unsupported (alternate terminal type) |
+
+## `timeout`
+
+Effects: `process`
+
+| Option | Value | Support |
+| --- | --- | --- |
+| `-s`, `--signal` | required | unsupported (signal selection) |
+| `-k`, `--kill-after` | required | unsupported (two-phase termination) |
+| `--preserve-status` | flag | unsupported (child-status preservation after timeout) |
+| `--foreground` | flag | unsupported (interactive foreground process groups) |
+| `-v`, `--verbose` | flag | unsupported (signal diagnostics) |
+
 ## Unspec'd commands
 
-`.`, `:`, `[`, `[[`, `alias`, `awk`, `base64`, `cd`, `clear`, `command`, `curl`, `date`, `dig`, `dirs`, `egrep`, `env`, `eval`, `exit`, `export`, `false`, `find`, `free`, `groups`, `history`, `host`, `hostname`, `id`, `ifconfig`, `ip`, `kill`, `less`, `man`, `md5sum`, `more`, `netstat`, `nl`, `nproc`, `nslookup`, `pgrep`, `ping`, `pkill`, `popd`, `printenv`, `ps`, `pushd`, `pwd`, `read`, `sed`, `seq`, `set`, `sha1sum`, `sha256sum`, `shift`, `sleep`, `source`, `ss`, `sudo`, `tac`, `tar`, `test`, `timeout`, `true`, `type`, `uname`, `unset`, `uptime`, `wget`, `which`, `whoami`, `xargs`, `yes`
+`.`, `:`, `[`, `[[`, `alias`, `awk`, `base64`, `curl`, `dig`, `dirs`, `egrep`, `eval`, `exit`, `false`, `find`, `history`, `host`, `ifconfig`, `ip`, `kill`, `less`, `man`, `md5sum`, `more`, `netstat`, `nl`, `nslookup`, `pgrep`, `ping`, `pkill`, `popd`, `pushd`, `read`, `sed`, `seq`, `set`, `sha1sum`, `sha256sum`, `shift`, `source`, `ss`, `sudo`, `tac`, `tar`, `test`, `true`, `wget`, `xargs`, `yes`

@@ -5,7 +5,7 @@
 import { beforeAll, afterAll, describe, expect, it } from 'vitest';
 import { getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, existsSync, appendFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, existsSync, appendFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseCommand } from '../src/parser.js';
@@ -1122,6 +1122,103 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect((await run('command echo hi')).stdout.trim()).toBe('hi');
   });
 
+  it('daily-60 sysinfo implemented options preserve their documented semantics', async () => {
+    const logicalPwd = (await run('pwd -L')).stdout.trim();
+    expect(realpathSync.native(logicalPwd).toLowerCase()).toBe(realpathSync.native(dir).toLowerCase());
+    const physical = await run('pwd -P');
+    expect(physical.exitCode).toBe(2);
+    expect(physical.stderr).toContain('physical symlink/junction resolution');
+    expect((await run('ps -f | head -1')).stdout).toMatch(/USER\s+PID/);
+    expect((await run('command -V echo')).stdout.trim()).toBe('echo is /usr/bin/echo');
+    expect((await run('uname --machine')).stdout.trim()).toMatch(/x86_64|ARM64/);
+    expect((await run('free --mebi')).stdout).toContain('Mem:');
+  });
+
+  it('date -d accepts spaced, attached, long, UTC, and bundled @epoch forms', async () => {
+    for (const cmd of [
+      'date -d @0 +%s',
+      'date -d@0 +%s',
+      'date --date @0 +%s',
+      'date --date=@0 +%s',
+      'date -u -d@0 +%s',
+      'date --utc --date=@0 +%s',
+      'date -ud @0 +%s',
+      'date -ud@0 +%s',
+    ]) {
+      const r = await run(cmd);
+      expect(r.exitCode, cmd + ': ' + r.stderr).toBe(0);
+      expect(r.stdout.trim(), cmd).toBe('0');
+    }
+  });
+
+  it('unset -f is fail-loud and cannot delete the PATH environment variable', async () => {
+    const before = (await run('printenv PATH')).stdout;
+    expect(before).not.toBe('');
+    const blocked = await run('unset -f PATH');
+    expect(blocked.exitCode).toBe(2);
+    expect(blocked.stderr).toContain("option '-f' is not supported by fauxnix");
+    expect((await run('printenv PATH')).stdout).toBe(before);
+  });
+
+  it('env value forms work and option scanning stops before assignment-command argv', async () => {
+    for (const form of ['-u', '-uFX_C5', '-u=FX_C5', '--unset=FX_C5']) {
+      const command = form === '-u' ? 'env -u FX_C5 printenv FX_C5' : 'env ' + form + ' printenv FX_C5';
+      const r = await run('export FX_C5=value; ' + command);
+      expect(r.exitCode, form + ': ' + r.stderr).toBe(1);
+      expect(r.stdout).toBe('');
+      expect((await run('printenv FX_C5')).stdout.trim()).toBe('value');
+    }
+    const childOption = await run('env FX_C5=temp -u PATH');
+    expect(childOption.exitCode).toBe(127);
+    expect(childOption.stderr).toContain('bash: -u: command not found');
+    expect((await run('printenv PATH')).stdout).not.toBe('');
+
+    await run('export FX_C5_NAME=PATH');
+    for (const dynamic of ['env -u "$FX_C5_NAME" printenv PATH', 'env -u$FX_C5_NAME printenv PATH']) {
+      const r = await run(dynamic);
+      expect(r.exitCode, dynamic).toBe(125);
+      expect(r.stderr, dynamic).toContain('requires a literal variable name');
+      expect((await run('printenv PATH')).stdout).not.toBe('');
+    }
+    await run('unset FX_C5_NAME');
+    await run('unset FX_C5');
+  });
+
+  it('daily-60 unknown, unsupported, and operand forms fail before silent fallback', async () => {
+    const pwdUnknown = await run('pwd -Q');
+    expect(pwdUnknown.exitCode).toBe(2);
+    expect(pwdUnknown.stderr).toContain("invalid option -- 'Q'");
+
+    const envUnknown = await run('env -Q FOO=bar printenv FOO');
+    expect(envUnknown.exitCode).toBe(125);
+    expect(envUnknown.stdout).toBe('');
+    expect(envUnknown.stderr).toContain("invalid option -- 'Q'");
+
+    expect((await run('printenv -0 PATH')).exitCode).toBe(2);
+    expect((await run('timeout --preserve-status 1 true')).exitCode).toBe(125);
+    expect((await run('id -n')).exitCode).toBe(1);
+    expect((await run('id -ug')).exitCode).toBe(1);
+    expect((await run('id other-user')).exitCode).toBe(1);
+    expect((await run('groups other-user')).exitCode).toBe(1);
+    expect((await run('hostname replacement')).exitCode).toBe(1);
+    expect((await run('free -gm')).exitCode).toBe(1);
+    expect((await run('free -hm')).stdout).toMatch(/Gi|Mi|Ki|B/);
+  });
+
+  it('daily lookup commands reject directories and lone-dash edge cases', async () => {
+    for (const cmd of ['which drivers', 'type drivers', 'command -v drivers']) {
+      const r = await run(cmd);
+      expect(r.exitCode, cmd + ': ' + r.stdout).toBe(1);
+      expect(r.stdout, cmd).toBe('');
+    }
+    expect((await run('env - printenv PATH')).exitCode).toBe(125);
+    expect((await run('export -')).exitCode).toBe(1);
+    expect((await run('printenv -')).exitCode).toBe(1);
+    expect((await run('which -')).exitCode).toBe(1);
+    expect((await run('type -')).exitCode).toBe(1);
+    expect((await run('command -')).exitCode).toBe(127);
+  });
+
   it('source reads NAME=VALUE files into the session', async () => {
     writeFileSync(join(dir, 'dotenv.env'), 'FOO=bar\n# c\nexport BAZ=qux\nQUOT=\"hi\"\n', 'utf8');
     expect((await run('source dotenv.env; echo $FOO $BAZ $QUOT')).stdout.trim()).toBe('bar qux hi');
@@ -1159,8 +1256,8 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
 
   it('env -i fails loudly instead of keeping inherited secrets', async () => {
     const r = await run('env -i echo hi');
-    expect(r.exitCode).toBe(2);
-    expect(r.stderr).toMatch(/env -i\/--ignore-environment is not supported/);
+    expect(r.exitCode).toBe(125);
+    expect(r.stderr).toMatch(/option '-i' is not supported.*inherited secrets/);
     expect(r.stdout.trim()).toBe('');
   });
 
