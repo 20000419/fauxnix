@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { resolveQwenLaunchTuple, sameQwenLaunchTuple } from './qwen-launch.js';
 
 export type DoctorOptions = {
   home?: string;
@@ -30,6 +31,7 @@ export async function collectDoctorReport(opts: DoctorOptions = {}): Promise<Doc
   lines.push(field('claude', detectClaude(home, cwd, env)));
   lines.push(field('codex', detectCodex(home, env)));
   lines.push(field('opencode', detectOpenCode(home, env)));
+  lines.push(field('qwen', detectQwen(home)));
   lines.push('');
 
   const mcp = await mcpLines(nodeVersion, opts.loadMcp);
@@ -176,6 +178,39 @@ function detectOpenCode(home: string, env: NodeJS.ProcessEnv): string {
   return `found ${path}, fauxnix MCP not listed — add mcp.fauxnix (see README)`;
 }
 
+function detectQwen(home: string): string {
+  const path = join(home, '.qwen', 'settings.json');
+  if (!existsSync(path)) return 'not detected — see README';
+  const text = readText(path);
+  if (text === undefined) return `found ${path} (unreadable) — see README`;
+  let data: unknown;
+  try {
+    data = JSON.parse(stripBom(text));
+  } catch {
+    return `found ${path} (unreadable JSON) — see README`;
+  }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return `found ${path} (not a JSON object) — see README`;
+  }
+  const servers = (data as Record<string, unknown>).mcpServers;
+  if (!isServerMap(servers)) {
+    return `found ${path}, fauxnix MCP not listed — run: fauxnix install --qwen`;
+  }
+  const extraNames = fauxnixServerNames(servers).filter((name) => name !== 'fauxnix');
+  if (extraNames.length) {
+    return `found ${path}, additional fauxnix MCP entries (${extraNames.join(', ')}) — remove them, then run: fauxnix install --qwen`;
+  }
+  const config = (servers as Record<string, unknown>).fauxnix;
+  const expected = resolveQwenLaunchTuple();
+  if (expected.ok && sameQwenLaunchTuple(config, expected.value)) {
+    return `fauxnix MCP configured with an absolute launcher (${path})`;
+  }
+  if (config != null || serverMapHasFauxnix(servers)) {
+    return `found ${path}, fauxnix MCP launcher does not match this installation — run: fauxnix install --qwen`;
+  }
+  return `found ${path}, fauxnix MCP not listed — run: fauxnix install --qwen`;
+}
+
 export function hasOpenCodeFauxnix(data: unknown): boolean {
   if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
   const mcp = (data as Record<string, unknown>).mcp;
@@ -190,12 +225,17 @@ export function isServerMap(value: unknown): boolean {
 }
 
 export function serverMapHasFauxnix(value: unknown): boolean {
-  if (!isServerMap(value)) return false;
+  return fauxnixServerNames(value).length > 0;
+}
+
+export function fauxnixServerNames(value: unknown): string[] {
+  if (!isServerMap(value)) return [];
+  const names: string[] = [];
   for (const [name, cfg] of Object.entries(value as Record<string, unknown>)) {
     if (name === 'servers') continue;
-    if (looksLikeFauxnixServer(name, cfg)) return true;
+    if (looksLikeFauxnixServer(name, cfg)) names.push(name);
   }
-  return false;
+  return names;
 }
 
 function looksLikeFauxnixServer(name: string, cfg: unknown): boolean {

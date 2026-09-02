@@ -7,6 +7,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, delimiter, dirname, join, resolve } from 'node:path';
@@ -63,7 +64,7 @@ const temporaryRoot = mkdtempSync(join(tmpdir(), 'fauxnix-package-smoke-'));
 const sourceDirectory = join(temporaryRoot, 'source');
 const sourceInstallDirectory = join(temporaryRoot, 'source-install');
 const packDirectory = join(temporaryRoot, 'pack');
-const installDirectory = join(temporaryRoot, 'install');
+const installDirectory = join(temporaryRoot, 'installed package with spaces');
 
 try {
   mkdirSync(sourceDirectory);
@@ -105,9 +106,10 @@ try {
     process.platform === 'win32'
       ? join(sourceInstallDirectory, 'fauxnix.cmd')
       : join(sourceInstallDirectory, 'bin', 'fauxnix');
+  const globalCliEntry = join(globalPackageRoot, 'dist', 'index.js');
   assert.ok(existsSync(sourceCliEntry), 'installing clean source should build dist/index.js');
   assert.ok(
-    existsSync(join(globalPackageRoot, 'dist', 'index.js')),
+    existsSync(globalCliEntry),
     'global source install should expose dist/index.js',
   );
   assert.ok(existsSync(globalCliShim), 'global source install should expose the fauxnix executable');
@@ -144,6 +146,73 @@ try {
   );
   assert.equal(version, `fauxnix ${metadata.version}`);
 
+  const qwenHome = join(temporaryRoot, 'qwen home');
+  const qwenWorkspace = join(temporaryRoot, 'qwen workspace');
+  mkdirSync(qwenHome);
+  mkdirSync(qwenWorkspace);
+  const wrongLauncherMarker = join(qwenWorkspace, 'wrong-launcher.txt');
+  writeFileSync(
+    join(qwenWorkspace, 'fauxnix.cmd'),
+    `@echo off\r\n>"${wrongLauncherMarker}" echo wrong\r\nexit /b 0\r\n`,
+  );
+  const qwenEnvironment = {
+    ...cleanEnvironment,
+    HOME: qwenHome,
+    USERPROFILE: qwenHome,
+  };
+  const qwenPathKey =
+    Object.keys(qwenEnvironment).find((key) => key.toLowerCase() === 'path') ?? 'PATH';
+  qwenEnvironment[qwenPathKey] =
+    qwenWorkspace + delimiter + (qwenEnvironment[qwenPathKey] ?? '');
+  const qwenInstall = run(process.execPath, [cliEntry, 'install', '--qwen'], {
+    cwd: qwenWorkspace,
+    env: qwenEnvironment,
+  });
+  assert.match(qwenInstall, /qwen: created/);
+  const qwenConfig = JSON.parse(
+    readFileSync(join(qwenHome, '.qwen', 'settings.json'), 'utf8'),
+  );
+  const qwenServer = qwenConfig.mcpServers.fauxnix;
+  assert.equal(qwenServer.command, process.execPath);
+  assert.deepEqual(qwenServer.args, [cliEntry, 'mcp']);
+  assert.match(qwenServer.args[0], /installed package with spaces/);
+  run(qwenServer.command, qwenServer.args, {
+    cwd: qwenWorkspace,
+    env: qwenEnvironment,
+  });
+  const qwenVersion = run(qwenServer.command, [qwenServer.args[0], '--version'], {
+    cwd: qwenWorkspace,
+    env: qwenEnvironment,
+  });
+  assert.equal(qwenVersion, `fauxnix ${metadata.version}`);
+  assert.equal(existsSync(wrongLauncherMarker), false);
+
+  const globalQwenHome = join(temporaryRoot, 'global qwen home');
+  mkdirSync(globalQwenHome);
+  const globalQwenEnvironment = {
+    ...qwenEnvironment,
+    HOME: globalQwenHome,
+    USERPROFILE: globalQwenHome,
+  };
+  run(process.execPath, [globalCliEntry, 'install', '--qwen'], {
+    cwd: qwenWorkspace,
+    env: globalQwenEnvironment,
+  });
+  const globalQwenConfig = JSON.parse(
+    readFileSync(join(globalQwenHome, '.qwen', 'settings.json'), 'utf8'),
+  );
+  assert.deepEqual(globalQwenConfig.mcpServers.fauxnix, {
+    command: process.execPath,
+    // `npm install -g <local-dir>` links the package, and Node resolves the
+    // module URL to the source tree's real path. Registry installs are copied.
+    args: [sourceCliEntry, 'mcp'],
+  });
+  run(
+    globalQwenConfig.mcpServers.fauxnix.command,
+    globalQwenConfig.mcpServers.fauxnix.args,
+    { cwd: qwenWorkspace, env: globalQwenEnvironment },
+  );
+
   const translation = runNpm(
     [
       'exec',
@@ -163,6 +232,7 @@ try {
   console.log(`clean source install passed: ${sourceVersion}`);
   console.log(`package smoke passed: ${basename(tarball)}`);
   console.log(`  ${version}`);
+  console.log('Qwen absolute launcher passed from a workspace-local fauxnix shim');
 } finally {
   const temporaryParent = dirname(temporaryRoot);
   assert.equal(temporaryParent, tmpdir(), 'refusing to clean a non-temporary path');
