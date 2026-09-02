@@ -174,7 +174,7 @@ export function formatSummary(run: CorpusRun): string {
   const pct = (run.identity * 100).toFixed(1);
   const lines = [
     `differential: ${run.identical}/${run.total} identical (${pct}%) vs ${run.bashPath}`,
-    `gate for this corpus: ≥${(run.gate * 100).toFixed(0)}%  |  1.0 gate: ≥200 cases at ≥95% (not this scaffold)`,
+    `gate for this corpus: ≥${(run.gate * 100).toFixed(0)}%  |  1.0 gate: ≥200 cases at ≥95% (not this corpus)`,
   ];
   const mismatches = run.results.filter((r) => !r.identical);
   for (const m of mismatches) {

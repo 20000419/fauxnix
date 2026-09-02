@@ -6,13 +6,16 @@
  *   - lists:                cmd1 ; cmd2 && cmd3 || cmd4   (newlines act as ';')
  *   - redirections:         > >> 2> 2>> &> 2>&1 1>&2 <
  *   - quoting:              'literal'  "interp $VAR $(cmd)"
- *   - variables:            $VAR ${VAR} ${VAR[n]} plus special cases ($HOME $USER $PATH ...)
+ *   - variables:            $VAR ${VAR} ${VAR[n]} ${name//pat/str} ${name:off:len}
+ *                           plus special cases ($HOME $USER $PATH $1 $# $@ $0 ...)
  *   - command substitution: $(...) and `...` (recursively translated)
  *   - arithmetic expansion: $((...)) (existing fx-arith engine)
  *   - env assignment prefix: VAR=value cmd
+ *   - control:              if/then/elif/else/fi, for-in, while/until, case
+ *   - array assignment:     A=(x y z)  (sidecar FAUXNIX_ARRS)
  *
  * Explicitly unsupported (parser throws a helpful FauxnixError):
- *   heredocs, subshells (...), background &, while/until/case,
+ *   heredocs, subshells (...), background &,
  *   globs inside quotes, process substitution <(...).
  */
 
@@ -28,7 +31,7 @@ export interface ListSegment {
   op: ';' | '&&' | '||';
 }
 
-export type ShellCommand = SimpleCommand | IfCommand | ForCommand;
+export type ShellCommand = SimpleCommand | IfCommand | ForCommand | WhileCommand | CaseCommand;
 
 export interface Pipeline {
   kind: 'Pipeline';
@@ -51,6 +54,27 @@ export interface ForCommand {
   redirects: Redirect[];
 }
 
+export interface WhileCommand {
+  kind: 'While';
+  /** true for `until TEST; do BODY; done`. */
+  until: boolean;
+  test: CommandList;
+  body: CommandList;
+  redirects: Redirect[];
+}
+
+export interface CaseArm {
+  patterns: Word[];
+  body: CommandList;
+}
+
+export interface CaseCommand {
+  kind: 'Case';
+  word: Word;
+  arms: CaseArm[];
+  redirects: Redirect[];
+}
+
 export interface SimpleCommand {
   kind: 'SimpleCommand';
   /** `VAR=value` prefixes before the command name. */
@@ -63,7 +87,10 @@ export interface SimpleCommand {
 
 export interface Assignment {
   name: string;
+  /** Scalar value; for arrays, first element (or empty Word) so export paths stay valid. */
   value: Word;
+  /** Set ⇒ bash array assignment `A=(x y z)`. */
+  values?: Word[];
 }
 
 export type RedirectOp =
@@ -91,6 +118,10 @@ export type WordPart =
       param?: { op: ':-' | ':=' | ':+' | ':?' | '-' | '+' | '?'; word: string };
       /** `${#name}` / `${#name[@]}` — string/array length expansion. */
       length?: boolean;
+      /** `${name/pat/str}` (first) / `${name//pat/str}` (global). Pattern is a bash glob. */
+      replace?: { global: boolean; pat: string; repl: string };
+      /** `${name:offset}` / `${name:offset:length}` — scalar substring. */
+      slice?: { offset: string; length?: string };
     }
   | { kind: 'CmdSub'; cmd: string }
   | { kind: 'Arith'; parts: WordPart[] };
@@ -122,6 +153,23 @@ function partToString(p: WordPart): string {
     case 'DoubleQuoted':
       return p.parts.map(partToString).join('');
     case 'Var':
+      if (p.replace) {
+        const sep = p.replace.global ? '//' : '/';
+        return `\${${p.name}${sep}${p.replace.pat}/${p.replace.repl}}`;
+      }
+      if (p.slice) {
+        return p.slice.length !== undefined
+          ? `\${${p.name}:${p.slice.offset}:${p.slice.length}}`
+          : `\${${p.name}:${p.slice.offset}}`;
+      }
+      if (p.length) {
+        return p.index !== undefined
+          ? `\${#${p.name}[${p.index}]}`
+          : `\${#${p.name}}`;
+      }
+      if (p.param) {
+        return `\${${p.name}${p.param.op}${p.param.word}}`;
+      }
       return p.index !== undefined ? `\${${p.name}[${p.index}]}` : `$${p.name}`;
     case 'CmdSub':
       return '$(' + p.cmd + ')';

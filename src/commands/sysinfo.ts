@@ -13,8 +13,10 @@ import {
   pathExpr,
   paramExpr,
   varExpr,
+  varExtraOf,
   arithExpr,
   setArithHelperPreamble,
+  isSpecialShellVar,
 } from '../translator.js';
 import { handlers as textIoHandlers } from './text-io.js';
 
@@ -253,7 +255,7 @@ const env: Handler = (args, ctx) => {
       return (
         '[Console]::Error.WriteLine(' +
         psStr(
-          'fauxnix: env -i/--ignore-environment is not supported (would silently keep inherited secrets)',
+          'fauxnix: env -i/--ignore-environment is not supported (would silently keep inherited secrets). Use env -u NAME or unset first instead.',
         ) +
         '); $script:fx_exit = 2'
       );
@@ -1501,6 +1503,10 @@ function kshExprOfWord(w: Word): string {
     return arithExpr(expanded[0].parts);
   }
   if (!tilde && expanded.length === 1 && expanded[0].kind === 'Var') {
+    const extra = varExtraOf(expanded[0]);
+    if (extra && (extra.replace || extra.slice)) {
+      return varExpr(expanded[0].name, expanded[0].index, expanded[0].param, expanded[0].length === true, extra);
+    }
     if (expanded[0].param) {
       return paramExpr(expanded[0].name, expanded[0].param.op, expanded[0].param.word);
     }
@@ -1510,6 +1516,7 @@ function kshExprOfWord(w: Word): string {
     if (expanded[0].index !== undefined) {
       return '(fx-subget ' + psStr(expanded[0].name) + ' ' + psStr(expanded[0].index) + ')';
     }
+    if (isSpecialShellVar(expanded[0].name)) return varExpr(expanded[0].name);
     return '(fx-envget ' + psStr(expanded[0].name) + ')';
   }
   const literal =
@@ -1529,14 +1536,23 @@ function kshExprOfWord(w: Word): string {
       case 'DoubleQuoted':
         for (const q of p.parts) emitPart(q);
         break;
-      case 'Var':
-        out +=
-          p.param
-            ? '$(' + paramExpr(p.name, p.param.op, p.param.word) + ')'
-            : p.index !== undefined
-            ? '$(fx-subget ' + psStr(p.name) + ' ' + psStr(p.index) + ')'
-            : '$(fx-envget ' + psStr(p.name) + ')';
+      case 'Var': {
+        const extra = varExtraOf(p);
+        if (extra && (extra.replace || extra.slice)) {
+          out += '$(' + varExpr(p.name, p.index, p.param, p.length === true, extra) + ')';
+        } else if (p.param) {
+          out += '$(' + paramExpr(p.name, p.param.op, p.param.word) + ')';
+        } else if (p.length) {
+          out += '$(' + varExpr(p.name, p.index, undefined, true) + ')';
+        } else if (p.index !== undefined) {
+          out += '$(fx-subget ' + psStr(p.name) + ' ' + psStr(p.index) + ')';
+        } else if (isSpecialShellVar(p.name)) {
+          out += '$(' + varExpr(p.name) + ')';
+        } else {
+          out += '$(fx-envget ' + psStr(p.name) + ')';
+        }
         break;
+      }
       case 'CmdSub':
         // [[ ]] does not IFS-split, so keep the newline contract.
         out += '$(' + translateCmdSub(p.cmd, true) + ')';
@@ -2624,7 +2640,7 @@ const source: Handler = (args) => {
 
 const evalCmd: Handler = () => {
   return (
-    "[Console]::Error.WriteLine('fauxnix: eval is not supported; pass the command itself'); $script:fx_exit = 1"
+    "[Console]::Error.WriteLine('fauxnix: eval is not supported; pass the command itself instead'); $script:fx_exit = 1"
   );
 };
 
@@ -2658,10 +2674,16 @@ const alias: Handler = (args) => {
     return t !== '' && !t.startsWith('-');
   });
   if (!has) return '';
-  return "[Console]::Error.WriteLine('fauxnix: alias is not supported'); $script:fx_exit = 1";
+  return "[Console]::Error.WriteLine('fauxnix: alias is not supported. Invoke the real command instead.'); $script:fx_exit = 1";
 };
 
 const set: Handler = (args) => {
+  if (args.length > 0 && wordToString(args[0]) === '--') {
+    return [
+      '$fx_pv = [object[]](' + argListExpr(args.slice(1)) + ')',
+      'fx-posset $fx_pv',
+    ].join('\n');
+  }
   const raw = args.map(wordToString);
   const unsupported = raw.filter(
     (t) =>
@@ -2683,12 +2705,21 @@ const set: Handler = (args) => {
     return (
       '[Console]::Error.WriteLine(' +
       psStr(
-        'fauxnix: set -e/-u/-x is not supported (would silently lie); use explicit || exit',
+        'fauxnix: set -e/-u/-x is not supported (would silently lie); use explicit || exit instead',
       ) +
       '); $script:fx_exit = 2'
     );
   }
   return '';
+};
+
+const shiftCmd: Handler = (args) => {
+  if (args.length === 0) return 'fx-posshift 1';
+  return [
+    '$fx_sn = [string](' + exprOfWord(args[0]) + ')',
+    "if ($fx_sn -notmatch '^-?[0-9]+$') { [Console]::Error.WriteLine('bash: shift: ' + $fx_sn + ': numeric argument required'); $script:fx_exit = 1 }",
+    'else { fx-posshift $fx_sn }',
+  ].join('\n');
 };
 
 /* ------------------------------------------------------------------ */
@@ -2740,4 +2771,5 @@ export const handlers: Record<string, Handler> = {
   exit: exitCmd,
   alias,
   set,
+  shift: shiftCmd,
 };

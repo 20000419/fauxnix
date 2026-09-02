@@ -1,10 +1,11 @@
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runCli, USAGE } from '../src/cli.js';
 import { collectDoctorReport } from '../src/doctor.js';
+import { kimiConfigPath, qwenConfigPath, runInstall } from '../src/install.js';
 import { FauxnixParseError, isUnquotedLiteral, wordToString } from '../src/ast.js';
 import { parseCommand as parse, tokenize } from '../src/parser.js';
 import {
@@ -25,7 +26,12 @@ import {
   SH_SCRIPT_WINDOWS_HINT,
 } from '../src/errors.js';
 import { decodeHostResponse, encodeHostRequest, parseHostLine } from '../src/ps-host.js';
-import { bashToolResult, formatBashText } from '../src/mcp.js';
+import {
+  bashToolResult,
+  formatBashText,
+  formatSessionStatus,
+  positionalCountFromEnv,
+} from '../src/mcp.js';
 import '../src/commands/install-all.js';
 import { specsMarkdown } from '../src/registry.js';
 
@@ -118,6 +124,7 @@ describe('parser', () => {
   it('set -e is a loud usage error, not a silent no-op', () => {
     const script = translateCommandList(parse('set -e'))[0].script;
     expect(script).toMatch(/set -e\/-u\/-x is not supported/);
+    expect(script).toMatch(/use explicit \|\| exit/i);
     expect(script).toContain('$script:fx_exit = 2');
   });
 
@@ -126,6 +133,68 @@ describe('parser', () => {
     expect(cmd.args[0]).toEqual([{ kind: 'Var', name: 'X', param: { op: ':-', word: 'def' } }]);
     expect(cmd.args[1]).toEqual([{ kind: 'Var', name: 'Y', param: { op: ':+', word: 'on' } }]);
     expect(cmd.args[2]).toEqual([{ kind: 'Var', name: 'Z', param: { op: ':?', word: 'err' } }]);
+  });
+
+  it('parses A=(x y z) as an array assignment', () => {
+    const cmd = parse('A=(x y z)').segments[0].pipeline.commands[0];
+    expect(cmd.kind).toBe('SimpleCommand');
+    if (cmd.kind !== 'SimpleCommand') return;
+    expect(cmd.name).toBeNull();
+    expect(cmd.assignments).toHaveLength(1);
+    expect(cmd.assignments[0].name).toBe('A');
+    expect(cmd.assignments[0].values).toHaveLength(3);
+    const texts = cmd.assignments[0].values!.map((w) =>
+      w.map((p) => ('text' in p ? p.text : '')).join(''),
+    );
+    expect(texts).toEqual(['x', 'y', 'z']);
+  });
+
+  it('parses A=() / A=(x) / A=( x y z ) and keeps quoted ( ) as scalar', () => {
+    const empty = parse('A=()').segments[0].pipeline.commands[0];
+    expect(empty.kind).toBe('SimpleCommand');
+    if (empty.kind !== 'SimpleCommand') return;
+    expect(empty.assignments[0].values).toEqual([]);
+    const one = parse('A=(x)').segments[0].pipeline.commands[0];
+    if (one.kind !== 'SimpleCommand') return;
+    expect(one.assignments[0].values).toHaveLength(1);
+    const spaced = parse('A=( x y z )').segments[0].pipeline.commands[0];
+    if (spaced.kind !== 'SimpleCommand') return;
+    expect(spaced.assignments[0].values).toHaveLength(3);
+    const q = parse("A='(x y)'").segments[0].pipeline.commands[0];
+    if (q.kind !== 'SimpleCommand') return;
+    expect(q.assignments[0].values).toBeUndefined();
+    const dq = parse('A="(x y)"').segments[0].pipeline.commands[0];
+    if (dq.kind !== 'SimpleCommand') return;
+    expect(dq.assignments[0].values).toBeUndefined();
+  });
+
+  it('parses ${X//a/b} and ${X:0:2} as Var replace/slice, not Text', () => {
+    const cmd = parse('echo ${X//a/b} ${X:0:2} ${X/l/L} ${X: -1}').segments[0].pipeline.commands[0];
+    expect(cmd.args[0]).toEqual([
+      { kind: 'Var', name: 'X', replace: { global: true, pat: 'a', repl: 'b' } },
+    ]);
+    expect(cmd.args[1]).toEqual([{ kind: 'Var', name: 'X', slice: { offset: '0', length: '2' } }]);
+    expect(cmd.args[2]).toEqual([
+      { kind: 'Var', name: 'X', replace: { global: false, pat: 'l', repl: 'L' } },
+    ]);
+    expect(cmd.args[3]).toEqual([{ kind: 'Var', name: 'X', slice: { offset: '-1' } }]);
+    expect(cmd.args[0][0].kind).not.toBe('Text');
+  });
+
+  it('does not steal ${X:-def} as a slice', () => {
+    const cmd = parse('echo ${X:-def} ${Y:+on} ${Z:?err}').segments[0].pipeline.commands[0];
+    expect(cmd.args[0]).toEqual([{ kind: 'Var', name: 'X', param: { op: ':-', word: 'def' } }]);
+    expect(cmd.args[1][0].kind).toBe('Var');
+    if (cmd.args[1][0].kind !== 'Var') return;
+    expect(cmd.args[1][0].slice).toBeUndefined();
+  });
+
+  it('rejects A+=(x) and ${name/#} / ${arr[@]:0:2} with an alternative', () => {
+    expect(() => parse('A+=(x)')).toThrow(/\$\{A\[@\]\} x/);
+    expect(() => parse('A+=(x)')).toThrow(/A=\(x y\)/);
+    expect(() => parse('echo ${X/#a/b}')).toThrow(/\$\{name\/\/pat\/str\}/);
+    expect(() => parse('echo ${X/%a/b}')).toThrow(/\$\{name\/\/pat\/str\}/);
+    expect(() => parse('echo ${A[@]:0:2}')).toThrow(/\$\{name:offset:length\}/);
   });
 
   it('parses ${#name} and ${#name[@]}', () => {
@@ -164,11 +233,89 @@ describe('parser', () => {
     expect(c.words).toHaveLength(3);
   });
 
+  it('parses while TEST; do BODY; done', () => {
+    const list = parse('while [ $i -lt 3 ]; do echo $i; done');
+    const c = list.segments[0].pipeline.commands[0];
+    expect(c.kind).toBe('While');
+    if (c.kind !== 'While') return;
+    expect(c.until).toBe(false);
+    expect(c.redirects).toEqual([]);
+    expect(c.test.segments).toHaveLength(1);
+    expect(c.body.segments).toHaveLength(1);
+  });
+
+  it('parses until TEST; do BODY; done', () => {
+    const list = parse('until [ $i -eq 2 ]; do echo $i; done');
+    const c = list.segments[0].pipeline.commands[0];
+    expect(c.kind).toBe('While');
+    if (c.kind !== 'While') return;
+    expect(c.until).toBe(true);
+    expect(c.redirects).toEqual([]);
+  });
+
+  it('parses case x in x) echo HIT;; esac', () => {
+    const list = parse('case x in x) echo HIT;; esac');
+    expect(list.segments).toHaveLength(1);
+    const c = list.segments[0].pipeline.commands[0];
+    expect(c.kind).toBe('Case');
+    if (c.kind !== 'Case') return;
+    expect(wordToString(c.word)).toBe('x');
+    expect(c.arms).toHaveLength(1);
+    expect(c.arms[0].patterns.map(wordToString)).toEqual(['x']);
+  });
+
+  it('parses case pattern alternation a|x)', () => {
+    const list = parse('case x in a|x) echo HIT;; esac');
+    const c = list.segments[0].pipeline.commands[0];
+    expect(c.kind).toBe('Case');
+    if (c.kind !== 'Case') return;
+    expect(c.arms).toHaveLength(1);
+    expect(c.arms[0].patterns.map(wordToString)).toEqual(['a', 'x']);
+  });
+
+  it('parses case default *) arm', () => {
+    const list = parse('case x in *) echo D;; esac');
+    const c = list.segments[0].pipeline.commands[0];
+    expect(c.kind).toBe('Case');
+    if (c.kind !== 'Case') return;
+    expect(c.arms).toHaveLength(1);
+    expect(c.arms[0].patterns.map(wordToString)).toEqual(['*']);
+  });
+
+  it('rejects case fallthrough ;& / ;;&', () => {
+    expect(() => parse('case x in x) echo HIT;& esac')).toThrow(/case fallthrough/);
+    expect(() => parse('case x in x) echo HIT;;& esac')).toThrow(/case fallthrough/);
+  });
+
+  it('rejects case in a pipeline', () => {
+    expect(() => parse('echo hi | case x in x) echo y;; esac')).toThrow(
+      /case in a pipeline is not supported/,
+    );
+  });
+
   it('parses ${name[index]} subscripts', () => {
     const cmd = parse('echo ${BASH_REMATCH[1]} ${PATH[0]} ${x[@]}').segments[0].pipeline.commands[0];
     expect(cmd.args[0]).toEqual([{ kind: 'Var', name: 'BASH_REMATCH', index: '1' }]);
     expect(cmd.args[1]).toEqual([{ kind: 'Var', name: 'PATH', index: '0' }]);
     expect(cmd.args[2]).toEqual([{ kind: 'Var', name: 'x', index: '@' }]);
+  });
+
+  it('parses positional specials $1 $# $@ $* ${1} ${#}', () => {
+    const cmd = parse('echo $1 $# $@ $* ${1} ${#} ${@} ${*} $0').segments[0].pipeline.commands[0];
+    expect(cmd.args.map((w) => w[0])).toEqual([
+      { kind: 'Var', name: '1' },
+      { kind: 'Var', name: '#' },
+      { kind: 'Var', name: '@' },
+      { kind: 'Var', name: '*' },
+      { kind: 'Var', name: '1' },
+      { kind: 'Var', name: '#' },
+      { kind: 'Var', name: '@' },
+      { kind: 'Var', name: '*' },
+      { kind: 'Var', name: '0' },
+    ]);
+    expect(parse('echo ${#X}').segments[0].pipeline.commands[0].args[0]).toEqual([
+      { kind: 'Var', name: 'X', length: true },
+    ]);
   });
 
   it('registers command as a builtin', () => {
@@ -199,15 +346,60 @@ describe('parser', () => {
     expect(splatSpec(cmd.args[1])).toEqual({ name: 'a', prefix: '', suffix: '' });
   });
 
+  it('splats $@ and quoted "$@", but not quoted "$*"', () => {
+    expect(splatSpec(parse('echo $@').segments[0].pipeline.commands[0].args[0])).toEqual({
+      name: '@',
+      prefix: '',
+      suffix: '',
+    });
+    expect(splatSpec(parse('echo "$@"').segments[0].pipeline.commands[0].args[0])).toEqual({
+      name: '@',
+      prefix: '',
+      suffix: '',
+    });
+    expect(splatSpec(parse('echo $*').segments[0].pipeline.commands[0].args[0])).toEqual({
+      name: '*',
+      prefix: '',
+      suffix: '',
+    });
+    expect(splatSpec(parse('echo "$*"').segments[0].pipeline.commands[0].args[0])).toBeNull();
+  });
+
   it('indexes ${name[0]} through fx-subget, not $env:', () => {
     expect(varExpr('bash_rematch', '0')).toContain('fx-subget');
     expect(varExpr('bash_rematch', '0')).not.toMatch(/\$env:bash_rematch/i);
     expect(varExpr('PWD', '0')).toContain('fx-subget');
   });
 
+  it('translates A=(a b c) via fx-arrput, not export A=(', () => {
+    const body = translateCommandList(parse('A=(a b c)'))[0].body;
+    expect(body).toContain('fx-arrput');
+    expect(body).not.toMatch(/\$env:A\s*=\s*.*\(a/);
+    expect(body).not.toContain("export");
+    const prefix = translateCommandList(parse('A=(x y) echo z'))[0].body;
+    expect(prefix).toContain('fx-arrput');
+    expect(prefix).toContain('fx-arrpackget');
+  });
+
   it('rejects heredocs with a helpful message', () => {
     expect(() => parse('cat <<EOF')).toThrow(FauxnixParseError);
     expect(() => parse('cat <<EOF')).toThrow(/heredoc/);
+    expect(() => parse('cat <<EOF')).toThrow(/instead/);
+  });
+
+  it('rejects functions/background with an alternative (U-3); while/until/case are implemented', () => {
+    // while/until landed in #182, case in #190 — they execute, not reject
+    expect(() => parse('while true; do echo x; done')).not.toThrow();
+    expect(() => parse('until false; do echo x; done')).not.toThrow();
+    expect(() => parse('case x in a) echo a;; esac')).not.toThrow();
+    expect(() => parse('function foo { echo x; }')).toThrow(/functions/);
+    expect(() => parse('foo() { echo x; }')).toThrow(/functions/);
+    expect(() => parse('foo () { echo x; }')).toThrow(/functions/);
+    expect(() => parse('echo hi &')).toThrow(/background/);
+    expect(() => parse('echo hi &')).toThrow(/foreground/);
+    expect(() => parse('& echo hi')).toThrow(/background/);
+    expect(() => parse('for ((i=0;i<3;i++)); do echo x; done')).toThrow(/C-style for/);
+    expect(() => parse('for ((i=0;i<3;i++)); do echo x; done')).toThrow(/for x in/);
   });
 
   it('rejects trailing && / || instead of dropping them', () => {
@@ -222,13 +414,26 @@ describe('parser', () => {
     expect(() => parse('echo A;; echo B')).toThrow(/unexpected token `;;'/);
     expect(() => parse('echo A; ; echo B')).toThrow(/unexpected token `;;'/);
     expect(parse('echo A; echo B').segments).toHaveLength(2);
+    const toks = tokenize('echo A;; echo B');
+    expect(toks.filter((t) => t.type === 'OP' && t.op === ';;')).toHaveLength(1);
+    expect(toks.filter((t) => t.type === 'OP' && t.op === ';')).toHaveLength(0);
   });
 
   it('env -i is a loud usage error, not a silent ignore', () => {
     const script = translateCommandList(parse('env -i echo hi'))[0].script;
     expect(script).toMatch(/env -i\/--ignore-environment is not supported/);
+    expect(script).toMatch(/env -u NAME|unset first instead/);
     expect(script).toContain('$script:fx_exit = 2');
     expect(script).not.toContain("fx-write");
+  });
+
+  it('alias and eval reject with an alternative', () => {
+    const alias = translateCommandList(parse('alias ll=ls'))[0].script;
+    expect(alias).toMatch(/alias is not supported/);
+    expect(alias).toMatch(/instead/i);
+    const ev = translateCommandList(parse('eval echo hi'))[0].script;
+    expect(ev).toMatch(/eval is not supported/);
+    expect(ev).toMatch(/instead/i);
   });
 
   it('parses word-level $((...)) as Arith, not $( (expr) )', () => {
@@ -464,6 +669,26 @@ describe('translator', () => {
     expect(varExpr('PWD')).toBe('$PWD.Path');
     expect(varExpr('USER')).toBe('$env:USERNAME');
     expect(varExpr('?')).toBe('[string]$fx_prev');
+    expect(varExpr('1')).toContain('fx-posget');
+    expect(varExpr('#')).toContain('fx-posload');
+    expect(varExpr('#')).toContain('Count');
+    expect(varExpr('@')).toContain('fx-posload');
+    expect(varExpr('0')).toContain('FAUXNIX_ARG0');
+    expect(varExpr('0')).toContain('fauxnix');
+  });
+
+  it('set -- and echo $1 $# / $@ use fx-pos helpers', () => {
+    const plans = translateCommandList(parse('set -- a b; echo $1 $#'));
+    expect(plans[0].body).toContain('fx-posset');
+    expect(plans[1].body).toContain('fx-posget');
+    expect(plans[1].body).toContain('fx-posload');
+    const splat = translateCommandList(parse('echo $@'))[0];
+    expect(splat.body).toContain('fx-posload');
+    expect(splat.body).not.toContain("fx-arrload '@'");
+    expect(splat.script).toContain('function fx-posload');
+    expect(lookup('shift')).toBeTypeOf('function');
+    expect(translateCommandList(parse('shift'))[0].body).toContain('fx-posshift');
+    expect(translateCommandList(parse('set --'))[0].body).toContain('fx-posset');
   });
 
   it('normalizes POSIX-ish literal paths', () => {
@@ -505,6 +730,10 @@ describe('translator', () => {
   it('host bootstrap loads helpers and speaks JSON lines without exit', () => {
     const boot = hostBootstrapScript();
     expect(boot).toContain('function fx-arrload');
+    expect(boot).toContain('function fx-posload');
+    expect(boot).toContain('function fx-posset');
+    expect(boot).toContain('function fx-posget');
+    expect(boot).toContain('function fx-posshift');
     expect(boot).toContain('function fx-csub');
     expect(boot).toContain('function fx-native');
     expect(boot).toContain('function fx-winargv');
@@ -524,6 +753,18 @@ describe('translator', () => {
     expect(s).not.toContain('function fx-subget');
   });
 
+  it('translates case to fx-casematch if/elseif', () => {
+    const one = translateCommandList(parse('case x in x) echo HIT;; esac'))[0];
+    expect(one.body).toContain('fx-casematch');
+    expect(one.body).toMatch(/if \(fx-casematch/);
+    expect(one.body).not.toContain('elseif (fx-casematch');
+    expect(one.script).toContain('function fx-casematch');
+    const two = translateCommandList(parse('case z in a) echo A;; *) echo D;; esac'))[0];
+    expect(two.body).toContain('fx-casematch');
+    expect(two.body).toMatch(/if \(fx-casematch/);
+    expect(two.body).toContain('elseif (fx-casematch');
+  });
+
   it('emits only the wrapScript helpers a translation actually calls', () => {
     const echo = translateCommandList(parse('echo hi'))[0].script;
     expect(echo).not.toContain('function fx-arrload');
@@ -532,6 +773,11 @@ describe('translator', () => {
     expect(splat).toContain('function fx-arrload');
     expect(splat).toContain('function fx-scalar0');
     expect(splat).not.toContain('function fx-csub');
+    const subst = translateCommandList(parse('echo ${X//a/b}'))[0].script;
+    expect(subst).toContain('function fx-subst');
+    expect(subst).toContain('function fx-scalar0');
+    const slice = translateCommandList(parse('echo ${X:0:2}'))[0].script;
+    expect(slice).toContain('function fx-slice');
     const csub = translateCommandList(parse('echo $(echo a)'))[0].script;
     expect(csub).toContain('function fx-csub');
     const stdin = translateCommandList(parse('wc -l < f.txt'))[0].script;
@@ -754,6 +1000,20 @@ describe('translator', () => {
     expect(dyn).toMatch(/\$fx_ek\d+/);
     const once = translateCommandList(parse('T=x export X=$(echo once)'))[0].script;
     expect(once).not.toMatch(/\$fx_ek\d+/);
+  });
+
+  it('translates while/until as a do/while loop', () => {
+    const w = translateCommandList(parse('while false; do echo x; done'))[0].body;
+    expect(w).toContain('do {');
+    expect(w).toContain('} while ($true)');
+    expect(w).toContain('$script:fx_exit -ne 0');
+    expect(w).toContain('$script:fx_exit = 0');
+    expect(w).not.toContain('??');
+    const u = translateCommandList(parse('until true; do echo x; done'))[0].body;
+    expect(u).toContain('do {');
+    expect(u).toContain('} while ($true)');
+    expect(u).toContain('$script:fx_exit -eq 0');
+    expect(u).not.toContain('??');
   });
 });
 
@@ -1258,6 +1518,70 @@ describe('CommandSpec text-filters leftovers (#143)', () => {
   });
 });
 
+describe('CommandSpec archive leftovers (#143)', () => {
+  const bodyOf = (cmd: string): string => translateCommandList(parse(cmd))[0].body;
+
+  it('gzip/gunzip/zcat/zip/unzip are spec\'d; tar stays unspec\'d', () => {
+    expect(lookupSpec('gzip')).toBeTruthy();
+    expect(lookupSpec('gunzip')).toBeTruthy();
+    expect(lookupSpec('zcat')).toBeTruthy();
+    expect(lookupSpec('zip')).toBeTruthy();
+    expect(lookupSpec('unzip')).toBeTruthy();
+    expect(lookupSpec('tar')).toBeUndefined();
+    expect(lookupSpec('find')).toBeUndefined();
+  });
+
+  it('gzip unknown flags fail usage; -k/-c still translate', () => {
+    const z = bodyOf('gzip -Z f');
+    expect(z).toContain("invalid option -- ''Z''");
+    expect(z).toContain('$script:fx_exit = 1');
+    expect(z).toContain("Try ''gzip --help'' for more information.");
+    expect(z).not.toContain('GZipStream');
+    const keep = bodyOf('gzip -k f');
+    expect(keep).toContain('if (-not $true)');
+    expect(keep).not.toContain('invalid option');
+    expect(keep).toContain('GZipStream');
+    const stdout = bodyOf('gzip -c f');
+    expect(stdout).toContain('GetEncoding(28591)');
+    expect(stdout).not.toContain('Remove-Item');
+    expect(bodyOf('gzip --keep f')).toContain('if (-not $true)');
+    expect(bodyOf('gzip f')).toContain('if (-not $false)');
+  });
+
+  it('gzip -f is unsupported (force from terminal)', () => {
+    const f = bodyOf('gzip -f f');
+    expect(f).toContain("option ''-f'' is not supported by fauxnix");
+    expect(f).toContain('force from terminal');
+    expect(f).not.toContain('GZipStream');
+    expect(bodyOf('gzip --force f')).toContain('force from terminal');
+  });
+
+  it('tar unknown GNU flags still forward to tar.exe', () => {
+    const t = bodyOf('tar --numeric-owner -tf a.tar');
+    expect(t).toContain('fx-native');
+    expect(t).toContain('tar.exe');
+    expect(t).not.toContain('unrecognized option');
+    expect(t).not.toContain('invalid option');
+  });
+
+  it('zip -r still translates; -x is unsupported; unknown flags fail', () => {
+    expect(bodyOf('zip -r a.zip f')).toContain('Compress-Archive');
+    expect(bodyOf('zip -r a.zip f')).not.toContain('invalid option');
+    const x = bodyOf('zip -x p a.zip f');
+    expect(x).toContain("option ''-x'' is not supported by fauxnix");
+    expect(x).toContain('exclude patterns');
+    expect(x).not.toContain('Compress-Archive');
+    expect(bodyOf('zip -Z a.zip f')).toContain("invalid option -- ''Z''");
+  });
+
+  it('unzip -l/-o/-d still translate; unknown flags fail', () => {
+    expect(bodyOf('unzip -l a.zip')).toContain('OpenRead');
+    expect(bodyOf('unzip -o a.zip')).toContain('-Force:$true');
+    expect(bodyOf('unzip -d out a.zip')).toContain('$fx_dir');
+    expect(bodyOf('unzip -Z a.zip')).toContain("invalid option -- ''Z''");
+  });
+});
+
 describe('find predicates (#130)', () => {
   const bodyOf = (cmd: string): string => translateCommandList(parse(cmd))[0].body;
   const throws = (cmd: string, msg: string) => {
@@ -1381,6 +1705,23 @@ describe('MCP structured results (#129)', () => {
     expect(r.structuredContent.exitCode).toBe(1);
     expect(r.content[0].text).toContain('Exit code: 1');
     expect('isError' in r && r.isError).toBeFalsy();
+  });
+
+  it('session status reports positional count from FAUXNIX_POS', () => {
+    expect(positionalCountFromEnv({})).toBe(0);
+    expect(positionalCountFromEnv({ FAUXNIX_POS: '' })).toBe(0);
+    expect(positionalCountFromEnv({ FAUXNIX_POS: 'a' })).toBe(1);
+    expect(positionalCountFromEnv({ FAUXNIX_POS: 'a\x1eb' })).toBe(2);
+    expect(
+      formatSessionStatus({ cwd: null, env: {}, id: 'abcd1234' }),
+    ).toContain('positionals: 0');
+    expect(
+      formatSessionStatus({
+        cwd: 'D:\\tmp',
+        env: { FAUXNIX_POS: 'a\x1eb\x1ec' },
+        id: 'abcd1234',
+      }),
+    ).toMatch(/positionals: 3/);
   });
 });
 
@@ -1585,6 +1926,379 @@ describe('cli doctor', () => {
   });
 });
 
+describe('cli install', () => {
+  it('USAGE lists install', async () => {
+    expect(USAGE).toMatch(/fauxnix install --claude/);
+    expect(USAGE).toContain('--codex');
+    expect(USAGE).toContain('--opencode');
+    expect(USAGE).toContain('--kimi');
+    expect(USAGE).toContain('--qwen');
+    const src = readFileSync('src/cli.ts', 'utf8');
+    expect(src).toContain("verb === 'install'");
+    const lines: string[] = [];
+    const orig = console.log;
+    console.log = (...args: unknown[]) => {
+      lines.push(args.map((a) => String(a)).join(' '));
+    };
+    try {
+      await runCli([]);
+    } finally {
+      console.log = orig;
+    }
+    expect(lines.join('\n')).toContain('fauxnix install');
+  });
+
+  it('runCli install without flags prints usage and does not write', async () => {
+    const lines: string[] = [];
+    const orig = console.log;
+    const prev = process.exitCode;
+    console.log = (...args: unknown[]) => {
+      lines.push(args.map((a) => String(a)).join(' '));
+    };
+    process.exitCode = undefined;
+    try {
+      await runCli(['install']);
+      expect(process.exitCode).toBe(1);
+    } finally {
+      console.log = orig;
+      process.exitCode = prev;
+    }
+    expect(lines.join('\n')).toContain('--claude');
+    expect(lines.join('\n')).toContain('select a harness');
+  });
+});
+
+describe('install harness config', () => {
+  function opts(dir: string, env: NodeJS.ProcessEnv = {}) {
+    return { home: dir, cwd: dir, env };
+  }
+
+  async function doctorText(dir: string, env: NodeJS.ProcessEnv = {}): Promise<string> {
+    const report = await collectDoctorReport({
+      home: dir,
+      cwd: dir,
+      env,
+      nodeVersion: 'v20.0.0',
+    });
+    return report.lines.join('\n');
+  }
+
+  it('rejects unknown flags and --help without writing', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fauxnix-install-'));
+    expect(dir).not.toBe(homedir());
+    try {
+      const bad = runInstall(['--nope'], opts(dir));
+      expect(bad.ok).toBe(false);
+      expect(bad.lines.join('\n')).toContain('unknown harness: --nope');
+      expect(existsSync(join(dir, '.claude.json'))).toBe(false);
+
+      const help = runInstall(['--help'], opts(dir));
+      expect(help.ok).toBe(true);
+      expect(help.lines.join('\n')).toContain('fauxnix install --claude');
+      expect(existsSync(join(dir, '.claude.json'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('writes Claude user config, preserves unrelated keys, and is idempotent', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fauxnix-install-'));
+    expect(dir).not.toBe(homedir());
+    try {
+      const claudePath = join(dir, '.claude.json');
+      writeFileSync(
+        claudePath,
+        JSON.stringify(
+          {
+            theme: 'dark',
+            projects: { 'C:\\work\\app': { allowedTools: ['Bash'] } },
+            mcpServers: { github: { command: 'npx' } },
+          },
+          null,
+          2,
+        ),
+      );
+      const r = runInstall(['--claude'], opts(dir));
+      expect(r.ok).toBe(true);
+      expect(r.lines[0]).toContain('patched');
+      expect(r.lines[0]).toContain(claudePath);
+      const data = JSON.parse(readFileSync(claudePath, 'utf8')) as {
+        theme: string;
+        projects: unknown;
+        mcpServers: Record<string, unknown>;
+      };
+      expect(data.theme).toBe('dark');
+      expect(data.projects).toEqual({ 'C:\\work\\app': { allowedTools: ['Bash'] } });
+      expect(data.mcpServers.github).toEqual({ command: 'npx' });
+      expect(data.mcpServers.fauxnix).toEqual({ command: 'fauxnix', args: ['mcp'] });
+      expect(await doctorText(dir)).toMatch(/claude\s+: fauxnix MCP configured/);
+
+      const before = readFileSync(claudePath, 'utf8');
+      const again = runInstall(['--claude'], opts(dir));
+      expect(again.ok).toBe(true);
+      expect(again.lines[0]).toContain('already configured');
+      expect(readFileSync(claudePath, 'utf8')).toBe(before);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('creates Claude config and respects CLAUDE_CONFIG_DIR', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fauxnix-install-'));
+    try {
+      const created = runInstall(['--claude'], opts(dir));
+      expect(created.ok).toBe(true);
+      expect(created.lines[0]).toContain('created');
+      expect(JSON.parse(readFileSync(join(dir, '.claude.json'), 'utf8'))).toEqual({
+        mcpServers: { fauxnix: { command: 'fauxnix', args: ['mcp'] } },
+      });
+
+      const cfgDir = join(dir, 'custom-claude');
+      const env = { CLAUDE_CONFIG_DIR: cfgDir };
+      const custom = runInstall(['--claude'], opts(dir, env));
+      expect(custom.ok).toBe(true);
+      expect(existsSync(join(cfgDir, '.claude.json'))).toBe(true);
+      expect(custom.lines[0]).toContain(join(cfgDir, '.claude.json'));
+      expect(await doctorText(dir, env)).toMatch(/claude\s+: fauxnix MCP configured/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not overwrite invalid Claude JSON or a non-object mcpServers', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fauxnix-install-'));
+    try {
+      const claudePath = join(dir, '.claude.json');
+      writeFileSync(claudePath, '{ not json');
+      const bad = runInstall(['--claude'], opts(dir));
+      expect(bad.ok).toBe(false);
+      expect(bad.lines[0]).toContain('not valid JSON');
+      expect(readFileSync(claudePath, 'utf8')).toBe('{ not json');
+
+      writeFileSync(claudePath, JSON.stringify({ mcpServers: ['nope'] }));
+      const wrong = runInstall(['--claude'], opts(dir));
+      expect(wrong.ok).toBe(false);
+      expect(wrong.lines[0]).toContain('mcpServers is not an object');
+      expect(JSON.parse(readFileSync(claudePath, 'utf8'))).toEqual({ mcpServers: ['nope'] });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not write project .mcp.json for Claude', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fauxnix-install-'));
+    try {
+      writeFileSync(join(dir, '.mcp.json'), JSON.stringify({ keep: true }));
+      const r = runInstall(['--claude'], opts(dir));
+      expect(r.ok).toBe(true);
+      expect(existsSync(join(dir, '.claude.json'))).toBe(true);
+      expect(JSON.parse(readFileSync(join(dir, '.mcp.json'), 'utf8'))).toEqual({ keep: true });
+      expect(await doctorText(dir)).toMatch(/claude\s+: fauxnix MCP configured/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('appends Codex TOML without rewriting comments and is idempotent', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fauxnix-install-'));
+    try {
+      mkdirSync(join(dir, '.codex'));
+      const path = join(dir, '.codex', 'config.toml');
+      writeFileSync(path, '# keep me\r\n[model]\r\nmodel = "gpt-5"\r\n');
+      const r = runInstall(['--codex'], opts(dir));
+      expect(r.ok).toBe(true);
+      expect(r.lines[0]).toContain('patched');
+      const out = readFileSync(path, 'utf8');
+      expect(out.startsWith('# keep me')).toBe(true);
+      expect(out).toContain('[model]');
+      expect(out).toContain('model = "gpt-5"');
+      expect(out).toContain('[mcp_servers.fauxnix]');
+      expect(out).toContain('command = "fauxnix"');
+      expect(out).toContain('args = ["mcp"]');
+      expect(await doctorText(dir)).toMatch(/codex\s+: fauxnix MCP configured/);
+
+      const before = readFileSync(path, 'utf8');
+      const again = runInstall(['--codex'], opts(dir));
+      expect(again.lines[0]).toContain('already configured');
+      expect(readFileSync(path, 'utf8')).toBe(before);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('creates Codex config and respects CODEX_HOME', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fauxnix-install-'));
+    try {
+      const created = runInstall(['--codex'], opts(dir));
+      expect(created.ok).toBe(true);
+      expect(created.lines[0]).toContain('created');
+      expect(readFileSync(join(dir, '.codex', 'config.toml'), 'utf8')).toContain(
+        '[mcp_servers.fauxnix]',
+      );
+
+      const home = join(dir, 'my-codex');
+      const env = { CODEX_HOME: home };
+      const custom = runInstall(['--codex'], opts(dir, env));
+      expect(custom.ok).toBe(true);
+      expect(existsSync(join(home, 'config.toml'))).toBe(true);
+      expect(await doctorText(dir, env)).toMatch(/codex\s+: fauxnix MCP configured/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('writes OpenCode mcp.fauxnix, nested servers, and respects XDG_CONFIG_HOME', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fauxnix-install-'));
+    try {
+      const path = join(dir, '.config', 'opencode', 'opencode.json');
+      mkdirSync(join(dir, '.config', 'opencode'), { recursive: true });
+      writeFileSync(
+        path,
+        JSON.stringify({
+          $schema: 'https://opencode.ai/config.json',
+          model: 'x',
+          mcp: { github: { type: 'remote', url: 'https://example' } },
+        }),
+      );
+      const r = runInstall(['--opencode'], opts(dir));
+      expect(r.ok).toBe(true);
+      expect(r.lines[0]).toContain('patched');
+      const data = JSON.parse(readFileSync(path, 'utf8')) as {
+        $schema: string;
+        model: string;
+        mcp: Record<string, unknown>;
+      };
+      expect(data.$schema).toBe('https://opencode.ai/config.json');
+      expect(data.model).toBe('x');
+      expect(data.mcp.github).toEqual({ type: 'remote', url: 'https://example' });
+      expect(data.mcp.fauxnix).toEqual({ type: 'local', command: ['fauxnix', 'mcp'] });
+      expect(await doctorText(dir)).toMatch(/opencode\s+: fauxnix MCP configured/);
+
+      const nestedDir = join(dir, 'xdg');
+      const nestedPath = join(nestedDir, 'opencode', 'opencode.json');
+      mkdirSync(join(nestedDir, 'opencode'), { recursive: true });
+      writeFileSync(
+        nestedPath,
+        JSON.stringify({
+          mcp: { servers: { github: { type: 'local', command: ['npx'] } } },
+        }),
+      );
+      const env = { XDG_CONFIG_HOME: nestedDir };
+      const nested = runInstall(['--opencode'], opts(dir, env));
+      expect(nested.ok).toBe(true);
+      const nestedData = JSON.parse(readFileSync(nestedPath, 'utf8')) as {
+        mcp: { servers: Record<string, unknown> };
+      };
+      expect(nestedData.mcp.servers.github).toEqual({ type: 'local', command: ['npx'] });
+      expect(nestedData.mcp.servers.fauxnix).toEqual({
+        type: 'local',
+        command: ['fauxnix', 'mcp'],
+      });
+      expect(await doctorText(dir, env)).toMatch(/opencode\s+: fauxnix MCP configured/);
+
+      writeFileSync(join(dir, 'opencode.json'), JSON.stringify({ keep: true }));
+      const cwdFile = readFileSync(join(dir, 'opencode.json'), 'utf8');
+      runInstall(['--opencode'], opts(dir));
+      expect(readFileSync(join(dir, 'opencode.json'), 'utf8')).toBe(cwdFile);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('writes Kimi ~/.kimi-code/mcp.json and Qwen ~/.qwen/settings.json', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fauxnix-install-'));
+    try {
+      const kimiPath = kimiConfigPath(dir, {});
+      mkdirSync(join(dir, '.kimi-code'));
+      writeFileSync(
+        kimiPath,
+        JSON.stringify({ mcpServers: { other: { command: 'npx' } } }, null, 2),
+      );
+      const kimi = runInstall(['--kimi'], opts(dir));
+      expect(kimi.ok).toBe(true);
+      expect(kimi.lines[0]).toContain('patched');
+      const kimiData = JSON.parse(readFileSync(kimiPath, 'utf8')) as {
+        mcpServers: Record<string, unknown>;
+      };
+      expect(kimiData.mcpServers.other).toEqual({ command: 'npx' });
+      expect(kimiData.mcpServers.fauxnix).toEqual({ command: 'fauxnix', args: ['mcp'] });
+
+      const qwenPath = qwenConfigPath(dir, {});
+      mkdirSync(join(dir, '.qwen'));
+      writeFileSync(
+        qwenPath,
+        JSON.stringify({ theme: 'dark', mcpServers: { other: { command: 'npx' } } }, null, 2),
+      );
+      const qwen = runInstall(['--qwen'], opts(dir));
+      expect(qwen.ok).toBe(true);
+      const qwenData = JSON.parse(readFileSync(qwenPath, 'utf8')) as {
+        theme: string;
+        mcpServers: Record<string, unknown>;
+      };
+      expect(qwenData.theme).toBe('dark');
+      expect(qwenData.mcpServers.other).toEqual({ command: 'npx' });
+      expect(qwenData.mcpServers.fauxnix).toEqual({ command: 'fauxnix', args: ['mcp'] });
+
+      const kimiHome = join(dir, 'kimi-home');
+      const kimiEnv = { KIMI_CODE_HOME: kimiHome };
+      const custom = runInstall(['--kimi'], opts(dir, kimiEnv));
+      expect(custom.ok).toBe(true);
+      expect(existsSync(join(kimiHome, 'mcp.json'))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('installs multiple harnesses in one invocation', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fauxnix-install-'));
+    try {
+      const r = runInstall(['--claude', '--codex', '--opencode', '--kimi', '--qwen'], opts(dir));
+      expect(r.ok).toBe(true);
+      expect(r.lines).toHaveLength(5);
+      expect(r.lines.every((l) => l.includes('created'))).toBe(true);
+      expect(existsSync(join(dir, '.claude.json'))).toBe(true);
+      expect(existsSync(join(dir, '.codex', 'config.toml'))).toBe(true);
+      expect(existsSync(join(dir, '.config', 'opencode', 'opencode.json'))).toBe(true);
+      expect(existsSync(join(dir, '.kimi-code', 'mcp.json'))).toBe(true);
+      expect(existsSync(join(dir, '.qwen', 'settings.json'))).toBe(true);
+      const text = await doctorText(dir);
+      expect(text).toMatch(/claude\s+: fauxnix MCP configured/);
+      expect(text).toMatch(/codex\s+: fauxnix MCP configured/);
+      expect(text).toMatch(/opencode\s+: fauxnix MCP configured/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('U-3 loud-reject alternatives', () => {
+  const files = ['src/translator.ts', 'src/parser.ts', 'src/commands/sysinfo.ts'];
+  const alt = /\binstead\b|\buse\b|\btry\b|\bpipe\b|#157|\bwait\b/i;
+  const gnuAllow =
+    /invalid option --|unrecognized option|option requires an argument|Try '.+ --help'/;
+
+  it('not-supported-yet emit strings carry an alternative phrase', () => {
+    const missing: string[] = [];
+    for (const rel of files) {
+      const src = readFileSync(rel, 'utf8');
+      for (const line of src.split('\n')) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) {
+          continue;
+        }
+        const chunks = line.match(/'((?:\\'|[^'])*)'|"((?:\\"|[^"])*)"/g) ?? [];
+        for (const raw of chunks) {
+          const s = raw.slice(1, -1);
+          if (!/not supported yet/i.test(s)) continue;
+          if (gnuAllow.test(s)) continue;
+          if (!alt.test(s)) missing.push(rel + ': ' + s);
+        }
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+});
+
 describe.skipIf(process.platform !== 'win32')('cli doctor spawn', () => {
   it('node src/index.ts doctor does not throw', () => {
     const tsx = join(process.cwd(), 'node_modules', 'tsx', 'dist', 'cli.mjs');
@@ -1603,5 +2317,5 @@ describe.skipIf(process.platform !== 'win32')('cli doctor spawn', () => {
     expect(r.stdout).toMatch(/codex\s+:/);
     expect(r.stdout).toMatch(/opencode\s+:/);
     expect(r.status).toBe(0);
-  });
+  }, 30000);
 });

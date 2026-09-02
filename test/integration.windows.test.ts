@@ -965,6 +965,18 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect(back.stdout).toContain('apple pie');
   });
 
+  it('gzip -k keeps the source; unknown gzip flags fail usage', async () => {
+    await run('cp fruits.txt gk.txt');
+    const k = await run('gzip -k gk.txt');
+    expect(k.exitCode).toBe(0);
+    expect(existsSync(join(dir, 'gk.txt'))).toBe(true);
+    expect(existsSync(join(dir, 'gk.txt.gz'))).toBe(true);
+    const z = await run('gzip -Z gk.txt');
+    expect(z.exitCode).toBe(1);
+    expect(z.stderr).toContain("invalid option -- 'Z'");
+    expect(z.stdout).toBe('');
+  });
+
   it('printf CRLF without a trailing LF is preserved on redirect', async () => {
     const r = await run("printf 'a\\r\\nb' > cr.txt; wc -c cr.txt");
     expect(r.exitCode).toBe(0);
@@ -1129,6 +1141,22 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect((await run('set --')).exitCode).toBe(0);
   });
 
+  it('set -- writes session positionals for $1 $# "$@" shift', async () => {
+    expect((await run('set -- a b; echo $1 $#')).stdout.trim()).toBe('a 2');
+    expect((await run('echo "$@"')).stdout.trim()).toBe('a b');
+    expect((await run("set -- a 'x y'; echo \"$2\"")).stdout.trim()).toBe('x y');
+    expect((await run('shift')).exitCode).toBe(0);
+    expect((await run('echo $1 $#')).stdout.trim()).toBe('x y 1');
+    expect((await run('set -- p q r')).exitCode).toBe(0);
+    expect((await run('echo $1 $3')).stdout.trim()).toBe('p r');
+    expect(session.env.FAUXNIX_POS).toBe('p' + String.fromCharCode(30) + 'q' + String.fromCharCode(30) + 'r');
+    expect((await run('set --')).exitCode).toBe(0);
+    expect((await run('echo $#')).stdout.trim()).toBe('0');
+    expect((await run('echo "$@"')).stdout.trim()).toBe('');
+    expect((await run('shift')).exitCode).toBe(1);
+    expect((await run('echo $0')).stdout.trim()).toBe('fauxnix');
+  });
+
   it('env -i fails loudly instead of keeping inherited secrets', async () => {
     const r = await run('env -i echo hi');
     expect(r.exitCode).toBe(2);
@@ -1176,6 +1204,58 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect((await run('for x in 1 2; do echo n$x; done; echo z$x')).stdout.trim()).toBe(
       'n1\nn2\nz2',
     );
+  });
+
+  it('while/until loops iterate and match bash status', async () => {
+    expect((await run('i=0; while [ $i -lt 3 ]; do echo $i; i=$((i+1)); done')).stdout.trim()).toBe(
+      '0\n1\n2',
+    );
+    expect((await run('i=0; until [ $i -eq 2 ]; do echo $i; i=$((i+1)); done')).stdout.trim()).toBe(
+      '0\n1',
+    );
+    expect((await run('while false; do echo x; done')).exitCode).toBe(0);
+    expect((await run('until true; do echo x; done')).exitCode).toBe(0);
+    expect((await run('i=0; while [ $i -lt 1 ]; do i=$((i+1)); false; done')).exitCode).toBe(1);
+    expect((await run('i=0; while [ $i -lt 1 ]; do i=$((i+1)); true; done')).exitCode).toBe(0);
+  });
+
+  it('case ... esac matches the first arm and keeps compound status', async () => {
+    const hit = await run('case x in x) echo HIT;; esac');
+    expect(hit.stdout.trim()).toBe('HIT');
+    expect(hit.exitCode).toBe(0);
+    expect((await run('case x in a|x) echo HIT;; esac')).stdout.trim()).toBe('HIT');
+    expect((await run('case z in a) echo A;; *) echo D;; esac')).stdout.trim()).toBe('D');
+    expect((await run('case x in y) echo NO;; esac; echo $?')).stdout.trim()).toBe('0');
+    expect((await run('case x in x) false;; esac; echo $?')).stdout.trim()).toBe('1');
+    expect((await run('if true; then case x in x) echo Y;; esac; fi')).stdout.trim()).toBe('Y');
+  });
+
+  it('array assignment A=(x y z) indexes and counts elements', async () => {
+    expect((await run('A=(a b c); echo ${A[1]}')).stdout.trim()).toBe('b');
+    expect((await run('A=(a b c); echo ${#A[@]}')).stdout.trim()).toBe('3');
+    expect((await run('A=(); echo ${#A[@]}')).stdout.trim()).toBe('0');
+    await run('unset A');
+  });
+
+  it('array assignment persists in the FAUXNIX_ARRS sidecar across run() calls', async () => {
+    expect((await run('A=(a b c)')).exitCode).toBe(0);
+    expect((await run('echo ${A[1]}')).stdout.trim()).toBe('b');
+    expect((await run('echo ${#A[@]}')).stdout.trim()).toBe('3');
+    await run('unset A');
+    expect((await run('echo ${#A[@]}')).stdout.trim()).toBe('0');
+  });
+
+  it('prefix A=(x y) cmd is command-scoped via fx-arrput', async () => {
+    expect((await run('A=(x y) echo ${A[1]}')).stdout.trim()).toBe('y');
+    expect((await run('echo ${#A[@]}')).stdout.trim()).toBe('0');
+  });
+
+  it('${name//pat/str} and ${name:off:len} follow bash replace/slice rules', async () => {
+    expect((await run('X=hello; echo ${X//l/L}; unset X')).stdout.trim()).toBe('heLLo');
+    expect((await run('X=hello; echo ${X/l/L}; unset X')).stdout.trim()).toBe('heLlo');
+    expect((await run('X=abcd; echo ${X:0:2}; unset X')).stdout.trim()).toBe('ab');
+    expect((await run('X=abcd; echo ${X: -1}; unset X')).stdout.trim()).toBe('d');
+    expect((await run('X=abcd; echo ${X:2}; unset X')).stdout.trim()).toBe('cd');
   });
 
   it('date format tokens', async () => {
@@ -1301,51 +1381,6 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect(bad.exitCode).toBe(1);
     expect(bad.stderr).toMatch(/integer expression expected/);
   });
-
-  it('prewarm hides host boot from the first echo hi', async () => {
-    const extra = new FauxnixSession();
-    try {
-      await extra.prewarm();
-      const t0 = Date.now();
-      const r = await extra.run(translateCommandList(parseCommand('echo hi')));
-      const ms = Date.now() - t0;
-      expect(r.exitCode).toBe(0);
-      expect(r.stdout.trim()).toBe('hi');
-      // after #138's structured-results bootstrap the first frame measures
-      // 0.6-0.9s loaded; the claim under test is "prewarm beats the ~1.1s
-      // cold spawn", not a specific latency (first-frame regression tracked
-      // in its own issue)
-      expect(ms).toBeLessThan(1100);
-    } finally {
-      await extra.dispose();
-    }
-  }, 30000);
-
-  it('15x echo hi on a warm host is far below the 1.25s spawn baseline', async () => {
-    const extra = new FauxnixSession();
-    try {
-      const warm = await extra.run(translateCommandList(parseCommand('echo hi')));
-      expect(warm.stdout.trim()).toBe('hi');
-      const times: number[] = [];
-      for (let i = 0; i < 15; i++) {
-        const t0 = Date.now();
-        const r = await extra.run(translateCommandList(parseCommand('echo hi')));
-        times.push(Date.now() - t0);
-        expect(r.exitCode).toBe(0);
-        expect(r.stdout.trim()).toBe('hi');
-      }
-      const sorted = [...times].sort((a, b) => a - b);
-      const p50 = sorted[Math.floor(sorted.length / 2)]!;
-      const mean = times.reduce((a, b) => a + b, 0) / times.length;
-      // Maintainer baseline after #114: 1.25s/cmd, dominated by powershell.exe spawn.
-      // A persistent host must beat that by a lot, not 5%.
-      expect(p50).toBeLessThan(250);
-      expect(mean).toBeLessThan(400);
-      expect(Math.max(...times)).toBeLessThan(1250);
-    } finally {
-      await extra.dispose();
-    }
-  }, 60000);
 
   it('executor timeout stops later segments before output or side effects', async () => {
     const extra = new FauxnixSession();
@@ -1655,3 +1690,56 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     }
   }, 30000);
 });
+
+// RFC 1.0 U-8 (#118): CI budgets so the 15× warm-host win cannot regress
+// to per-command spawn (~1.25s). hookTimeout 60s like the fixture beforeAll.
+describe.skipIf(!hasPs)(
+  'performance guard (RFC U-8)',
+  { timeout: 60_000, hookTimeout: 60_000 },
+  () => {
+    it('first frame after prewarm for echo hi is under 400ms', async () => {
+      const extra = new FauxnixSession();
+      try {
+        await extra.prewarm();
+        const t0 = Date.now();
+        const r = await extra.run(translateCommandList(parseCommand('echo hi')));
+        const ms = Date.now() - t0;
+        expect(r.exitCode).toBe(0);
+        expect(r.stdout.trim()).toBe('hi');
+        // RFC <400ms. Local ~160ms; GH windows-latest whole-test
+        // (prewarm+frame+dispose) is 470-500ms, so the frame fits.
+        expect(ms).toBeLessThan(400);
+      } finally {
+        await extra.dispose();
+      }
+    }, 60_000);
+
+    it('warm p50 of 15 echo hi is under 50ms', async () => {
+      const extra = new FauxnixSession();
+      try {
+        await extra.prewarm();
+        // discard the slower first frame (~160ms local / ~0.27s documented)
+        const first = await extra.run(translateCommandList(parseCommand('echo hi')));
+        expect(first.exitCode).toBe(0);
+        expect(first.stdout.trim()).toBe('hi');
+        const times: number[] = [];
+        for (let i = 0; i < 15; i++) {
+          const t0 = Date.now();
+          const r = await extra.run(translateCommandList(parseCommand('echo hi')));
+          times.push(Date.now() - t0);
+          expect(r.exitCode).toBe(0);
+          expect(r.stdout.trim()).toBe('hi');
+        }
+        const sorted = [...times].sort((a, b) => a - b);
+        const p50 = sorted[Math.floor(sorted.length / 2)]!;
+        // RFC <50ms. Local ~5ms; GH windows-latest ~10ms from 15× wall
+        // (~630ms) minus one cold boot (~500ms). Documented ~30-50ms.
+        // 10× today's ~40ms is 400ms — still fail a silent spawn fallback.
+        expect(p50).toBeLessThan(50);
+        expect(Math.max(...times)).toBeLessThan(400);
+      } finally {
+        await extra.dispose();
+      }
+    }, 60_000);
+  },
+);

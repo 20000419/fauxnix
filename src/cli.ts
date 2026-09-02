@@ -6,6 +6,7 @@ import { listCommandsJson, registeredNames, specsMarkdown } from './registry.js'
 import { encodeCommand } from './encoding.js';
 import { startMcpServer } from './mcp.js';
 import { collectDoctorReport } from './doctor.js';
+import { runInstall } from './install.js';
 import { packageVersion } from './version.js';
 import './commands/install-all.js';
 
@@ -21,6 +22,7 @@ Usage:
   fauxnix list --markdown            CommandSpec tables (same text as docs/command-specs.md)
   fauxnix check                      verify the local PowerShell environment
   fauxnix doctor                     check + encoding, harness config, MCP readiness
+  fauxnix install --claude|--codex|--opencode|--kimi|--qwen
   fauxnix --version
 
 Notes:
@@ -62,6 +64,13 @@ export async function runCli(argv: string[]): Promise<void> {
 
   if (verb === 'doctor') {
     await runDoctor();
+    return;
+  }
+
+  if (verb === 'install') {
+    const result = runInstall(rest);
+    for (const line of result.lines) console.log(line);
+    if (!result.ok) process.exitCode = 1;
     return;
   }
 

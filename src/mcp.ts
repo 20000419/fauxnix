@@ -37,11 +37,10 @@ const TOOL_DESCRIPTION = `Execute a Linux/bash-style command on this Windows mac
 Commands are deterministically translated to PowerShell and executed natively — no WSL or VM.
 Output is formatted to look like GNU/Linux tooling (ls -l, ps aux, df -h ...), errors look like bash errors, and text encoding (UTF-8/GBK) is handled automatically.
 
-Supported: pipes (|), && / || / ;, redirections (> >> 2> 2>&1 < /dev/null), variables ($VAR $HOME ~), command substitution $(...), and ${registeredNames().length}+ coreutils-style commands (${registeredNames().slice(0, 18).join(', ')}...).
+Supported: pipes (|), && / || / ;, redirections (> >> 2> 2>&1 < /dev/null), variables ($VAR $HOME $1 $# "$@" ~), set -- / shift, array assignment A=(x y z), \${name[n]} \${#name[@]} \${name//pat/str} \${name:off:len}, command substitution $(...), and ${registeredNames().length}+ coreutils-style commands (${registeredNames().slice(0, 18).join(', ')}...).
 Unknown commands (git, node, npm, python, cargo...) are passed through and executed natively with argv-style quoting.
-Not supported: heredocs, while/until/case, env -i/--ignore-environment, background jobs. if/then/elif/else/fi, for-in loops, and word-level \$((...)) arithmetic expansion are supported.
-
-CWD, environment variables, export/unset and cd persist across calls within this session — a resident PowerShell 5.1 host is started when the MCP session begins (and after reset), so the first bash tool call is already warm.
+Not supported: heredocs, env -i/--ignore-environment, background jobs. if/then/elif/else/fi, for-in loops, while/until, case ... esac, and word-level \$((...)) arithmetic expansion are supported.
+CWD, environment variables, export/unset, cd, and positional parameters (set -- / $1 / "$@") persist across calls within this session — a resident PowerShell 5.1 host is started when the MCP session begins (and after reset), so the first bash tool call is already warm.
 Exit codes follow bash conventions (0 ok, 1 fail, 2 usage/serious, 127 command not found, 124 timeout, 130 cancelled). The tool also returns structuredContent (schemaVersion 1) with stdout/stderr/exitCode/timedOut/cancelled/truncated/sessionId.
 
 Platform requirement: the execution backend is native Windows PowerShell 5.1+. On hosts without PowerShell on PATH (e.g. Linux containers/sandboxes), the bash tool returns exit code 127 with an actionable error instead of running the command.`;
@@ -76,7 +75,43 @@ export function bashToolResult(r: ExecResult, sessionId: string, infra: boolean)
   };
 }
 
+/** Packed FAUXNIX_POS uses char-30 separators (same as array sidecar). */
+const POS_SEP = '\x1e';
+
+export function positionalCountFromEnv(env: Record<string, string>): number {
+  let packed: string | undefined;
+  for (const [k, v] of Object.entries(env)) {
+    if (k.toUpperCase() === 'FAUXNIX_POS') {
+      packed = v;
+      break;
+    }
+  }
+  if (packed == null || packed === '') return 0;
+  return packed.split(POS_SEP).length;
+}
+
+export function formatSessionStatus(session: {
+  cwd: string | null;
+  env: Record<string, string>;
+  id: string;
+}): string {
+  const envKeys = Object.keys(session.env).sort();
+  return (
+    'cwd: ' +
+    (session.cwd ?? '(inherit from server start)') +
+    '\nenv keys: ' +
+    (envKeys.length ? envKeys.join(', ') : '(none tracked)') +
+    '\npositionals: ' +
+    positionalCountFromEnv(session.env) +
+    '\nsession: ' +
+    session.id +
+    '\ncommands registered: ' +
+    registeredNames().length
+  );
+}
+
 export async function startMcpServer(): Promise<void> {
+  process.env.FAUXNIX_ARG0 = TOOL_NAME;
   const server = new McpServer(
     { name: 'fauxnix', version: packageVersion },
     { capabilities: { tools: {} } },
@@ -145,12 +180,12 @@ export async function startMcpServer(): Promise<void> {
 
   server.tool(
     'fauxnix_session',
-    'Inspect or reset the persistent fauxnix shell session (current directory, environment, session id). Actions: "status" (default) or "reset".',
+    'Inspect or reset the persistent fauxnix shell session (current directory, environment, positional count, session id). Actions: "status" (default) or "reset".',
     {
       action: z
         .enum(['status', 'reset'])
         .default('status')
-        .describe('"status" shows the session state (cwd, tracked env keys); "reset" clears it back to a fresh shell'),
+        .describe('"status" shows the session state (cwd, tracked env keys, positional count); "reset" clears it back to a fresh shell'),
     },
     SESSION_ANNOTATIONS,
     async ({ action }) => {
@@ -158,13 +193,7 @@ export async function startMcpServer(): Promise<void> {
         await session.reset();
         return { content: [{ type: 'text', text: 'fauxnix: session reset' }] };
       }
-      const envKeys = Object.keys(session.env).sort();
-      const text =
-        'cwd: ' + (session.cwd ?? '(inherit from server start)') +
-        '\nenv keys: ' + (envKeys.length ? envKeys.join(', ') : '(none tracked)') +
-        '\nsession: ' + session.id +
-        '\ncommands registered: ' + registeredNames().length;
-      return { content: [{ type: 'text', text }] };
+      return { content: [{ type: 'text', text: formatSessionStatus(session) }] };
     },
   );
 

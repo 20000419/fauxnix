@@ -100,6 +100,9 @@ fauxnix translate "find . -name '*.log' -mtime +7 -delete"
 fauxnix check
 fauxnix doctor                   # check + encoding, harness config, MCP
 
+# write user-level MCP config (idempotent; also --codex/--opencode/--kimi/--qwen)
+fauxnix install --claude
+
 # run the MCP stdio server (what agent harnesses connect to)
 fauxnix mcp
 ```
@@ -110,7 +113,11 @@ with argv-style quoting — no string re-parsing, no quoting bugs.
 ## Use with your agent harness
 
 fauxnix ships an MCP stdio server exposing a `bash` tool (plus `fauxnix_translate` and
-`fauxnix_session`). Point any MCP-capable harness at it:
+`fauxnix_session`). Point any MCP-capable harness at it with
+`fauxnix install --claude` (or `--codex` / `--opencode` / `--kimi` / `--qwen`).
+Idempotent; prints what changed. Manual configs below.
+
+- **Quickstarts** — copy-paste config + a 10-command smoke: [`docs/examples/`](docs/examples/)
 
 **Claude Code**
 ```bash
@@ -146,12 +153,23 @@ TOML config: `~/.kimi-code/mcp.json`
 }
 ```
 
+**Qwen Code** (`~/.qwen/settings.json`)
+```json
+{
+  "mcpServers": {
+    "fauxnix": { "command": "fauxnix", "args": ["mcp"] }
+  }
+}
+```
+
 **Any MCP client** — stdio server: `fauxnix mcp`. The tool name is `bash` (override with
 `FAUXNIX_TOOL_NAME`). Tool description already teaches the model the supported subset, so no
 system-prompt changes are required.
 
-The MCP session persists `cwd`, environment variables, `export`/`unset` and `cd -`/OLDPWD across
-tool calls — it behaves like a logged-in shell, not a stateless `exec`.
+The MCP session persists `cwd`, environment variables, `export`/`unset`, `cd -`/OLDPWD, and
+positional parameters (`set --` / `$1` / `"$@"`) across tool calls — it behaves like a logged-in
+shell, not a stateless `exec`. `$0` is the MCP tool name (`bash` / `FAUXNIX_TOOL_NAME`), not a
+Windows path.
 
 ## What's translated
 
@@ -166,20 +184,23 @@ development:
 `cp` / `mv` / `rm` / `touch` / `du` / `ls` / `ll` / `mkdir` / `rmdir` / `mktemp` / `ln` /
 `readlink` / `realpath` / `basename` / `dirname` / `stat` / `file` / `df` / `chmod` / `chown` /
 `diff` / `tee` / `grep` / `head` / `echo` / `printf` / `cat` / `tail` / `wc` / `sort` / `uniq` /
-`cut` / `tr` carry a `CommandSpec`: unknown options fail with a GNU-style
+`cut` / `tr` / `gzip` / `gunzip` / `zcat` / `zip` / `unzip` carry a `CommandSpec`: unknown options fail with a GNU-style
 usage error instead of being ignored (`find` stays unspec'd so predicates like `-name` still
-compile; `sed`/`awk`/`egrep` stay unspec'd). Implemented GNU holes: `cp -n` / `mv -n` / `touch -c` / `tee --append` / `grep -m` /
+compile; `sed`/`awk`/`egrep` stay unspec'd; `tar` stays unspec'd because it is fx-native to
+`tar.exe` and unknown GNU flags must reach bsdtar). Implemented GNU holes: `cp -n` / `mv -n` / `touch -c` / `tee --append` / `grep -m` /
 `head --lines` / `du --max-depth`. `fauxnix list --json` and `docs/command-specs.md` dump the
 same metadata.
 - **shell/system**: `cd pwd export unset env printenv ps kill pkill pgrep sleep which type whoami
   id groups date uname hostname uptime free nproc clear true false test [ [[ : pushd popd dirs sudo
-  timeout man history less more source . eval exit alias set`
+  timeout man history less more source . eval exit alias set shift`
 - **network**: `curl wget ping netstat ss ip ifconfig nslookup dig host`
 - **archives**: `tar gzip gunzip zcat zip unzip`
 
 Plus shell syntax: pipes, `&&` / `||` / `;`, redirections (`> >> 2> 2>&1 < &>`, `/dev/null`),
-quoting, `$VAR` `$(...)` command substitution, `VAR=x cmd` prefixes, `~` expansion, and
-POSIX-style path normalization (`/tmp`, `/d/foo` → `D:\foo`).
+quoting, `$VAR` `$1` `$#` `"$@"` `set --` `shift`, `${name:-word}` `${name//pat/str}`
+`${name:off:len}` `${name[n]}` `${#name[@]}`, `A=(x y z)` array assignment, `$(...)` command
+substitution, `VAR=x cmd` prefixes, `~` expansion, and POSIX-style path normalization
+(`/tmp`, `/d/foo` → `D:\foo`).
 
 Exit codes follow bash conventions: 0 ok, 1 fail, 2 usage/serious, 127 command not found,
 124 timeout.
@@ -213,13 +234,15 @@ fauxnix optimizes for the commands agents actually run. Documented deviations:
   word expansion precedes the temporary environment).
 - `yes` is capped at 65,536 lines — PS 5.1 pipelines cannot signal upstream producers to stop, so
   an unbounded `yes | head` would hang.
-- `tail -f`, `eval`, `alias`, heredocs, `while`/`until`/`case`,
+- `tail -f`, `eval`, `alias`, heredocs,
   `env -i`/`--ignore-environment`,
   background `&`, and stdout redirects (`>` `>>` `&>` `&>>`) on a non-last
   pipeline stage (`echo hi >f | cat`) are rejected with actionable error
   messages instead of misbehaving.
-  (`if/then/elif/else/fi`, `for x in ...`, backtick substitution, `command -v`, pipeline `read`,
-  dotenv-style `source`, and word-level `$((...))` arithmetic expansion are supported.)
+  (`if/then/elif/else/fi`, `for x in ...`, `while`/`until`, `case ... esac` (`;;` only; `;&`/`;;&` fail loud),
+  backtick substitution, `command -v`, pipeline `read`,
+  dotenv-style `source`, word-level `$((...))` arithmetic expansion, `A=(x y z)` arrays, and
+  `${name//pat/str}` / `${name:off:len}` are supported.)
 - `command -v <builtin>` prints `/usr/bin/<name>` where bash prints the bare builtin name;
   exit codes and empty-result semantics match.
 - `chmod` maps only the read-only bit; exec bits are no-ops on Windows. `chown` is a silent no-op
@@ -249,7 +272,7 @@ npm run build
 npx tsx scratch/run.mjs "any bash command"   # quick live check
 ```
 
-Differential vs Git Bash is opt-in (`FAUXNIX_DIFF_ORACLE=1`; skips if unset or `bash.exe` is missing — Git Bash is not required). See [`test/differential/README.md`](test/differential/README.md). This is the RFC C-7 scaffold, not the 200-case 1.0 gate.
+Differential vs Git Bash is opt-in (`FAUXNIX_DIFF_ORACLE=1`; skips if unset or `bash.exe` is missing — Git Bash is not required). See [`test/differential/README.md`](test/differential/README.md). This is grown from the 40-case RFC C-7 scaffold, not the 200-case 1.0 gate. The weekly oracle is opt-in via the scheduled workflow (`.github/workflows/differential.yml`) when Git Bash is on the runner.
 
 Architecture map: `src/parser.ts` (bash subset → AST) · `src/translator.ts` (AST → PowerShell +
 executor wrapper) · `src/executor.ts` (spawn, redirects, session persistence) ·
