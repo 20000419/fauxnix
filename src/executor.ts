@@ -243,6 +243,8 @@ export class FauxnixSession {
   private hostFile!: string;
   private host: PowerShellHost | null = null;
   private lifecycleLock: Promise<unknown> = Promise.resolve();
+  /** True once `env` was loaded from the host's complete environment snapshot. */
+  private hasEnvSnapshot = false;
 
   constructor() {
     this.id = randomUUID().slice(0, 8);
@@ -278,7 +280,10 @@ export class FauxnixSession {
     try {
       if (existsSync(this.envFile)) {
         const raw = readFileSync(this.envFile, 'utf8');
-        if (raw.trim()) this.env = JSON.parse(raw) as Record<string, string>;
+        if (raw.trim()) {
+          this.env = JSON.parse(raw) as Record<string, string>;
+          this.hasEnvSnapshot = true;
+        }
       }
     } catch {
       /* ignore */
@@ -318,6 +323,7 @@ export class FauxnixSession {
     }
     this.cwd = null;
     this.env = {};
+    this.hasEnvSnapshot = false;
     this.prevExit = null;
     await Promise.allSettled([
       fs.rm(this.cwdFile, { force: true }),
@@ -330,10 +336,17 @@ export class FauxnixSession {
 
   /** env for the child powershell process. */
   childEnv(cwdOverride?: string, stdinFile?: string | null): NodeJS.ProcessEnv {
-    const env: NodeJS.ProcessEnv = { ...process.env };
-    for (const [k, v] of Object.entries(this.env)) {
-      if (v === undefined) delete env[k];
-      else env[k] = v;
+    // Before the first completed request, `env` contains optional caller
+    // overrides and is layered over the process baseline. Afterwards it is a
+    // complete snapshot written by the resident host. Restore that snapshot
+    // verbatim on transparent host restarts: merging it with process.env would
+    // resurrect inherited variables that the shell successfully unset.
+    const env: NodeJS.ProcessEnv = this.hasEnvSnapshot ? { ...this.env } : { ...process.env };
+    if (!this.hasEnvSnapshot) {
+      for (const [k, v] of Object.entries(this.env)) {
+        if (v === undefined) delete env[k];
+        else env[k] = v;
+      }
     }
     // The MCP SDK's safe Windows stdio environment omits PATHEXT. Without it,
     // PowerShell cannot resolve extensionless native commands such as `node`.
