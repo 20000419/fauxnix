@@ -1876,6 +1876,24 @@ describe('CommandSpec archive leftovers (#143)', () => {
     expect(bodyOf('gzip --force f')).toContain('force from terminal');
   });
 
+  it('gzip decompression streams file, stdout, and test modes', () => {
+    const file = bodyOf('gzip -d archive.gz');
+    expect(file).toContain('fx-gz-stream-file $fx_f $fx_out');
+    expect(file).not.toContain('fx-gz-dbytes');
+
+    const stdout = bodyOf('gunzip -c archive.gz');
+    expect(stdout).toContain('fx-gz-stream-text $fx_f $false');
+    expect(stdout).not.toContain('fx-gz-dbytes');
+
+    const test = bodyOf('gzip -t archive.gz');
+    expect(test).toContain('[void](fx-gz-validate $fx_f $false)');
+    expect(test).not.toContain('fx-gz-stream-file $fx_f $fx_out');
+
+    const stdinTest = translateCommandList(parse("printf 'x' | gzip -t"))[0].body;
+    expect(stdinTest).toContain('[void](fx-gz-validate $fx_in $true)');
+    expect(stdinTest).not.toContain('fx-gz-cbytes $fx_in');
+  });
+
   it('tar unknown GNU flags still forward to tar.exe', () => {
     const t = bodyOf('tar --numeric-owner -tf a.tar');
     expect(t).toContain('fx-native');
