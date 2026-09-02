@@ -15,6 +15,7 @@ import {
   varExpr,
   arithExpr,
   setArithHelperPreamble,
+  isSpecialShellVar,
 } from '../translator.js';
 import { handlers as textIoHandlers } from './text-io.js';
 
@@ -1510,6 +1511,7 @@ function kshExprOfWord(w: Word): string {
     if (expanded[0].index !== undefined) {
       return '(fx-subget ' + psStr(expanded[0].name) + ' ' + psStr(expanded[0].index) + ')';
     }
+    if (isSpecialShellVar(expanded[0].name)) return varExpr(expanded[0].name);
     return '(fx-envget ' + psStr(expanded[0].name) + ')';
   }
   const literal =
@@ -1535,7 +1537,9 @@ function kshExprOfWord(w: Word): string {
             ? '$(' + paramExpr(p.name, p.param.op, p.param.word) + ')'
             : p.index !== undefined
             ? '$(fx-subget ' + psStr(p.name) + ' ' + psStr(p.index) + ')'
-            : '$(fx-envget ' + psStr(p.name) + ')';
+            : isSpecialShellVar(p.name)
+              ? '$(' + varExpr(p.name) + ')'
+              : '$(fx-envget ' + psStr(p.name) + ')';
         break;
       case 'CmdSub':
         // [[ ]] does not IFS-split, so keep the newline contract.
@@ -2662,6 +2666,12 @@ const alias: Handler = (args) => {
 };
 
 const set: Handler = (args) => {
+  if (args.length > 0 && wordToString(args[0]) === '--') {
+    return [
+      '$fx_pv = [object[]](' + argListExpr(args.slice(1)) + ')',
+      'fx-posset $fx_pv',
+    ].join('\n');
+  }
   const raw = args.map(wordToString);
   const unsupported = raw.filter(
     (t) =>
@@ -2689,6 +2699,15 @@ const set: Handler = (args) => {
     );
   }
   return '';
+};
+
+const shiftCmd: Handler = (args) => {
+  if (args.length === 0) return 'fx-posshift 1';
+  return [
+    '$fx_sn = [string](' + exprOfWord(args[0]) + ')',
+    "if ($fx_sn -notmatch '^-?[0-9]+$') { [Console]::Error.WriteLine('bash: shift: ' + $fx_sn + ': numeric argument required'); $script:fx_exit = 1 }",
+    'else { fx-posshift $fx_sn }',
+  ].join('\n');
 };
 
 /* ------------------------------------------------------------------ */
@@ -2740,4 +2759,5 @@ export const handlers: Record<string, Handler> = {
   exit: exitCmd,
   alias,
   set,
+  shift: shiftCmd,
 };

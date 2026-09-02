@@ -6,7 +6,7 @@
  *   - lists:                cmd1 ; cmd2 && cmd3 || cmd4   (newlines act as ';')
  *   - redirections:         > >> 2> 2>> &> 2>&1 1>&2 <
  *   - quoting:              'literal'  "interp $VAR $(cmd)"
- *   - variables:            $VAR ${VAR} ${VAR[n]} plus special cases ($HOME $USER $PATH ...)
+ *   - variables:            $VAR ${VAR} ${VAR[n]} plus special cases ($HOME $1 $# $@ $0 ...)
  *   - command substitution: $(...) and `...` (recursively translated)
  *   - arithmetic expansion: $((...)) (existing fx-arith engine)
  *   - env assignment prefix: VAR=value cmd

@@ -164,8 +164,10 @@ TOML config: `~/.kimi-code/mcp.json`
 `FAUXNIX_TOOL_NAME`). Tool description already teaches the model the supported subset, so no
 system-prompt changes are required.
 
-The MCP session persists `cwd`, environment variables, `export`/`unset` and `cd -`/OLDPWD across
-tool calls — it behaves like a logged-in shell, not a stateless `exec`.
+The MCP session persists `cwd`, environment variables, `export`/`unset`, `cd -`/OLDPWD, and
+positional parameters (`set --` / `$1` / `"$@"`) across tool calls — it behaves like a logged-in
+shell, not a stateless `exec`. `$0` is the MCP tool name (`bash` / `FAUXNIX_TOOL_NAME`), not a
+Windows path.
 
 ## What's translated
 
@@ -187,13 +189,13 @@ compile; `sed`/`awk`/`egrep` stay unspec'd). Implemented GNU holes: `cp -n` / `m
 same metadata.
 - **shell/system**: `cd pwd export unset env printenv ps kill pkill pgrep sleep which type whoami
   id groups date uname hostname uptime free nproc clear true false test [ [[ : pushd popd dirs sudo
-  timeout man history less more source . eval exit alias set`
+  timeout man history less more source . eval exit alias set shift`
 - **network**: `curl wget ping netstat ss ip ifconfig nslookup dig host`
 - **archives**: `tar gzip gunzip zcat zip unzip`
 
 Plus shell syntax: pipes, `&&` / `||` / `;`, redirections (`> >> 2> 2>&1 < &>`, `/dev/null`),
-quoting, `$VAR` `$(...)` command substitution, `VAR=x cmd` prefixes, `~` expansion, and
-POSIX-style path normalization (`/tmp`, `/d/foo` → `D:\foo`).
+quoting, `$VAR` `$1` `$#` `"$@"` `set --` `shift` `$(...)` command substitution, `VAR=x cmd`
+prefixes, `~` expansion, and POSIX-style path normalization (`/tmp`, `/d/foo` → `D:\foo`).
 
 Exit codes follow bash conventions: 0 ok, 1 fail, 2 usage/serious, 127 command not found,
 124 timeout.
