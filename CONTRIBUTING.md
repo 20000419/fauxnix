@@ -38,11 +38,35 @@ Never push a hand-resolved merge directly to `main`, even when the result
 tests green locally. (Post-hoc CI on `main` detects problems but does not
 make the delta reviewable — that's detection, not gating.)
 
+## RFC process
+
+An RFC is required before implementation when the change is any of:
+
+- a new language surface (syntax, builtins, or session-visible features)
+- a host protocol change
+- a semantic change to redirects, argv, or session env
+
+Template: a short `docs/rfc-*.md` (see [docs/rfc-template.md](docs/rfc-template.md))
+plus a tracking issue. Implementation PRs stay independently reviewable
+per the checklist above.
+
+Existing RFCs (shape to copy):
+
+- [docs/rfc-1.0-completeness-usability.md](docs/rfc-1.0-completeness-usability.md)
+- [docs/rfc-computer-use-windows.md](docs/rfc-computer-use-windows.md)
+- [docs/rfc-redirect-fd-ownership.md](docs/rfc-redirect-fd-ownership.md)
+- [docs/rfc-native-argv-fidelity.md](docs/rfc-native-argv-fidelity.md)
+- [docs/rfc-bounded-cancellable-execution.md](docs/rfc-bounded-cancellable-execution.md)
+
+Expect review on the integration tree per the checklist above; do not merge
+your own PRs. There is no SLA.
+
 ## Releases
 
 1. Version-bump PR (`package.json` + `src/cli.ts` + `src/mcp.ts`), CI green, merge.
 2. Tag `vX.Y.Z`, push tag.
-3. `npm publish` (requires maintainer 2FA).
+3. `npm run test:package` green.
+4. `npm publish` (requires maintainer 2FA).
 
 ## Attribution note
 
