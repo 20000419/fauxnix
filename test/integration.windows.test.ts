@@ -216,6 +216,27 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     const r = await run('sort dups.txt | uniq -c');
     expect(r.stdout).toMatch(/2 aaa/);
     expect(r.stdout).toMatch(/1 bbb/);
+    expect((await run("printf '10\\n2\\n1\\n' | sort -n")).stdout.trim().split(/\r?\n/)).toEqual([
+      '1',
+      '2',
+      '10',
+    ]);
+  });
+
+  it('cut -d -f and tr -d still work', async () => {
+    expect((await run("cut -d ' ' -f1 nums.txt")).stdout.trim().split(/\r?\n/)).toEqual([
+      '1',
+      '3',
+      '5',
+    ]);
+    expect((await run('printf abc | tr -d b')).stdout.trim()).toBe('ac');
+  });
+
+  it('sort -z is unsupported', async () => {
+    const r = await run('sort -z dups.txt');
+    expect(r.exitCode).toBe(2);
+    expect(r.stderr).toContain("option '-z' is not supported by fauxnix");
+    expect(r.stdout).toBe('');
   });
 
   it('head/tail/wc', async () => {
@@ -367,6 +388,21 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     const r = await run('printf x | cat < fruits.txt | head -1');
     expect(r.exitCode).toBe(0);
     expect(r.stdout.trim()).toBe('apple');
+  });
+
+  it('rejects stdout redirect on a non-last pipeline stage', () => {
+    expect(() => translateCommandList(parseCommand('echo hi >f | cat'))).toThrow(
+      'fauxnix: stdout redirect on a non-last pipeline stage is not supported yet; write the file in a previous list segment (cmd >f; cat f) or wait for per-stage fds (#157)',
+    );
+  });
+
+  it('last-stage stdout redirect still writes', async () => {
+    const r = await run('echo hi | cat > lastpipe.txt');
+    expect(r.exitCode).toBe(0);
+    expect(readFileSync(join(dir, 'lastpipe.txt'), 'utf8').trim()).toBe('hi');
+    const single = await run('echo hi > singleout.txt');
+    expect(single.exitCode).toBe(0);
+    expect(readFileSync(join(dir, 'singleout.txt'), 'utf8').trim()).toBe('hi');
   });
 
   it(
@@ -746,6 +782,11 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect((await run("echo \"[$(printf 'a\\n')]\"")).stdout).toBe('[a]\n');
     // Unquoted $(...) approximates IFS split (PS space-join), matching pre-#88.
     expect((await run("echo $(printf 'a\\nb')")).stdout.trim()).toBe('a b');
+    // C-4: list inside $(...) — unquoted IFS-joins; quoted keeps the newline.
+    expect((await run('echo $(echo a; echo b)')).stdout.trim()).toBe('a b');
+    expect((await run('echo "$(echo a; echo b)"')).stdout).toBe('a\nb\n');
+    expect((await run('echo $(false; echo x)')).stdout.trim()).toBe('x');
+    expect((await run('echo $(true && echo y)')).stdout.trim()).toBe('y');
   });
 
   it('VAR=value prefixes do not leak past the command', async () => {

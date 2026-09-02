@@ -98,6 +98,7 @@ fauxnix translate "find . -name '*.log' -mtime +7 -delete"
 
 # check your environment
 fauxnix check
+fauxnix doctor                   # check + encoding, harness config, MCP
 
 # run the MCP stdio server (what agent harnesses connect to)
 fauxnix mcp
@@ -164,9 +165,10 @@ development:
 
 `cp` / `mv` / `rm` / `touch` / `du` / `ls` / `ll` / `mkdir` / `rmdir` / `mktemp` / `ln` /
 `readlink` / `realpath` / `basename` / `dirname` / `stat` / `file` / `df` / `chmod` / `chown` /
-`diff` / `tee` / `grep` / `head` / `echo` / `printf` / `cat` / `tail` / `wc` carry a `CommandSpec`: unknown options fail with a GNU-style
+`diff` / `tee` / `grep` / `head` / `echo` / `printf` / `cat` / `tail` / `wc` / `sort` / `uniq` /
+`cut` / `tr` carry a `CommandSpec`: unknown options fail with a GNU-style
 usage error instead of being ignored (`find` stays unspec'd so predicates like `-name` still
-compile). Implemented GNU holes: `cp -n` / `mv -n` / `touch -c` / `tee --append` / `grep -m` /
+compile; `sed`/`awk`/`egrep` stay unspec'd). Implemented GNU holes: `cp -n` / `mv -n` / `touch -c` / `tee --append` / `grep -m` /
 `head --lines` / `du --max-depth`. `fauxnix list --json` and `docs/command-specs.md` dump the
 same metadata.
 - **shell/system**: `cd pwd export unset env printenv ps kill pkill pgrep sleep which type whoami
@@ -213,7 +215,9 @@ fauxnix optimizes for the commands agents actually run. Documented deviations:
   an unbounded `yes | head` would hang.
 - `tail -f`, `eval`, `alias`, heredocs, `while`/`until`/`case`,
   `env -i`/`--ignore-environment`,
-  and background `&` are rejected with actionable error messages instead of misbehaving.
+  background `&`, and stdout redirects (`>` `>>` `&>` `&>>`) on a non-last
+  pipeline stage (`echo hi >f | cat`) are rejected with actionable error
+  messages instead of misbehaving.
   (`if/then/elif/else/fi`, `for x in ...`, backtick substitution, `command -v`, pipeline `read`,
   dotenv-style `source`, and word-level `$((...))` arithmetic expansion are supported.)
 - `command -v <builtin>` prints `/usr/bin/<name>` where bash prints the bare builtin name;
@@ -245,12 +249,19 @@ npm run build
 npx tsx scratch/run.mjs "any bash command"   # quick live check
 ```
 
+Differential vs Git Bash is opt-in (`FAUXNIX_DIFF_ORACLE=1`; skips if unset or `bash.exe` is missing — Git Bash is not required). See [`test/differential/README.md`](test/differential/README.md). This is the RFC C-7 scaffold, not the 200-case 1.0 gate.
+
 Architecture map: `src/parser.ts` (bash subset → AST) · `src/translator.ts` (AST → PowerShell +
 executor wrapper) · `src/executor.ts` (spawn, redirects, session persistence) ·
 `src/commands/*.ts` (per-command generators) · `src/mcp.ts` (MCP server) · `src/cli.ts`.
 
 Roadmap: [docs/rfc-roadmap-to-1.0.md](docs/rfc-roadmap-to-1.0.md) — tracks, milestones,
 and the RFC process for proposing waves.
+
+## Security
+
+Trust model, host protocol, kill semantics, network guard, and reporting:
+[SECURITY.md](SECURITY.md).
 
 ## License
 

@@ -5,10 +5,11 @@ import { translateCommandList } from './translator.js';
 import { listCommandsJson, registeredNames, specsMarkdown } from './registry.js';
 import { encodeCommand } from './encoding.js';
 import { startMcpServer } from './mcp.js';
+import { collectDoctorReport } from './doctor.js';
 import { packageVersion } from './version.js';
 import './commands/install-all.js';
 
-const USAGE = `fauxnix — run Linux-style commands on Windows via PowerShell translation
+export const USAGE = `fauxnix — run Linux-style commands on Windows via PowerShell translation
 
 Usage:
   fauxnix "ls -la | head -5"        translate + execute a bash-style command
@@ -19,6 +20,7 @@ Usage:
   fauxnix list --json                same list as machine-readable capability metadata
   fauxnix list --markdown            CommandSpec tables (same text as docs/command-specs.md)
   fauxnix check                      verify the local PowerShell environment
+  fauxnix doctor                     check + encoding, harness config, MCP readiness
   fauxnix --version
 
 Notes:
@@ -58,6 +60,11 @@ export async function runCli(argv: string[]): Promise<void> {
     return;
   }
 
+  if (verb === 'doctor') {
+    await runDoctor();
+    return;
+  }
+
   if (verb === 'mcp') {
     await startMcpServer();
     return;
@@ -88,6 +95,13 @@ export async function runCli(argv: string[]): Promise<void> {
 }
 
 const PS_ARGS = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass'];
+
+async function runDoctor(): Promise<void> {
+  await runCheck();
+  const report = await collectDoctorReport();
+  for (const line of report.lines) console.log(line);
+  if (!report.ok) process.exitCode = 1;
+}
 
 async function runCheck(): Promise<void> {
   console.log('powershell : powershell.exe (Windows built-in)');

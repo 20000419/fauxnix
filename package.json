@@ -1,6 +1,6 @@
 {
   "name": "fauxnix-cli",
-  "version": "0.9.3",
+  "version": "0.10.0",
   "description": "Fauxnix — run Linux-style commands on Windows via deterministic PowerShell translation. No VM, no WSL. MCP server + CLI for AI agents.",
   "type": "module",
   "bin": {
