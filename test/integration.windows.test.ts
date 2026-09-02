@@ -216,6 +216,27 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     const r = await run('sort dups.txt | uniq -c');
     expect(r.stdout).toMatch(/2 aaa/);
     expect(r.stdout).toMatch(/1 bbb/);
+    expect((await run("printf '10\\n2\\n1\\n' | sort -n")).stdout.trim().split(/\r?\n/)).toEqual([
+      '1',
+      '2',
+      '10',
+    ]);
+  });
+
+  it('cut -d -f and tr -d still work', async () => {
+    expect((await run("cut -d ' ' -f1 nums.txt")).stdout.trim().split(/\r?\n/)).toEqual([
+      '1',
+      '3',
+      '5',
+    ]);
+    expect((await run('printf abc | tr -d b')).stdout.trim()).toBe('ac');
+  });
+
+  it('sort -z is unsupported', async () => {
+    const r = await run('sort -z dups.txt');
+    expect(r.exitCode).toBe(2);
+    expect(r.stderr).toContain("option '-z' is not supported by fauxnix");
+    expect(r.stdout).toBe('');
   });
 
   it('head/tail/wc', async () => {

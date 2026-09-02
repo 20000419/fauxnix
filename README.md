@@ -164,9 +164,10 @@ development:
 
 `cp` / `mv` / `rm` / `touch` / `du` / `ls` / `ll` / `mkdir` / `rmdir` / `mktemp` / `ln` /
 `readlink` / `realpath` / `basename` / `dirname` / `stat` / `file` / `df` / `chmod` / `chown` /
-`diff` / `tee` / `grep` / `head` / `echo` / `printf` / `cat` / `tail` / `wc` carry a `CommandSpec`: unknown options fail with a GNU-style
+`diff` / `tee` / `grep` / `head` / `echo` / `printf` / `cat` / `tail` / `wc` / `sort` / `uniq` /
+`cut` / `tr` carry a `CommandSpec`: unknown options fail with a GNU-style
 usage error instead of being ignored (`find` stays unspec'd so predicates like `-name` still
-compile). Implemented GNU holes: `cp -n` / `mv -n` / `touch -c` / `tee --append` / `grep -m` /
+compile; `sed`/`awk`/`egrep` stay unspec'd). Implemented GNU holes: `cp -n` / `mv -n` / `touch -c` / `tee --append` / `grep -m` /
 `head --lines` / `du --max-depth`. `fauxnix list --json` and `docs/command-specs.md` dump the
 same metadata.
 - **shell/system**: `cd pwd export unset env printenv ps kill pkill pgrep sleep which type whoami

@@ -1164,6 +1164,75 @@ describe('CommandSpec text-io leftovers (#143)', () => {
   });
 });
 
+describe('CommandSpec text-filters leftovers (#143)', () => {
+  const bodyOf = (cmd: string): string => translateCommandList(parse(cmd))[0].body;
+
+  it('sort/uniq/cut/tr are spec\'d; sed/awk/egrep stay unspec\'d', () => {
+    expect(lookupSpec('sort')).toBeTruthy();
+    expect(lookupSpec('uniq')).toBeTruthy();
+    expect(lookupSpec('cut')).toBeTruthy();
+    expect(lookupSpec('tr')).toBeTruthy();
+    expect(lookupSpec('sed')).toBeUndefined();
+    expect(lookupSpec('awk')).toBeUndefined();
+    expect(lookupSpec('egrep')).toBeUndefined();
+    expect(lookupSpec('find')).toBeUndefined();
+  });
+
+  it('sort -z is unsupported; unknown flags fail usage', () => {
+    const z = bodyOf('sort -z');
+    expect(z).toContain("option ''-z'' is not supported by fauxnix");
+    expect(z).toContain('NUL-terminated records');
+    expect(z).toContain('$script:fx_exit = 2');
+    expect(z).toContain("Try ''sort --help'' for more information.");
+    expect(z).not.toContain('[array]::Sort');
+    const unknown = bodyOf('sort -Q');
+    expect(unknown).toContain("invalid option -- ''Q''");
+    expect(unknown).not.toContain('[array]::Sort');
+  });
+
+  it('implemented sort -n/-r/-k and longs still compile', () => {
+    expect(bodyOf('sort -n f')).toContain('fx-numkey');
+    expect(bodyOf('sort -n f')).not.toContain('invalid option');
+    expect(bodyOf('sort --numeric-sort f')).toContain('fx-numkey');
+    expect(bodyOf('sort -r f')).toContain('[array]::Reverse');
+    expect(bodyOf('sort --reverse f')).toContain('[array]::Reverse');
+    expect(bodyOf('sort -k 2 f')).toContain('fx-keyof');
+    expect(bodyOf('sort -nr f')).toContain('fx-numkey');
+  });
+
+  it('uniq -c/-d/-u/-i still compile; unknown flags fail', () => {
+    expect(bodyOf('uniq -c f')).toContain("'{0,7} {1}'");
+    expect(bodyOf('uniq -c f')).not.toContain('invalid option');
+    expect(bodyOf('uniq -d f')).toContain('if ($c -gt 1)');
+    expect(bodyOf('uniq -u f')).toContain('if ($c -eq 1)');
+    expect(bodyOf('uniq -i f')).toContain('.ToLower()');
+    expect(bodyOf('uniq -z f')).toContain("invalid option -- ''z''");
+    expect(bodyOf('uniq -z f')).not.toContain('fx-uemit');
+  });
+
+  it('cut -d -f / -c still compile; unknown flags fail', () => {
+    const fields = bodyOf("cut -d, -f1 f");
+    expect(fields).toContain('.Split([char]44)');
+    expect(fields).not.toContain('invalid option');
+    expect(bodyOf('cut -c1-2 f')).toContain('.ToCharArray()');
+    expect(bodyOf('cut --complement -f1 f')).toContain('-not (');
+    expect(bodyOf('cut -z -f1 f')).toContain("invalid option -- ''z''");
+    expect(bodyOf('cut -z -f1 f')).not.toContain('.Split');
+  });
+
+  it('tr -d/-s still compile; -c is unsupported', () => {
+    const del = bodyOf('tr -d a');
+    expect(del).toContain('$fx_dl.ContainsKey');
+    expect(del).not.toContain('invalid option');
+    expect(bodyOf('tr -s a')).toContain('$fx_sq.ContainsKey');
+    const complement = bodyOf('tr -c a b');
+    expect(complement).toContain("option ''-c'' is not supported by fauxnix");
+    expect(complement).toContain('complement');
+    expect(complement).not.toContain('$fx_map');
+    expect(bodyOf('tr --complement a b')).toContain('not supported by fauxnix');
+  });
+});
+
 describe('find predicates (#130)', () => {
   const bodyOf = (cmd: string): string => translateCommandList(parse(cmd))[0].body;
   const throws = (cmd: string, msg: string) => {

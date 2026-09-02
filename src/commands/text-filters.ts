@@ -2572,8 +2572,9 @@ function parseCutList(list: string): CutRange[] {
 const cut: Handler = (args) => {
   const { flags, longs, values, operandWords } = parseWords(args, ['d', 'f', 'c', 'b'], []);
   const complement = longs.has('--complement');
-  const charsMode = flags.has('c') || flags.has('b');
-  const fieldsMode = flags.has('f');
+  // -f/-c/-b are value-taking; parseWords records them in `values`, not `flags`.
+  const charsMode = values.has('-c') || values.has('-b');
+  const fieldsMode = values.has('-f');
   const suppress = flags.has('s');
 
   if (charsMode && fieldsMode) {
@@ -2826,8 +2827,68 @@ export const specs: CommandSpec[] = [
     usageExit: 2,
     handler: grep,
   },
+  {
+    names: ['sort'],
+    options: [
+      { short: 'r', long: '--reverse', support: 'implemented' },
+      { short: 'n', long: '--numeric-sort', support: 'implemented' },
+      { short: 'u', long: '--unique', support: 'implemented' },
+      { short: 'f', long: '--ignore-case', support: 'implemented' },
+      { short: 'b', long: '--ignore-leading-blanks', support: 'implemented' },
+      { short: 't', takesValue: true, support: 'implemented' },
+      { short: 'k', takesValue: true, support: 'implemented' },
+      { short: 'z', long: '--zero-terminated', support: 'unsupported', reason: 'NUL-terminated records' },
+    ],
+    effects: ['read'],
+    platform: 'windows-ps51',
+    dispatch: 'translated',
+    usageExit: 2,
+    handler: sort,
+  },
+  {
+    names: ['uniq'],
+    options: [
+      { short: 'c', support: 'implemented' },
+      { short: 'd', support: 'implemented' },
+      { short: 'u', support: 'implemented' },
+      { short: 'i', support: 'implemented' },
+    ],
+    effects: ['read'],
+    platform: 'windows-ps51',
+    dispatch: 'translated',
+    handler: uniq,
+  },
+  {
+    names: ['cut'],
+    options: [
+      { short: 'd', takesValue: true, support: 'implemented' },
+      { short: 'f', takesValue: true, support: 'implemented' },
+      { short: 'c', takesValue: true, support: 'implemented' },
+      { short: 'b', takesValue: true, support: 'implemented' },
+      { short: 's', support: 'implemented' },
+      { long: '--complement', support: 'implemented' },
+    ],
+    effects: ['read'],
+    platform: 'windows-ps51',
+    dispatch: 'translated',
+    handler: cut,
+  },
+  {
+    names: ['tr'],
+    options: [
+      { short: 'd', support: 'implemented' },
+      { short: 's', support: 'implemented' },
+      { short: 'c', long: '--complement', support: 'unsupported', reason: 'complement' },
+      { short: 'C', support: 'unsupported', reason: 'complement' },
+    ],
+    effects: ['read'],
+    platform: 'windows-ps51',
+    dispatch: 'translated',
+    handler: tr,
+  },
 ];
 
+/** sed/awk stay unspec'd (custom script parsers). egrep injects -E and stays its own handler. */
 export const handlers: Record<string, Handler> = {
   egrep: (args, ctx) => grep([[{ kind: 'Text', text: '-E' }], ...args], ctx), // egrep = grep -E
   sed,
