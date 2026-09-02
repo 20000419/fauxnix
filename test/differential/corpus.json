@@ -2,13 +2,16 @@
   "gate": {
     "targetCases": 200,
     "identity": 0.95,
-    "note": "RFC 1.0 C-7 / #118. The 1.0 hard gate is ≥200 curated cases at ≥95% byte-identical on scheduled oracle runs. This file is a high-value scaffold sourced from already-shipped audit repros, not that gate."
+    "note": "RFC 1.0 C-7 / #118. The 1.0 hard gate is ≥200 curated cases at ≥95% byte-identical on scheduled oracle runs. This file is deliberate growth from the 40-case scaffold, sourced from already-shipped audit repros and integration tests — not that gate."
   },
   "files": {
     "fruits.txt": "apple\nBanana\napple pie\ncherry\n",
     "letters.txt": "a\nb\nc\n",
     "three.txt": "one\ntwo\nthree\n",
-    "abc.txt": "abc"
+    "abc.txt": "abc",
+    "nums.txt": "1 2\n3 4\n5 6\n",
+    "dups.txt": "aaa\naaa\nbbb\n",
+    "dotenv.env": "FOO=bar\nexport BAZ=qux\n"
   },
   "cases": [
     {
@@ -250,6 +253,310 @@
       "id": "pos-clear",
       "cmd": "set -- a; set --; echo $#",
       "source": "#118 C-3 / docs/rfc-positional-params.md"
-    }
+    },
+    {
+      "id": "if-false-else",
+      "cmd": "if false; then echo A; else echo B; fi",
+      "source": "#112 / integration: if/then/else/fi follows the test exit code"
+    },
+    {
+      "id": "if-true-else",
+      "cmd": "if true; then echo A; else echo B; fi",
+      "source": "#112 / integration: if/then/else/fi follows the test exit code"
+    },
+    {
+      "id": "if-false-empty",
+      "cmd": "if false; then echo YES; fi",
+      "source": "#112 / integration: if/then/else/fi follows the test exit code"
+    },
+    {
+      "id": "elif-else-c",
+      "cmd": "if false; then echo A; elif false; then echo B; else echo C; fi",
+      "source": "#120 / integration: elif takes the first true branch"
+    },
+    {
+      "id": "elif-chain-c",
+      "cmd": "if false; then echo A; elif false; then echo B; elif true; then echo C; fi",
+      "source": "#120 / integration: elif takes the first true branch"
+    },
+    {
+      "id": "for-nums",
+      "cmd": "for x in 1 2; do echo $x; done",
+      "source": "#112 / integration: for x in words; do ...; done"
+    },
+    {
+      "id": "arith-var",
+      "cmd": "x=3; echo $((x+1))",
+      "source": "#119 / integration: word-level $((...)) evaluates through fx-arith"
+    },
+    {
+      "id": "arith-empty",
+      "cmd": "echo $(())",
+      "source": "#119 / integration: word-level $((...)) evaluates through fx-arith"
+    },
+    {
+      "id": "arith-div",
+      "cmd": "echo $((10/3))",
+      "source": "#119"
+    },
+    {
+      "id": "arith-pow",
+      "cmd": "echo $((2**3))",
+      "source": "#119"
+    },
+    {
+      "id": "param-default-empty",
+      "cmd": "X=; echo ${X:-def}",
+      "source": "#112 / integration: ${name:-word} and ${name:+word}"
+    },
+    {
+      "id": "param-default-set",
+      "cmd": "X=hi; echo ${X:-def}",
+      "source": "#112 / integration: ${name:-word} and ${name:+word}"
+    },
+    {
+      "id": "param-alt",
+      "cmd": "X=hi; echo ${X:+on}",
+      "source": "#112 / integration: ${name:-word} and ${name:+word}"
+    },
+    {
+      "id": "param-alt-unset",
+      "cmd": "unset X; echo [${X:+on}]",
+      "source": "#112 / integration: ${name:-word} and ${name:+word}"
+    },
+    {
+      "id": "strlen-unset",
+      "cmd": "unset Z; echo ${#Z}",
+      "source": "#112 / integration: ${#name} is string length"
+    },
+    {
+      "id": "cmdsub-list",
+      "cmd": "echo $(echo a; echo b)",
+      "source": "#179 / integration: variables and command substitution"
+    },
+    {
+      "id": "cmdsub-quoted-list",
+      "cmd": "echo \"$(echo a; echo b)\"",
+      "source": "#179 / integration: variables and command substitution"
+    },
+    {
+      "id": "cmdsub-and",
+      "cmd": "echo $(true && echo y)",
+      "source": "#179 / integration: variables and command substitution"
+    },
+    {
+      "id": "cmdsub-backtick",
+      "cmd": "echo `echo nested`",
+      "source": "#112 / integration: variables and command substitution"
+    },
+    {
+      "id": "true-and",
+      "cmd": "true && echo Y",
+      "source": "integration: && and || short-circuit like bash"
+    },
+    {
+      "id": "false-or",
+      "cmd": "false || echo Y",
+      "source": "integration: && and || short-circuit like bash"
+    },
+    {
+      "id": "pipe-or-last-true",
+      "cmd": "false | true || echo FALLBACK",
+      "source": "#124 / integration: pipeline exit status controls following && and ||"
+    },
+    {
+      "id": "status-true",
+      "cmd": "true; echo $?",
+      "source": "integration: $? reflects the previous segment"
+    },
+    {
+      "id": "bracket-dir",
+      "cmd": "[[ -d . ]] && echo dir",
+      "source": "#80 / integration: [[ ]] file and string tests"
+    },
+    {
+      "id": "bracket-not-dir",
+      "cmd": "[[ -d fruits.txt ]] && echo yes; echo after",
+      "source": "#80 / integration: [[ ]] file and string tests"
+    },
+    {
+      "id": "bracket-gt",
+      "cmd": "[[ 2 -gt 1 ]] && echo yes",
+      "source": "#80 / integration: [[ ]] file and string tests"
+    },
+    {
+      "id": "bracket-regex",
+      "cmd": "[[ abc =~ ^a ]] && echo match",
+      "source": "#80 / integration: [[ ]] file and string tests"
+    },
+    {
+      "id": "if-bracket-file",
+      "cmd": "if [[ -f fruits.txt ]]; then echo yes; fi",
+      "source": "#112 / #80"
+    },
+    {
+      "id": "sort-n",
+      "cmd": "printf '10\\n2\\n1\\n' | sort -n",
+      "source": "#177 / integration: sort -n and uniq -c"
+    },
+    {
+      "id": "sort-fruits",
+      "cmd": "sort fruits.txt",
+      "source": "#177 / integration: cat | grep | sort"
+    },
+    {
+      "id": "uniq-c",
+      "cmd": "sort dups.txt | uniq -c",
+      "source": "#177 / integration: sort -n and uniq -c"
+    },
+    {
+      "id": "cut-f1",
+      "cmd": "cut -d ' ' -f1 nums.txt",
+      "source": "#177 / integration: cut -d -f and tr -d still work"
+    },
+    {
+      "id": "tr-d",
+      "cmd": "printf 'abc\\n' | tr -d b",
+      "source": "#177 / integration: cut -d -f and tr -d still work"
+    },
+    {
+      "id": "tr-map",
+      "cmd": "printf 'abc\\n' | tr a A",
+      "source": "#177"
+    },
+    {
+      "id": "awk-field",
+      "cmd": "awk '{print $1}' fruits.txt",
+      "source": "integration: awk field printing and sum"
+    },
+    {
+      "id": "awk-sum",
+      "cmd": "awk '{sum += $1} END {print sum}' nums.txt",
+      "source": "integration: awk field printing and sum"
+    },
+    {
+      "id": "cat-fruits",
+      "cmd": "cat fruits.txt",
+      "source": "integration: cat reads files"
+    },
+    {
+      "id": "head-n-2",
+      "cmd": "head -n 2 fruits.txt",
+      "source": "#141 / integration: head/tail/wc"
+    },
+    {
+      "id": "tail-1",
+      "cmd": "tail -1 fruits.txt",
+      "source": "integration: head/tail/wc"
+    },
+    {
+      "id": "tail-n-2",
+      "cmd": "tail -n 2 fruits.txt",
+      "source": "integration: head/tail/wc"
+    },
+    {
+      "id": "wc-l-stdin",
+      "cmd": "wc -l < fruits.txt",
+      "source": "integration: head/tail/wc"
+    },
+    {
+      "id": "grep-n",
+      "cmd": "grep -n apple fruits.txt",
+      "source": "integration: grep + exit codes"
+    },
+    {
+      "id": "grep-i",
+      "cmd": "grep -i banana fruits.txt",
+      "source": "integration: cat | grep | sort"
+    },
+    {
+      "id": "grep-e-apple",
+      "cmd": "grep -e apple fruits.txt",
+      "source": "#152 / integration: grep -m1 stops after the first match"
+    },
+    {
+      "id": "grep-regexp-eq",
+      "cmd": "grep --regexp=a --regexp=c letters.txt",
+      "source": "#152 / integration: grep --regexp repeats OR-accumulate"
+    },
+    {
+      "id": "grep-Fo-overlap",
+      "cmd": "printf 'aaa\\n' | grep -F -o -e a -e aa",
+      "source": "#162 / integration: grep -F -o -e a -e b emits matches left-to-right"
+    },
+    {
+      "id": "echo-hello",
+      "cmd": "echo hello world",
+      "source": "integration: echo/printf semantics"
+    },
+    {
+      "id": "redirect-append",
+      "cmd": "echo one > o.txt; echo two >> o.txt; cat o.txt",
+      "source": "integration: redirects: > >> 2> /dev/null 2>&1"
+    },
+    {
+      "id": "last-pipe-redirect",
+      "cmd": "echo hi | cat > lastpipe.txt; cat lastpipe.txt",
+      "source": "#147 / integration: last-stage stdout redirect still writes"
+    },
+    {
+      "id": "head-to-file",
+      "cmd": "head -2 fruits.txt > hout.txt; cat hout.txt",
+      "source": "integration: redirects write LF line endings (GNU parity)"
+    },
+    {
+      "id": "printf-to-file-cat",
+      "cmd": "printf 'alpha\\nbeta\\n' > w.txt; cat w.txt",
+      "source": "integration: redirect byte counts match GNU"
+    },
+    {
+      "id": "mkdir-file-cat",
+      "cmd": "mkdir -p rt-dir; echo x > rt-dir/f.txt; cat rt-dir/f.txt",
+      "source": "integration: cat reads files"
+    },
+    {
+      "id": "touch-then-test",
+      "cmd": "touch created.txt; [[ -f created.txt ]] && echo yes",
+      "source": "#130 / integration: touch -c does not create a missing file; plain touch does"
+    },
+    {
+      "id": "tee-print",
+      "cmd": "printf B | tee tee-out.txt",
+      "source": "#130 / integration: tee --append appends instead of truncating"
+    },
+    {
+      "id": "cp-then-cat",
+      "cmd": "cp letters.txt letters.copy.txt; cat letters.copy.txt",
+      "source": "#130 / integration: cp without -n overwrites dest"
+    },
+    {
+      "id": "source-dotenv",
+      "cmd": "source dotenv.env; echo $FOO $BAZ; unset FOO BAZ",
+      "source": "#112 / integration: source reads NAME=VALUE files into the session"
+    },
+    {
+      "id": "sed-delete-line",
+      "cmd": "sed '1d' fruits.txt",
+      "source": "integration: sed substitution"
+    },
+    {
+      "id": "sed-n-first",
+      "cmd": "sed -n '1p' fruits.txt",
+      "source": "integration: sed substitution"
+    },
+    {
+      "id": "arith-mod",
+      "cmd": "echo $((10%3))",
+      "source": "#119"
+    },
+    {
+      "id": "test-file",
+      "cmd": "test -f fruits.txt && echo yes",
+      "source": "#80 / integration: [[ ]] file and string tests"
+    },
+    {
+      "id": "posix-test-file",
+      "cmd": "[ -f fruits.txt ] && echo yes",
+      "source": "#80 / integration: [[ ]] file and string tests"    }
   ]
 }
