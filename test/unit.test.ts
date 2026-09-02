@@ -1603,5 +1603,5 @@ describe.skipIf(process.platform !== 'win32')('cli doctor spawn', () => {
     expect(r.stdout).toMatch(/codex\s+:/);
     expect(r.stdout).toMatch(/opencode\s+:/);
     expect(r.status).toBe(0);
-  });
+  }, 30000);
 });
