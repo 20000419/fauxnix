@@ -108,7 +108,9 @@ fauxnix mcp
 ```
 
 Unknown commands (git, node, npm, python, cargo, gh, docker, ...) are **passed through natively**
-with argv-style quoting — no string re-parsing, no quoting bugs.
+with argv-style quoting. Windows `.cmd`/`.bat` shims necessarily pass through `cmd.exe`; fauxnix
+preserves its supported punctuation and fails loudly for `%`, embedded double quotes, NUL, and
+line breaks rather than passing a different argument.
 
 ## Use with your agent harness
 
