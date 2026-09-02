@@ -8,3 +8,4 @@ scratch/
 *.log
 grok_work/
 *.tgz
+/.wt/
