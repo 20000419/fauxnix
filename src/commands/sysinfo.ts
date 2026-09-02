@@ -13,6 +13,7 @@ import {
   pathExpr,
   paramExpr,
   varExpr,
+  varExtraOf,
   arithExpr,
   setArithHelperPreamble,
   isSpecialShellVar,
@@ -1502,6 +1503,10 @@ function kshExprOfWord(w: Word): string {
     return arithExpr(expanded[0].parts);
   }
   if (!tilde && expanded.length === 1 && expanded[0].kind === 'Var') {
+    const extra = varExtraOf(expanded[0]);
+    if (extra && (extra.replace || extra.slice)) {
+      return varExpr(expanded[0].name, expanded[0].index, expanded[0].param, expanded[0].length === true, extra);
+    }
     if (expanded[0].param) {
       return paramExpr(expanded[0].name, expanded[0].param.op, expanded[0].param.word);
     }
@@ -1531,16 +1536,23 @@ function kshExprOfWord(w: Word): string {
       case 'DoubleQuoted':
         for (const q of p.parts) emitPart(q);
         break;
-      case 'Var':
-        out +=
-          p.param
-            ? '$(' + paramExpr(p.name, p.param.op, p.param.word) + ')'
-            : p.index !== undefined
-            ? '$(fx-subget ' + psStr(p.name) + ' ' + psStr(p.index) + ')'
-            : isSpecialShellVar(p.name)
-              ? '$(' + varExpr(p.name) + ')'
-              : '$(fx-envget ' + psStr(p.name) + ')';
+      case 'Var': {
+        const extra = varExtraOf(p);
+        if (extra && (extra.replace || extra.slice)) {
+          out += '$(' + varExpr(p.name, p.index, p.param, p.length === true, extra) + ')';
+        } else if (p.param) {
+          out += '$(' + paramExpr(p.name, p.param.op, p.param.word) + ')';
+        } else if (p.length) {
+          out += '$(' + varExpr(p.name, p.index, undefined, true) + ')';
+        } else if (p.index !== undefined) {
+          out += '$(fx-subget ' + psStr(p.name) + ' ' + psStr(p.index) + ')';
+        } else if (isSpecialShellVar(p.name)) {
+          out += '$(' + varExpr(p.name) + ')';
+        } else {
+          out += '$(fx-envget ' + psStr(p.name) + ')';
+        }
         break;
+      }
       case 'CmdSub':
         // [[ ]] does not IFS-split, so keep the newline contract.
         out += '$(' + translateCmdSub(p.cmd, true) + ')';

@@ -303,6 +303,52 @@ function readArithParts(input: string): WordPart[] {
   return parts;
 }
 
+/** Integer or `$name` operand of `${name:offset:length}`. */
+function readSliceNum(s: string, i: number): { val: string; next: number } | null {
+  while (i < s.length && (s[i] === ' ' || s[i] === '\t')) i++;
+  if (i >= s.length) return null;
+  if (s[i] === '$') {
+    const j = i + 1;
+    if (j < s.length && isNameStart(s[j])) {
+      let k = j + 1;
+      while (k < s.length && isNameChar(s[k])) k++;
+      return { val: s.slice(i, k), next: k };
+    }
+    if (j < s.length && (/[0-9]/.test(s[j]) || s[j] === '?' || s[j] === '$')) {
+      return { val: s.slice(i, j + 1), next: j + 1 };
+    }
+    return null;
+  }
+  let sign = '';
+  if (s[i] === '-' || s[i] === '+') {
+    sign = s[i];
+    i++;
+  }
+  if (i >= s.length || !/[0-9]/.test(s[i])) return null;
+  let k = i;
+  while (k < s.length && /[0-9]/.test(s[k])) k++;
+  return { val: sign + s.slice(i, k), next: k };
+}
+
+/** Parse `offset` / `offset:length` after `${name:`. Null if not a slice. */
+function parseSliceSpec(after: string): { offset: string; length?: string } | null {
+  const off = readSliceNum(after, 0);
+  if (!off) return null;
+  let i = off.next;
+  while (i < after.length && (after[i] === ' ' || after[i] === '\t')) i++;
+  if (i >= after.length) return { offset: off.val };
+  if (after[i] !== ':') return null;
+  i++;
+  while (i < after.length && (after[i] === ' ' || after[i] === '\t')) i++;
+  if (i >= after.length) return { offset: off.val, length: '0' };
+  const len = readSliceNum(after, i);
+  if (!len) return null;
+  i = len.next;
+  while (i < after.length && (after[i] === ' ' || after[i] === '\t')) i++;
+  if (i !== after.length) return null;
+  return { offset: off.val, length: len.val };
+}
+
 /** Parse $VAR, ${VAR}, $(cmd substitution), $((arith)). Returns null when not a valid dollar construct. */
 function readDollar(input: string, i: number): { part: WordPart; next: number } | null {
   const n = input.length;
@@ -314,35 +360,90 @@ function readDollar(input: string, i: number): { part: WordPart; next: number } 
   if (input[j] === '{') {
     const end = input.indexOf('}', j);
     if (end === -1) throw new FauxnixParseError('fauxnix: unclosed ${');
-    const name = input.slice(j + 1, end);
-    const sub = name.match(/^([A-Za-z_][A-Za-z0-9_]*)\[([0-9]+|@|\*)\]$/);
-    if (sub) {
-      return { part: { kind: 'Var', name: sub[1], index: sub[2] }, next: end + 1 };
-    }
-    const pm = name.match(/^([A-Za-z_][A-Za-z0-9_]*)(:?[-+?])(.*)$/);
-    if (pm) {
-      const op = pm[2] as ':-' | ':+' | ':?' | '-' | '+' | '?';
-      return {
-        part: { kind: 'Var', name: pm[1], param: { op, word: pm[3] } },
-        next: end + 1,
-      };
-    }
-    const hash = name.match(/^#([A-Za-z_][A-Za-z0-9_]*)(\[([0-9]+|@|\*)\])?$/);
+    const inner = input.slice(j + 1, end);
+    const nextPos = end + 1;
+
+    const hash = inner.match(/^#([A-Za-z_][A-Za-z0-9_]*)(\[([0-9]+|@|\*)\])?$/);
     if (hash) {
       return {
         part: { kind: 'Var', name: hash[1], index: hash[3], length: true },
-        next: end + 1,
+        next: nextPos,
       };
     }
     // ${1} ${#} ${@} ${*} — positional / special params (not ${#name} length)
-    if (name === '#' || name === '@' || name === '*' || /^[0-9]+$/.test(name)) {
-      return { part: { kind: 'Var', name }, next: end + 1 };
+    if (inner === '#' || inner === '@' || inner === '*' || /^[0-9]+$/.test(inner)) {
+      return { part: { kind: 'Var', name: inner }, next: nextPos };
     }
-    if (!name || !isNameStart(name[0]) || !name.split('').every(isNameChar)) {
+
+    const sub = inner.match(/^([A-Za-z_][A-Za-z0-9_]*)\[([0-9]+|@|\*)\]$/);
+    if (sub) {
+      return { part: { kind: 'Var', name: sub[1], index: sub[2] }, next: nextPos };
+    }
+
+    if (/^[A-Za-z_][A-Za-z0-9_]*\[([0-9]+|@|\*)\]/.test(inner)) {
+      throw new FauxnixParseError(
+        'fauxnix: ${name[@]:offset:length} subarray slice is not supported; use ${name:offset:length} on a scalar or ${name[i]} per element',
+      );
+    }
+
+    const ident = inner.match(/^([A-Za-z_][A-Za-z0-9_]*)/);
+    if (ident) {
+      const nm = ident[1];
+      const rest = inner.slice(nm.length);
+
+      if (rest.startsWith('/#') || rest.startsWith('/%')) {
+        throw new FauxnixParseError(
+          'fauxnix: ${name/#pat/str} and ${name/%pat/str} are not supported; use ${name//pat/str} instead',
+        );
+      }
+
+      if (rest.startsWith('/')) {
+        const global = rest.startsWith('//');
+        const body = rest.slice(global ? 2 : 1);
+        const slash = body.indexOf('/');
+        const pat = slash === -1 ? body : body.slice(0, slash);
+        const repl = slash === -1 ? '' : body.slice(slash + 1);
+        return {
+          part: { kind: 'Var', name: nm, replace: { global, pat, repl } },
+          next: nextPos,
+        };
+      }
+
+      if (rest.startsWith(':')) {
+        const after = rest.slice(1);
+        let t = 0;
+        while (t < after.length && (after[t] === ' ' || after[t] === '\t')) t++;
+        const lead = t < after.length ? after[t] : '';
+        const hadSpace = t > 0;
+        const paramLead =
+          lead === '+' || lead === '?' || lead === '=' || (lead === '-' && !hadSpace);
+        if (!paramLead && lead !== '') {
+          const sl = parseSliceSpec(after);
+          if (sl) {
+            return { part: { kind: 'Var', name: nm, slice: sl }, next: nextPos };
+          }
+        }
+      }
+
+      const pm = inner.match(/^([A-Za-z_][A-Za-z0-9_]*)(:?[-+?])(.*)$/);
+      if (pm) {
+        const op = pm[2] as ':-' | ':+' | ':?' | '-' | '+' | '?';
+        return {
+          part: { kind: 'Var', name: pm[1], param: { op, word: pm[3] } },
+          next: nextPos,
+        };
+      }
+
+      if (rest === '') {
+        return { part: { kind: 'Var', name: nm }, next: nextPos };
+      }
+    }
+
+    if (!inner || !isNameStart(inner[0]) || !inner.split('').every(isNameChar)) {
       // ${VAR:=default} etc. still raw text
-      return { part: { kind: 'Text', text: input.slice(i, end + 1) }, next: end + 1 };
+      return { part: { kind: 'Text', text: input.slice(i, end + 1) }, next: nextPos };
     }
-    return { part: { kind: 'Var', name }, next: end + 1 };
+    return { part: { kind: 'Var', name: inner }, next: nextPos };
   }
 
   // $((...)) arithmetic expansion — distinct from `$( (cmd) )` (space after
@@ -632,6 +733,67 @@ function pendingPatternOp(args: Word[]): '=~' | '==' | null {
   return null;
 }
 
+/** Unquoted `(` / `)` net depth in a word (quoted / escaped parens ignored). */
+function unquotedParenDelta(w: Word): number {
+  let d = 0;
+  for (const p of w) {
+    if (p.kind !== 'Text' || p.escaped) continue;
+    for (const c of p.text) {
+      if (c === '(') d++;
+      else if (c === ')') d--;
+    }
+  }
+  return d;
+}
+
+function startsWithUnquotedOpenParen(w: Word): boolean {
+  if (w.length === 0) return false;
+  const p = w[0];
+  return p.kind === 'Text' && !p.escaped && p.text.startsWith('(');
+}
+
+/** `NAME+=` (scalar or array append) — out of scope for C-2. */
+function isAppendAssignment(w: Word): boolean {
+  let s = '';
+  for (const p of w) {
+    if (p.kind === 'Text' && !p.escaped) s += p.text;
+    else break;
+    if (/^[A-Za-z_][A-Za-z0-9_]*\+=/.test(s)) return true;
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(s)) return false;
+  }
+  return /^[A-Za-z_][A-Za-z0-9_]*\+=/.test(s);
+}
+
+function cloneWord(w: Word): Word {
+  return w.map((p) => {
+    if (p.kind === 'Text' || p.kind === 'SingleQuoted') return { ...p };
+    if (p.kind === 'DoubleQuoted') return { kind: 'DoubleQuoted' as const, parts: p.parts.slice() };
+    return p;
+  });
+}
+
+/** Strip the opening `(` and closing `)` that wrap an array assignment value. */
+function stripArrayParens(words: Word[]): Word[] {
+  if (words.length === 0) return [];
+  const ws = words.map(cloneWord);
+  const first = ws[0];
+  if (first.length > 0 && first[0].kind === 'Text' && first[0].text.startsWith('(')) {
+    first[0] = { kind: 'Text', text: first[0].text.slice(1), escaped: first[0].escaped };
+    if (first[0].text === '') first.shift();
+  }
+  const last = ws[ws.length - 1];
+  for (let i = last.length - 1; i >= 0; i--) {
+    const p = last[i];
+    if (p.kind === 'Text' && !p.escaped && p.text.endsWith(')')) {
+      const trimmed = p.text.slice(0, -1);
+      if (trimmed === '') last.splice(i, 1);
+      else last[i] = { kind: 'Text', text: trimmed, escaped: p.escaped };
+      break;
+    }
+  }
+  return ws.filter((w) => w.length > 0);
+}
+
 /* ------------------------------------------------------------------ */
 /* Parser                                                              */
 /* ------------------------------------------------------------------ */
@@ -646,7 +808,8 @@ export function parseCommand(input: string): CommandList {
   const isListSep = (o?: string) => o === ';' || o === '\n';
 
   const isAmpWord = (t: Token | undefined): boolean =>
-    !!t && t.type === 'WORD' && !!t.parts && isUnquotedLiteral(t.parts, '&');
+    (!!t && t.type === 'OP' && t.op === '&') ||
+    (!!t && t.type === 'WORD' && !!t.parts && isUnquotedLiteral(t.parts, '&'));
 
   const isCaseFallthrough = (): boolean => {
     const t = peek();
@@ -668,7 +831,11 @@ export function parseCommand(input: string): CommandList {
   const consumeListOp = (stops?: Set<string>): ';' | '&&' | '||' | null => {
     const t = peek();
     if (t.type !== 'OP') return null;
-    if (t.op === '&') throw new FauxnixParseError(BACKGROUND_MSG);
+    if (t.op === '&') {
+      // inside a case arm, `;&` / `;;&` is fallthrough — report that, not background
+      if (stops && stops.has(';;')) throwCaseFallthrough();
+      throw new FauxnixParseError(BACKGROUND_MSG);
+    }
     if (t.op === ';;') {
       if (stops && stops.has(';;')) return null;
       throwUnexpectedDsemi();
@@ -1117,10 +1284,37 @@ export function parseCommand(input: string): CommandList {
       const word = t.parts!;
 
       // assignment prefix before command name?
+      if (name === null && isAppendAssignment(word)) {
+        throw new FauxnixParseError(
+          'fauxnix: `+=` append is not supported; use `A=(${A[@]} x)` or `A=(x y)` instead',
+        );
+      }
       if (name === null && isAssignment(word)) {
         next();
         const split = splitAssignment(word);
         if (split) {
+          if (startsWithUnquotedOpenParen(split.value)) {
+            const elems: Word[] = [split.value];
+            let depth = unquotedParenDelta(split.value);
+            while (depth > 0 && peek().type === 'WORD' && peek().parts) {
+              const nxt = peek().parts!;
+              elems.push(nxt);
+              depth += unquotedParenDelta(nxt);
+              next();
+            }
+            if (depth > 0) {
+              throw new FauxnixParseError(
+                'fauxnix: unclosed array assignment; close with `)` or use A=value for a scalar',
+              );
+            }
+            const values = stripArrayParens(elems);
+            assignments.push({
+              name: split.name,
+              value: values.length > 0 ? values[0] : [],
+              values,
+            });
+            continue;
+          }
           assignments.push(split);
           continue;
         }

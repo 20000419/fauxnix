@@ -197,8 +197,10 @@ same metadata.
 - **archives**: `tar gzip gunzip zcat zip unzip`
 
 Plus shell syntax: pipes, `&&` / `||` / `;`, redirections (`> >> 2> 2>&1 < &>`, `/dev/null`),
-quoting, `$VAR` `$1` `$#` `"$@"` `set --` `shift` `$(...)` command substitution, `VAR=x cmd`
-prefixes, `~` expansion, and POSIX-style path normalization (`/tmp`, `/d/foo` → `D:\foo`).
+quoting, `$VAR` `$1` `$#` `"$@"` `set --` `shift`, `${name:-word}` `${name//pat/str}`
+`${name:off:len}` `${name[n]}` `${#name[@]}`, `A=(x y z)` array assignment, `$(...)` command
+substitution, `VAR=x cmd` prefixes, `~` expansion, and POSIX-style path normalization
+(`/tmp`, `/d/foo` → `D:\foo`).
 
 Exit codes follow bash conventions: 0 ok, 1 fail, 2 usage/serious, 127 command not found,
 124 timeout.
@@ -239,7 +241,8 @@ fauxnix optimizes for the commands agents actually run. Documented deviations:
   messages instead of misbehaving.
   (`if/then/elif/else/fi`, `for x in ...`, `while`/`until`, `case ... esac` (`;;` only; `;&`/`;;&` fail loud),
   backtick substitution, `command -v`, pipeline `read`,
-  dotenv-style `source`, and word-level `$((...))` arithmetic expansion are supported.)
+  dotenv-style `source`, word-level `$((...))` arithmetic expansion, `A=(x y z)` arrays, and
+  `${name//pat/str}` / `${name:off:len}` are supported.)
 - `command -v <builtin>` prints `/usr/bin/<name>` where bash prints the bare builtin name;
   exit codes and empty-result semantics match.
 - `chmod` maps only the read-only bit; exec bits are no-ops on Windows. `chown` is a silent no-op
