@@ -9,6 +9,7 @@ import {
   SimpleCommand,
   IfCommand,
   ForCommand,
+  WhileCommand,
   ShellCommand,
   Word,
   WordPart,
@@ -696,6 +697,16 @@ export function parseCommand(input: string): CommandList {
           throw new FauxnixParseError('fauxnix: for in a pipeline is not supported');
         }
         commands.push(parseFor());
+      } else if (kw === 'while') {
+        if (commands.length > 0) {
+          throw new FauxnixParseError('fauxnix: while in a pipeline is not supported');
+        }
+        commands.push(parseWhile());
+      } else if (kw === 'until') {
+        if (commands.length > 0) {
+          throw new FauxnixParseError('fauxnix: until in a pipeline is not supported');
+        }
+        commands.push(parseUntil());
       } else {
         commands.push(parseSimple());
       }
@@ -724,7 +735,8 @@ export function parseCommand(input: string): CommandList {
       s === 'in' ||
       s === 'do' ||
       s === 'done' ||
-      s === 'while'
+      s === 'while' ||
+      s === 'until'
     ) {
       return s;
     }
@@ -817,6 +829,18 @@ export function parseCommand(input: string): CommandList {
     const body = parseListUntil(['done']);
     expectKw('done');
     return { kind: 'For', name, words, body, redirects: [] };
+  };
+
+  const parseWhile = (): WhileCommand => parseWhileLoop(false);
+  const parseUntil = (): WhileCommand => parseWhileLoop(true);
+
+  const parseWhileLoop = (until: boolean): WhileCommand => {
+    expectKw(until ? 'until' : 'while');
+    const test = parseListUntil(['do']);
+    expectKw('do');
+    const body = parseListUntil(['done']);
+    expectKw('done');
+    return { kind: 'While', until, test, body, redirects: [] };
   };
 
   const parseSimple = (): SimpleCommand => {

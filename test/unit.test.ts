@@ -164,6 +164,26 @@ describe('parser', () => {
     expect(c.words).toHaveLength(3);
   });
 
+  it('parses while TEST; do BODY; done', () => {
+    const list = parse('while [ $i -lt 3 ]; do echo $i; done');
+    const c = list.segments[0].pipeline.commands[0];
+    expect(c.kind).toBe('While');
+    if (c.kind !== 'While') return;
+    expect(c.until).toBe(false);
+    expect(c.redirects).toEqual([]);
+    expect(c.test.segments).toHaveLength(1);
+    expect(c.body.segments).toHaveLength(1);
+  });
+
+  it('parses until TEST; do BODY; done', () => {
+    const list = parse('until [ $i -eq 2 ]; do echo $i; done');
+    const c = list.segments[0].pipeline.commands[0];
+    expect(c.kind).toBe('While');
+    if (c.kind !== 'While') return;
+    expect(c.until).toBe(true);
+    expect(c.redirects).toEqual([]);
+  });
+
   it('parses ${name[index]} subscripts', () => {
     const cmd = parse('echo ${BASH_REMATCH[1]} ${PATH[0]} ${x[@]}').segments[0].pipeline.commands[0];
     expect(cmd.args[0]).toEqual([{ kind: 'Var', name: 'BASH_REMATCH', index: '1' }]);
@@ -754,6 +774,20 @@ describe('translator', () => {
     expect(dyn).toMatch(/\$fx_ek\d+/);
     const once = translateCommandList(parse('T=x export X=$(echo once)'))[0].script;
     expect(once).not.toMatch(/\$fx_ek\d+/);
+  });
+
+  it('translates while/until as a do/while loop', () => {
+    const w = translateCommandList(parse('while false; do echo x; done'))[0].body;
+    expect(w).toContain('do {');
+    expect(w).toContain('} while ($true)');
+    expect(w).toContain('$script:fx_exit -ne 0');
+    expect(w).toContain('$script:fx_exit = 0');
+    expect(w).not.toContain('??');
+    const u = translateCommandList(parse('until true; do echo x; done'))[0].body;
+    expect(u).toContain('do {');
+    expect(u).toContain('} while ($true)');
+    expect(u).toContain('$script:fx_exit -eq 0');
+    expect(u).not.toContain('??');
   });
 });
 

@@ -182,6 +182,21 @@
       "source": "#112"
     },
     {
+      "id": "while-count",
+      "cmd": "i=0; while [ $i -lt 3 ]; do echo $i; i=$((i+1)); done",
+      "source": "C-1 / #118"
+    },
+    {
+      "id": "until-count",
+      "cmd": "i=0; until [ $i -eq 2 ]; do echo $i; i=$((i+1)); done",
+      "source": "C-1 / #118"
+    },
+    {
+      "id": "while-false-status",
+      "cmd": "while false; do echo x; done; echo $?",
+      "source": "C-1 / #118"
+    },
+    {
       "id": "status-false",
       "cmd": "false; echo $?",
       "source": "integration: $? reflects the previous segment"

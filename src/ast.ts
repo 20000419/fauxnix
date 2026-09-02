@@ -10,9 +10,10 @@
  *   - command substitution: $(...) and `...` (recursively translated)
  *   - arithmetic expansion: $((...)) (existing fx-arith engine)
  *   - env assignment prefix: VAR=value cmd
+ *   - control:              if/then/elif/else/fi, for-in, while/until
  *
  * Explicitly unsupported (parser throws a helpful FauxnixError):
- *   heredocs, subshells (...), background &, while/until/case,
+ *   heredocs, subshells (...), background &, case,
  *   globs inside quotes, process substitution <(...).
  */
 
@@ -28,7 +29,7 @@ export interface ListSegment {
   op: ';' | '&&' | '||';
 }
 
-export type ShellCommand = SimpleCommand | IfCommand | ForCommand;
+export type ShellCommand = SimpleCommand | IfCommand | ForCommand | WhileCommand;
 
 export interface Pipeline {
   kind: 'Pipeline';
@@ -47,6 +48,15 @@ export interface ForCommand {
   kind: 'For';
   name: string;
   words: Word[];
+  body: CommandList;
+  redirects: Redirect[];
+}
+
+export interface WhileCommand {
+  kind: 'While';
+  /** true for `until TEST; do BODY; done`. */
+  until: boolean;
+  test: CommandList;
   body: CommandList;
   redirects: Redirect[];
 }
