@@ -31,8 +31,22 @@ interface Token {
 }
 
 const OPERATORS = [
-  '&&', '||', '>>', '<<', '2>&1', '1>&2', '2>', '&>>', '&>', '>', '<', '|', ';',
+  '&&', '||', '>>', '<<', '2>&1', '1>&2', '2>', '&>>', '&>', '>', '<', '|', ';', '&',
 ] as const;
+
+const BACKGROUND_MSG =
+  'fauxnix: background & is not supported yet. Run the command in the foreground instead.';
+const WHILE_UNTIL_MSG =
+  'fauxnix: while/until loops are not supported yet. Use `for x in ...; do ...; done` over a known list instead.';
+const CASE_MSG = 'fauxnix: case is not supported yet. Use if/elif/else instead.';
+const FUNCTION_MSG =
+  'fauxnix: functions are not supported yet. Inline the body or repeat the command instead.';
+const IF_IN_PIPELINE_MSG =
+  'fauxnix: if in a pipeline is not supported. Run the if as its own list segment instead of piping into it.';
+const FOR_IN_PIPELINE_MSG =
+  'fauxnix: for in a pipeline is not supported. Run the for as its own list segment instead of piping into it.';
+const CSTYLE_FOR_MSG =
+  'fauxnix: C-style for ((...)) is not supported yet. Use `for x in ...; do ...; done` instead.';
 
 export function tokenize(input: string): Token[] {
   const tokens: Token[] = [];
@@ -628,6 +642,7 @@ export function parseCommand(input: string): CommandList {
   const consumeListOp = (stops?: Set<string>): ';' | '&&' | '||' | null => {
     const t = peek();
     if (t.type !== 'OP') return null;
+    if (t.op === '&') throw new FauxnixParseError(BACKGROUND_MSG);
     if (!(t.op === '&&' || t.op === '||' || isListSep(t.op))) return null;
     if (t.op === ';') {
       next();
@@ -688,16 +703,26 @@ export function parseCommand(input: string): CommandList {
       const kw = peekKw();
       if (kw === 'if') {
         if (commands.length > 0) {
-          throw new FauxnixParseError('fauxnix: if in a pipeline is not supported');
+          throw new FauxnixParseError(IF_IN_PIPELINE_MSG);
         }
         commands.push(parseIf());
       } else if (kw === 'for') {
         if (commands.length > 0) {
-          throw new FauxnixParseError('fauxnix: for in a pipeline is not supported');
+          throw new FauxnixParseError(FOR_IN_PIPELINE_MSG);
         }
         commands.push(parseFor());
+      } else if (kw === 'while' || kw === 'until') {
+        throw new FauxnixParseError(WHILE_UNTIL_MSG);
+      } else if (kw === 'case') {
+        throw new FauxnixParseError(CASE_MSG);
+      } else if (kw === 'function') {
+        throw new FauxnixParseError(FUNCTION_MSG);
       } else {
-        commands.push(parseSimple());
+        const cmd = parseSimple();
+        if (cmd.kind === 'SimpleCommand' && cmd.name && isFunctionDef(cmd)) {
+          throw new FauxnixParseError(FUNCTION_MSG);
+        }
+        commands.push(cmd);
       }
       const t = peek();
       if (t.type === 'OP' && t.op === '|') {
@@ -724,7 +749,10 @@ export function parseCommand(input: string): CommandList {
       s === 'in' ||
       s === 'do' ||
       s === 'done' ||
-      s === 'while'
+      s === 'while' ||
+      s === 'until' ||
+      s === 'case' ||
+      s === 'function'
     ) {
       return s;
     }
@@ -797,6 +825,9 @@ export function parseCommand(input: string): CommandList {
       throw new FauxnixParseError('fauxnix: `for` expected a name');
     }
     const name = wordToString(nt.parts);
+    if (name.startsWith('((')) {
+      throw new FauxnixParseError(CSTYLE_FOR_MSG);
+    }
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || !isUnquotedLiteral(nt.parts, name)) {
       throw new FauxnixParseError('fauxnix: `for` name must be an identifier');
     }
@@ -841,6 +872,7 @@ export function parseCommand(input: string): CommandList {
         (t.op === '&&' ||
           t.op === '||' ||
           t.op === '|' ||
+          t.op === '&' ||
           t.op === '>' ||
           t.op === '<' ||
           t.op === '>>' ||
@@ -855,7 +887,8 @@ export function parseCommand(input: string): CommandList {
         // Glue `|` onto the surrounding words so `=~ ^a|z$`,
         // `=~ (a | b)c`, and `== @(x | y)` stay one operand. A
         // spaced `|` outside an open regex / extglob group is a
-        // syntax error (bash).
+        // syntax error (bash). Tight `&` inside an open `=~ (…)`
+        // group stays in the regex, not a background job.
         const last = args.length ? args[args.length - 1] : null;
         const lastIsEqTilde = last !== null && isUnquotedLiteral(last, '=~');
         const prevIsEqTilde =
@@ -869,7 +902,17 @@ export function parseCommand(input: string): CommandList {
           pendingPatternOp(args) === '==' &&
           unmatchedExtglob(last);
         const inRe = lastIsEqTilde || prevIsEqTilde || openRe;
-        if (t.op === '|' || ((inRe || openExt) && t.tightLeft && t.op === '||')) {
+        if (t.op === '&') {
+          if (!(openRe && last && t.tightLeft)) {
+            throw new FauxnixParseError("fauxnix: [[: syntax error near unexpected token `&'");
+          }
+          args[args.length - 1] = [...last, { kind: 'Text', text: '&' }];
+          const n = peek();
+          if (n.type === 'WORD' && n.tightLeft && n.parts) {
+            next();
+            args[args.length - 1] = [...args[args.length - 1], ...n.parts];
+          }
+        } else if (t.op === '|' || ((inRe || openExt) && t.tightLeft && t.op === '||')) {
           if (
             t.op === '|' &&
             !lastIsEqTilde &&
@@ -1015,6 +1058,9 @@ export function parseCommand(input: string): CommandList {
       if (assignments.length > 0) {
         return { kind: 'SimpleCommand', assignments, name: null, args: [], redirects };
       }
+      if (peek().type === 'OP' && peek().op === '&') {
+        throw new FauxnixParseError(BACKGROUND_MSG);
+      }
       throw new FauxnixParseError('fauxnix: expected a command');
     }
     if (isUnquotedLiteral(name, '[[')) {
@@ -1109,6 +1155,14 @@ export function parseCommand(input: string): CommandList {
   }
 
   return parseList();
+}
+
+function isFunctionDef(cmd: SimpleCommand): boolean {
+  if (!cmd.name) return false;
+  const n = wordToString(cmd.name);
+  if (!isUnquotedLiteral(cmd.name, n)) return false;
+  if (/^[A-Za-z_][A-Za-z0-9_]*\(\)$/.test(n)) return true;
+  return cmd.args.length > 0 && isUnquotedLiteral(cmd.args[0], '()');
 }
 
 function isRedirectOp(op: string | undefined): boolean {

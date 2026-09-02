@@ -118,6 +118,7 @@ describe('parser', () => {
   it('set -e is a loud usage error, not a silent no-op', () => {
     const script = translateCommandList(parse('set -e'))[0].script;
     expect(script).toMatch(/set -e\/-u\/-x is not supported/);
+    expect(script).toMatch(/use explicit \|\| exit/i);
     expect(script).toContain('$script:fx_exit = 2');
   });
 
@@ -208,6 +209,24 @@ describe('parser', () => {
   it('rejects heredocs with a helpful message', () => {
     expect(() => parse('cat <<EOF')).toThrow(FauxnixParseError);
     expect(() => parse('cat <<EOF')).toThrow(/heredoc/);
+    expect(() => parse('cat <<EOF')).toThrow(/instead/);
+  });
+
+  it('rejects while/until/case/functions/background with an alternative (U-3)', () => {
+    expect(() => parse('while true; do echo x; done')).toThrow(FauxnixParseError);
+    expect(() => parse('while true; do echo x; done')).toThrow(/while\/until/);
+    expect(() => parse('while true; do echo x; done')).toThrow(/for x in/);
+    expect(() => parse('until false; do echo x; done')).toThrow(/while\/until/);
+    expect(() => parse('case x in a) echo a;; esac')).toThrow(/case/);
+    expect(() => parse('case x in a) echo a;; esac')).toThrow(/if\/elif\/else/);
+    expect(() => parse('function foo { echo x; }')).toThrow(/functions/);
+    expect(() => parse('foo() { echo x; }')).toThrow(/functions/);
+    expect(() => parse('foo () { echo x; }')).toThrow(/functions/);
+    expect(() => parse('echo hi &')).toThrow(/background/);
+    expect(() => parse('echo hi &')).toThrow(/foreground/);
+    expect(() => parse('& echo hi')).toThrow(/background/);
+    expect(() => parse('for ((i=0;i<3;i++)); do echo x; done')).toThrow(/C-style for/);
+    expect(() => parse('for ((i=0;i<3;i++)); do echo x; done')).toThrow(/for x in/);
   });
 
   it('rejects trailing && / || instead of dropping them', () => {
@@ -227,8 +246,18 @@ describe('parser', () => {
   it('env -i is a loud usage error, not a silent ignore', () => {
     const script = translateCommandList(parse('env -i echo hi'))[0].script;
     expect(script).toMatch(/env -i\/--ignore-environment is not supported/);
+    expect(script).toMatch(/env -u NAME|unset first instead/);
     expect(script).toContain('$script:fx_exit = 2');
     expect(script).not.toContain("fx-write");
+  });
+
+  it('alias and eval reject with an alternative', () => {
+    const alias = translateCommandList(parse('alias ll=ls'))[0].script;
+    expect(alias).toMatch(/alias is not supported/);
+    expect(alias).toMatch(/instead/i);
+    const ev = translateCommandList(parse('eval echo hi'))[0].script;
+    expect(ev).toMatch(/eval is not supported/);
+    expect(ev).toMatch(/instead/i);
   });
 
   it('parses word-level $((...)) as Arith, not $( (expr) )', () => {
@@ -1582,6 +1611,34 @@ describe('cli doctor', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('U-3 loud-reject alternatives', () => {
+  const files = ['src/translator.ts', 'src/parser.ts', 'src/commands/sysinfo.ts'];
+  const alt = /\binstead\b|\buse\b|\btry\b|\bpipe\b|#157|\bwait\b/i;
+  const gnuAllow =
+    /invalid option --|unrecognized option|option requires an argument|Try '.+ --help'/;
+
+  it('not-supported-yet emit strings carry an alternative phrase', () => {
+    const missing: string[] = [];
+    for (const rel of files) {
+      const src = readFileSync(rel, 'utf8');
+      for (const line of src.split('\n')) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) {
+          continue;
+        }
+        const chunks = line.match(/'((?:\\'|[^'])*)'|"((?:\\"|[^"])*)"/g) ?? [];
+        for (const raw of chunks) {
+          const s = raw.slice(1, -1);
+          if (!/not supported yet/i.test(s)) continue;
+          if (gnuAllow.test(s)) continue;
+          if (!alt.test(s)) missing.push(rel + ': ' + s);
+        }
+      }
+    }
+    expect(missing).toEqual([]);
   });
 });
 
