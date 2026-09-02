@@ -1302,51 +1302,6 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect(bad.stderr).toMatch(/integer expression expected/);
   });
 
-  it('prewarm hides host boot from the first echo hi', async () => {
-    const extra = new FauxnixSession();
-    try {
-      await extra.prewarm();
-      const t0 = Date.now();
-      const r = await extra.run(translateCommandList(parseCommand('echo hi')));
-      const ms = Date.now() - t0;
-      expect(r.exitCode).toBe(0);
-      expect(r.stdout.trim()).toBe('hi');
-      // after #138's structured-results bootstrap the first frame measures
-      // 0.6-0.9s loaded; the claim under test is "prewarm beats the ~1.1s
-      // cold spawn", not a specific latency (first-frame regression tracked
-      // in its own issue)
-      expect(ms).toBeLessThan(1100);
-    } finally {
-      await extra.dispose();
-    }
-  }, 30000);
-
-  it('15x echo hi on a warm host is far below the 1.25s spawn baseline', async () => {
-    const extra = new FauxnixSession();
-    try {
-      const warm = await extra.run(translateCommandList(parseCommand('echo hi')));
-      expect(warm.stdout.trim()).toBe('hi');
-      const times: number[] = [];
-      for (let i = 0; i < 15; i++) {
-        const t0 = Date.now();
-        const r = await extra.run(translateCommandList(parseCommand('echo hi')));
-        times.push(Date.now() - t0);
-        expect(r.exitCode).toBe(0);
-        expect(r.stdout.trim()).toBe('hi');
-      }
-      const sorted = [...times].sort((a, b) => a - b);
-      const p50 = sorted[Math.floor(sorted.length / 2)]!;
-      const mean = times.reduce((a, b) => a + b, 0) / times.length;
-      // Maintainer baseline after #114: 1.25s/cmd, dominated by powershell.exe spawn.
-      // A persistent host must beat that by a lot, not 5%.
-      expect(p50).toBeLessThan(250);
-      expect(mean).toBeLessThan(400);
-      expect(Math.max(...times)).toBeLessThan(1250);
-    } finally {
-      await extra.dispose();
-    }
-  }, 60000);
-
   it('executor timeout stops later segments before output or side effects', async () => {
     const extra = new FauxnixSession();
     const marker = join(dir, 'timeout-later-segment.txt');
@@ -1655,3 +1610,56 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     }
   }, 30000);
 });
+
+// RFC 1.0 U-8 (#118): CI budgets so the 15× warm-host win cannot regress
+// to per-command spawn (~1.25s). hookTimeout 60s like the fixture beforeAll.
+describe.skipIf(!hasPs)(
+  'performance guard (RFC U-8)',
+  { timeout: 60_000, hookTimeout: 60_000 },
+  () => {
+    it('first frame after prewarm for echo hi is under 400ms', async () => {
+      const extra = new FauxnixSession();
+      try {
+        await extra.prewarm();
+        const t0 = Date.now();
+        const r = await extra.run(translateCommandList(parseCommand('echo hi')));
+        const ms = Date.now() - t0;
+        expect(r.exitCode).toBe(0);
+        expect(r.stdout.trim()).toBe('hi');
+        // RFC <400ms. Local ~160ms; GH windows-latest whole-test
+        // (prewarm+frame+dispose) is 470-500ms, so the frame fits.
+        expect(ms).toBeLessThan(400);
+      } finally {
+        await extra.dispose();
+      }
+    }, 60_000);
+
+    it('warm p50 of 15 echo hi is under 50ms', async () => {
+      const extra = new FauxnixSession();
+      try {
+        await extra.prewarm();
+        // discard the slower first frame (~160ms local / ~0.27s documented)
+        const first = await extra.run(translateCommandList(parseCommand('echo hi')));
+        expect(first.exitCode).toBe(0);
+        expect(first.stdout.trim()).toBe('hi');
+        const times: number[] = [];
+        for (let i = 0; i < 15; i++) {
+          const t0 = Date.now();
+          const r = await extra.run(translateCommandList(parseCommand('echo hi')));
+          times.push(Date.now() - t0);
+          expect(r.exitCode).toBe(0);
+          expect(r.stdout.trim()).toBe('hi');
+        }
+        const sorted = [...times].sort((a, b) => a - b);
+        const p50 = sorted[Math.floor(sorted.length / 2)]!;
+        // RFC <50ms. Local ~5ms; GH windows-latest ~10ms from 15× wall
+        // (~630ms) minus one cold boot (~500ms). Documented ~30-50ms.
+        // 10× today's ~40ms is 400ms — still fail a silent spawn fallback.
+        expect(p50).toBeLessThan(50);
+        expect(Math.max(...times)).toBeLessThan(400);
+      } finally {
+        await extra.dispose();
+      }
+    }, 60_000);
+  },
+);
