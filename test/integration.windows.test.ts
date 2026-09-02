@@ -746,6 +746,11 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect((await run("echo \"[$(printf 'a\\n')]\"")).stdout).toBe('[a]\n');
     // Unquoted $(...) approximates IFS split (PS space-join), matching pre-#88.
     expect((await run("echo $(printf 'a\\nb')")).stdout.trim()).toBe('a b');
+    // C-4: list inside $(...) — unquoted IFS-joins; quoted keeps the newline.
+    expect((await run('echo $(echo a; echo b)')).stdout.trim()).toBe('a b');
+    expect((await run('echo "$(echo a; echo b)"')).stdout).toBe('a\nb\n');
+    expect((await run('echo $(false; echo x)')).stdout.trim()).toBe('x');
+    expect((await run('echo $(true && echo y)')).stdout.trim()).toBe('y');
   });
 
   it('VAR=value prefixes do not leak past the command', async () => {
