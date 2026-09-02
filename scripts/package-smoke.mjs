@@ -9,9 +9,10 @@ import {
   rmSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, delimiter, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { npmChildEnvironment } from './npm-child-env.mjs';
 
 const packageRoot = fileURLToPath(new URL('..', import.meta.url));
 const metadata = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'));
@@ -37,26 +38,20 @@ function run(command, args, options = {}) {
 }
 
 function runNpm(args, options = {}) {
+  const { env = process.env, ...spawnOptions } = options;
+  const childOptions = {
+    ...spawnOptions,
+    env: npmChildEnvironment(packageRoot, env),
+  };
   if (process.env.npm_execpath) {
-    return run(process.execPath, [process.env.npm_execpath, ...args], options);
+    return run(process.execPath, [process.env.npm_execpath, ...args], childOptions);
   }
 
   const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
   return run(npmCommand, args, {
     shell: process.platform === 'win32',
-    ...options,
+    ...childOptions,
   });
-}
-
-function withoutProjectBin() {
-  const environment = { ...process.env };
-  const pathKey = Object.keys(environment).find((key) => key.toLowerCase() === 'path') ?? 'PATH';
-  const projectBin = resolve(packageRoot, 'node_modules', '.bin');
-  environment[pathKey] = (environment[pathKey] ?? '')
-    .split(delimiter)
-    .filter((entry) => entry && resolve(entry) !== projectBin)
-    .join(delimiter);
-  return environment;
 }
 
 const temporaryRoot = mkdtempSync(join(tmpdir(), 'fauxnix-package-smoke-'));
@@ -76,7 +71,7 @@ try {
   }
   cpSync(join(packageRoot, 'src'), join(sourceDirectory, 'src'), { recursive: true });
 
-  const cleanEnvironment = withoutProjectBin();
+  const cleanEnvironment = npmChildEnvironment(packageRoot);
   runNpm(['ci', '--no-audit', '--no-fund'], {
     cwd: sourceDirectory,
     env: cleanEnvironment,
