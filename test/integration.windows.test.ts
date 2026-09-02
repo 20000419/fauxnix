@@ -965,6 +965,18 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect(back.stdout).toContain('apple pie');
   });
 
+  it('gzip -k keeps the source; unknown gzip flags fail usage', async () => {
+    await run('cp fruits.txt gk.txt');
+    const k = await run('gzip -k gk.txt');
+    expect(k.exitCode).toBe(0);
+    expect(existsSync(join(dir, 'gk.txt'))).toBe(true);
+    expect(existsSync(join(dir, 'gk.txt.gz'))).toBe(true);
+    const z = await run('gzip -Z gk.txt');
+    expect(z.exitCode).toBe(1);
+    expect(z.stderr).toContain("invalid option -- 'Z'");
+    expect(z.stdout).toBe('');
+  });
+
   it('printf CRLF without a trailing LF is preserved on redirect', async () => {
     const r = await run("printf 'a\\r\\nb' > cr.txt; wc -c cr.txt");
     expect(r.exitCode).toBe(0);

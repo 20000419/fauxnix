@@ -1,5 +1,5 @@
 import { Word, wordToString } from '../ast.js';
-import { Handler, PipelineCtx, parseWords, psStr } from '../registry.js';
+import { CommandSpec, Handler, OptionSpec, PipelineCtx, parseWords, psStr } from '../registry.js';
 import { argListExpr, exprOfWord, operandExpr } from '../translator.js';
 
 /* ------------------------------------------------------------------ */
@@ -239,6 +239,8 @@ const zcat: Handler = (args, ctx) => gzBlock(args, ctx, { decompress: true, stdo
 
 /* ------------------------------------------------------------------ */
 /* tar — Windows 10+ ships bsdtar as tar.exe, pass everything through  */
+/* Intentionally unspec'd: registerSpec fail-loud would reject GNU     */
+/* flags bsdtar accepts (--numeric-owner, …). Same class as find.      */
 /* ------------------------------------------------------------------ */
 
 const tar: Handler = (args) => {
@@ -415,8 +417,89 @@ const unzip: Handler = (args) => {
 };
 
 /* ------------------------------------------------------------------ */
-/* exports                                                             */
+/* CommandSpec (C-5 archive slice)                                     */
+/* tar stays unspec'd: fx-native to tar.exe; unknown GNU flags must    */
+/* reach bsdtar. gzip -f is a no-op today and the stdin-from-terminal  */
+/* message advertises it, so it is unsupported (force from terminal)   */
+/* rather than a silent ignore.                                        */
 /* ------------------------------------------------------------------ */
+
+const gzipOptions: OptionSpec[] = [
+  { short: 'd', long: '--decompress', support: 'implemented' },
+  { long: '--uncompress', support: 'implemented' },
+  { short: 'k', long: '--keep', support: 'implemented' },
+  { short: 'c', long: '--stdout', support: 'implemented' },
+  { long: '--to-stdout', support: 'implemented' },
+  { short: 't', long: '--test', support: 'implemented' },
+  { short: '1', long: '--fast', support: 'implemented' },
+  { short: '2', support: 'implemented' },
+  { short: '3', support: 'implemented' },
+  { short: '4', support: 'implemented' },
+  { short: '5', support: 'implemented' },
+  { short: '6', support: 'implemented' },
+  { short: '7', support: 'implemented' },
+  { short: '8', support: 'implemented' },
+  { short: '9', long: '--best', support: 'implemented' },
+  { short: 'f', long: '--force', support: 'unsupported', reason: 'force from terminal' },
+  { short: 'q', long: '--quiet', support: 'unsupported', reason: 'quiet' },
+  { short: 'v', long: '--verbose', support: 'unsupported', reason: 'verbose' },
+  { short: 'n', long: '--no-name', support: 'unsupported', reason: 'no-name' },
+  { short: 'r', long: '--recursive', support: 'unsupported', reason: 'recursive' },
+  { short: 'S', long: '--suffix', takesValue: true, support: 'unsupported', reason: 'suffix' },
+];
+
+export const specs: CommandSpec[] = [
+  {
+    names: ['gzip'],
+    options: gzipOptions,
+    effects: ['read', 'write', 'delete'],
+    platform: 'windows-ps51',
+    dispatch: 'translated',
+    handler: gzip,
+  },
+  {
+    names: ['gunzip'],
+    options: gzipOptions,
+    effects: ['read', 'write', 'delete'],
+    platform: 'windows-ps51',
+    dispatch: 'translated',
+    handler: gunzip,
+  },
+  {
+    names: ['zcat'],
+    options: gzipOptions,
+    effects: ['read'],
+    platform: 'windows-ps51',
+    dispatch: 'translated',
+    handler: zcat,
+  },
+  {
+    names: ['zip'],
+    options: [
+      // Compress-Archive always recurses directory inputs; -q is already quiet.
+      { short: 'r', support: 'implemented' },
+      { short: 'q', support: 'implemented' },
+      { short: 'x', long: '--exclude', takesValue: true, support: 'unsupported', reason: 'exclude patterns' },
+    ],
+    effects: ['read', 'write'],
+    platform: 'windows-ps51',
+    dispatch: 'translated',
+    handler: zip,
+  },
+  {
+    names: ['unzip'],
+    options: [
+      { short: 'l', support: 'implemented' },
+      { short: 'o', support: 'implemented' },
+      { short: 'q', support: 'implemented' },
+      { short: 'd', long: '--directory', takesValue: true, support: 'implemented' },
+    ],
+    effects: ['read', 'write'],
+    platform: 'windows-ps51',
+    dispatch: 'translated',
+    handler: unzip,
+  },
+];
 
 export const handlers: Record<string, Handler> = {
   tar,

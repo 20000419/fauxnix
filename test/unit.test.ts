@@ -1387,6 +1387,70 @@ describe('CommandSpec text-filters leftovers (#143)', () => {
   });
 });
 
+describe('CommandSpec archive leftovers (#143)', () => {
+  const bodyOf = (cmd: string): string => translateCommandList(parse(cmd))[0].body;
+
+  it('gzip/gunzip/zcat/zip/unzip are spec\'d; tar stays unspec\'d', () => {
+    expect(lookupSpec('gzip')).toBeTruthy();
+    expect(lookupSpec('gunzip')).toBeTruthy();
+    expect(lookupSpec('zcat')).toBeTruthy();
+    expect(lookupSpec('zip')).toBeTruthy();
+    expect(lookupSpec('unzip')).toBeTruthy();
+    expect(lookupSpec('tar')).toBeUndefined();
+    expect(lookupSpec('find')).toBeUndefined();
+  });
+
+  it('gzip unknown flags fail usage; -k/-c still translate', () => {
+    const z = bodyOf('gzip -Z f');
+    expect(z).toContain("invalid option -- ''Z''");
+    expect(z).toContain('$script:fx_exit = 1');
+    expect(z).toContain("Try ''gzip --help'' for more information.");
+    expect(z).not.toContain('GZipStream');
+    const keep = bodyOf('gzip -k f');
+    expect(keep).toContain('if (-not $true)');
+    expect(keep).not.toContain('invalid option');
+    expect(keep).toContain('GZipStream');
+    const stdout = bodyOf('gzip -c f');
+    expect(stdout).toContain('GetEncoding(28591)');
+    expect(stdout).not.toContain('Remove-Item');
+    expect(bodyOf('gzip --keep f')).toContain('if (-not $true)');
+    expect(bodyOf('gzip f')).toContain('if (-not $false)');
+  });
+
+  it('gzip -f is unsupported (force from terminal)', () => {
+    const f = bodyOf('gzip -f f');
+    expect(f).toContain("option ''-f'' is not supported by fauxnix");
+    expect(f).toContain('force from terminal');
+    expect(f).not.toContain('GZipStream');
+    expect(bodyOf('gzip --force f')).toContain('force from terminal');
+  });
+
+  it('tar unknown GNU flags still forward to tar.exe', () => {
+    const t = bodyOf('tar --numeric-owner -tf a.tar');
+    expect(t).toContain('fx-native');
+    expect(t).toContain('tar.exe');
+    expect(t).not.toContain('unrecognized option');
+    expect(t).not.toContain('invalid option');
+  });
+
+  it('zip -r still translates; -x is unsupported; unknown flags fail', () => {
+    expect(bodyOf('zip -r a.zip f')).toContain('Compress-Archive');
+    expect(bodyOf('zip -r a.zip f')).not.toContain('invalid option');
+    const x = bodyOf('zip -x p a.zip f');
+    expect(x).toContain("option ''-x'' is not supported by fauxnix");
+    expect(x).toContain('exclude patterns');
+    expect(x).not.toContain('Compress-Archive');
+    expect(bodyOf('zip -Z a.zip f')).toContain("invalid option -- ''Z''");
+  });
+
+  it('unzip -l/-o/-d still translate; unknown flags fail', () => {
+    expect(bodyOf('unzip -l a.zip')).toContain('OpenRead');
+    expect(bodyOf('unzip -o a.zip')).toContain('-Force:$true');
+    expect(bodyOf('unzip -d out a.zip')).toContain('$fx_dir');
+    expect(bodyOf('unzip -Z a.zip')).toContain("invalid option -- ''Z''");
+  });
+});
+
 describe('find predicates (#130)', () => {
   const bodyOf = (cmd: string): string => translateCommandList(parse(cmd))[0].body;
   const throws = (cmd: string, msg: string) => {

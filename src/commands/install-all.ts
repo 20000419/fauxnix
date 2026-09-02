@@ -4,7 +4,7 @@ import { handlers as textFilters, specs as textFilterSpecs } from './text-filter
 import { handlers as textIo, specs as textIoSpecs } from './text-io.js';
 import { handlers as sysinfo } from './sysinfo.js';
 import { handlers as net } from './net.js';
-import { handlers as archive } from './archive.js';
+import { handlers as archive, specs as archiveSpecs } from './archive.js';
 
 /** Register every built-in Linux command translator. Side-effectful import. */
 export function installAll(): void {
@@ -17,6 +17,7 @@ export function installAll(): void {
   registerSpecs(fileSpecs);
   registerSpecs(textIoSpecs);
   registerSpecs(textFilterSpecs);
+  registerSpecs(archiveSpecs);
 }
 
 installAll();
