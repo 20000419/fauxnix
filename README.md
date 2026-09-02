@@ -112,6 +112,8 @@ with argv-style quoting — no string re-parsing, no quoting bugs.
 fauxnix ships an MCP stdio server exposing a `bash` tool (plus `fauxnix_translate` and
 `fauxnix_session`). Point any MCP-capable harness at it:
 
+- **Quickstarts** — copy-paste config + a 10-command smoke: [`docs/examples/`](docs/examples/)
+
 **Claude Code**
 ```bash
 claude mcp add fauxnix -- fauxnix mcp
