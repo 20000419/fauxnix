@@ -39,7 +39,7 @@ Output is formatted to look like GNU/Linux tooling (ls -l, ps aux, df -h ...), e
 
 Supported: pipes (|), && / || / ;, redirections (> >> 2> 2>&1 < /dev/null), variables ($VAR $HOME ~), command substitution $(...), and ${registeredNames().length}+ coreutils-style commands (${registeredNames().slice(0, 18).join(', ')}...).
 Unknown commands (git, node, npm, python, cargo...) are passed through and executed natively with argv-style quoting.
-Not supported: heredocs, while/until/case, env -i/--ignore-environment, background jobs. if/then/elif/else/fi, for-in loops, and word-level \$((...)) arithmetic expansion are supported.
+Not supported: heredocs, case, env -i/--ignore-environment, background jobs. if/then/elif/else/fi, for-in loops, while/until, and word-level \$((...)) arithmetic expansion are supported.
 
 CWD, environment variables, export/unset and cd persist across calls within this session — a resident PowerShell 5.1 host is started when the MCP session begins (and after reset), so the first bash tool call is already warm.
 Exit codes follow bash conventions (0 ok, 1 fail, 2 usage/serious, 127 command not found, 124 timeout, 130 cancelled). The tool also returns structuredContent (schemaVersion 1) with stdout/stderr/exitCode/timedOut/cancelled/truncated/sessionId.

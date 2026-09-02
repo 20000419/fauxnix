@@ -213,12 +213,12 @@ fauxnix optimizes for the commands agents actually run. Documented deviations:
   word expansion precedes the temporary environment).
 - `yes` is capped at 65,536 lines — PS 5.1 pipelines cannot signal upstream producers to stop, so
   an unbounded `yes | head` would hang.
-- `tail -f`, `eval`, `alias`, heredocs, `while`/`until`/`case`,
+- `tail -f`, `eval`, `alias`, heredocs, `case`,
   `env -i`/`--ignore-environment`,
   background `&`, and stdout redirects (`>` `>>` `&>` `&>>`) on a non-last
   pipeline stage (`echo hi >f | cat`) are rejected with actionable error
   messages instead of misbehaving.
-  (`if/then/elif/else/fi`, `for x in ...`, backtick substitution, `command -v`, pipeline `read`,
+  (`if/then/elif/else/fi`, `for x in ...`, `while`/`until`, backtick substitution, `command -v`, pipeline `read`,
   dotenv-style `source`, and word-level `$((...))` arithmetic expansion are supported.)
 - `command -v <builtin>` prints `/usr/bin/<name>` where bash prints the bare builtin name;
   exit codes and empty-result semantics match.

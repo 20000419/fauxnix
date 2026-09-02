@@ -7,6 +7,7 @@ import {
   SimpleCommand,
   IfCommand,
   ForCommand,
+  WhileCommand,
   Word,
   WordPart,
   isUnquotedLiteral,
@@ -878,6 +879,21 @@ function translateFor(cmd: ForCommand): string {
   return lines.join('\n');
 }
 
+function translateWhile(cmd: WhileCommand): string {
+  // Bash: last executed body owns status; a test that ends the loop does not.
+  // Never-entered loops (`while false; do …; done`, `until true; do …; done`)
+  // exit 0. Save the body status and restore it on the failing test.
+  const fail = cmd.until ? '$script:fx_exit -eq 0' : '$script:fx_exit -ne 0';
+  const lines = ['$fx_wst = 0', 'do {'];
+  for (const l of translateListInline(cmd.test).split('\n')) lines.push(l ? '  ' + l : l);
+  lines.push('  if (' + fail + ') { $script:fx_exit = $fx_wst; break }');
+  lines.push('  $script:fx_exit = 0');
+  for (const l of translateListInline(cmd.body).split('\n')) lines.push(l ? '  ' + l : l);
+  lines.push('  $fx_wst = $script:fx_exit');
+  lines.push('} while ($true)');
+  return lines.join('\n');
+}
+
 function stdinTarget(c: ShellCommand): string | null {
   let t: string | null = null;
   for (const r of c.redirects) {
@@ -910,7 +926,7 @@ function rejectNonLastStdoutRedirects(commands: ShellCommand[]): void {
 }
 
 export function translatePipelineBody(p: {
-  commands: Array<SimpleCommand | IfCommand | ForCommand>;
+  commands: Array<SimpleCommand | IfCommand | ForCommand | WhileCommand>;
 }): PipelineParts {
   // Last-stage `>` is Node apply; a non-last `>` would truncate the file and
   // still feed the pipe. Fail loud until in-stage writes (#157).
@@ -929,6 +945,7 @@ export function translatePipelineBody(p: {
       i === 0 ? 'first' : i === p.commands.length - 1 ? 'last' : 'middle';
     if (c.kind === 'If') bodies.push(translateIf(c));
     else if (c.kind === 'For') bodies.push(translateFor(c));
+    else if (c.kind === 'While') bodies.push(translateWhile(c));
     else bodies.push(translateSimple(c, position, hasStdin));
   }
 

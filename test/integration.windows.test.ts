@@ -1178,6 +1178,19 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     );
   });
 
+  it('while/until loops iterate and match bash status', async () => {
+    expect((await run('i=0; while [ $i -lt 3 ]; do echo $i; i=$((i+1)); done')).stdout.trim()).toBe(
+      '0\n1\n2',
+    );
+    expect((await run('i=0; until [ $i -eq 2 ]; do echo $i; i=$((i+1)); done')).stdout.trim()).toBe(
+      '0\n1',
+    );
+    expect((await run('while false; do echo x; done')).exitCode).toBe(0);
+    expect((await run('until true; do echo x; done')).exitCode).toBe(0);
+    expect((await run('i=0; while [ $i -lt 1 ]; do i=$((i+1)); false; done')).exitCode).toBe(1);
+    expect((await run('i=0; while [ $i -lt 1 ]; do i=$((i+1)); true; done')).exitCode).toBe(0);
+  });
+
   it('date format tokens', async () => {
     expect((await run('date +%Y')).stdout).toMatch(/^\d{4}/);
   });
