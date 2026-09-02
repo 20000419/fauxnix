@@ -8,6 +8,12 @@ import { startMcpServer } from './mcp.js';
 import { collectDoctorReport } from './doctor.js';
 import { runInstall } from './install.js';
 import { packageVersion } from './version.js';
+import {
+  POWERSHELL_ARGS,
+  powerShellDisplay,
+  powerShellMissingMessage,
+  resolvePowerShell,
+} from './powershell.js';
 import './commands/install-all.js';
 
 export const USAGE = `fauxnix — run Linux-style commands on Windows via PowerShell translation
@@ -26,6 +32,7 @@ Usage:
   fauxnix --version
 
 Notes:
+  FAUXNIX_PS=pwsh selects the opt-in PowerShell 7 host (5.1 is the default).
   Unknown commands (git, node, npm, python, cargo, ...) pass through and run natively.`;
 
 export async function runCli(argv: string[]): Promise<void> {
@@ -103,35 +110,79 @@ export async function runCli(argv: string[]): Promise<void> {
   process.exit(result.exitCode);
 }
 
-const PS_ARGS = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass'];
-
 async function runDoctor(): Promise<void> {
-  await runCheck();
+  const checkOk = await runCheck();
   const report = await collectDoctorReport();
   for (const line of report.lines) console.log(line);
-  if (!report.ok) process.exitCode = 1;
+  if (!checkOk || !report.ok) process.exitCode = 1;
 }
 
-async function runCheck(): Promise<void> {
-  console.log('powershell : powershell.exe (Windows built-in)');
-  const probeCmd = '$PSVersionTable.PSVersion.ToString()';
-  const probe = spawn('powershell.exe', [...PS_ARGS, '-EncodedCommand', encodeCommand(probeCmd)], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: true,
-  });
-  probe.on('error', (e) => {
-    console.error('status     : FAILED to run powershell.exe: ' + e.message);
-    process.exit(1);
-  });
-  let out = '';
-  probe.stdout.on('data', (d) => (out += d.toString('utf8')));
-  const code = await new Promise<number>((resolve) => probe.on('close', (c) => resolve(c ?? 1)));
-  if (code === 0) {
-    console.log('version    : ' + out.trim());
-    console.log('commands   : ' + registeredNames().length + ' translated, others pass through');
-    console.log('status     : OK');
-  } else {
-    console.error('status     : FAILED to run powershell.exe');
+export async function runCheck(): Promise<boolean> {
+  const selection = resolvePowerShell();
+  console.log('powershell : ' + powerShellDisplay(selection));
+  if (selection.error) {
+    console.error('status     : FAILED');
+    console.error(selection.error);
     process.exitCode = 1;
+    return false;
   }
+
+  const probeCmd =
+    '[Console]::Out.WriteLine($PSVersionTable.PSVersion.ToString()); ' +
+    '[Console]::Out.WriteLine([string]$PSVersionTable.PSEdition)';
+  const probe = spawn(
+    selection.executable,
+    [...POWERSHELL_ARGS, '-EncodedCommand', encodeCommand(probeCmd)],
+    {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    },
+  );
+  let out = '';
+  let err = '';
+  probe.stdout.on('data', (d) => (out += d.toString('utf8')));
+  probe.stderr.on('data', (d) => (err += d.toString('utf8')));
+  const outcome = await new Promise<{ code: number; error?: NodeJS.ErrnoException }>((resolve) => {
+    let settled = false;
+    const done = (value: { code: number; error?: NodeJS.ErrnoException }) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    probe.once('error', (error: NodeJS.ErrnoException) => done({ code: 127, error }));
+    probe.once('close', (code) => done({ code: code ?? 1 }));
+  });
+  if (outcome.error) {
+    console.error('status     : FAILED');
+    if (outcome.error.code === 'ENOENT') {
+      console.error(powerShellMissingMessage(selection).trimEnd());
+    } else {
+      console.error(`fauxnix: failed to start ${selection.executable}: ${outcome.error.message}`);
+    }
+    process.exitCode = 1;
+    return false;
+  }
+  if (outcome.code !== 0) {
+    console.error(`status     : FAILED to run ${selection.executable}`);
+    if (err.trim()) console.error(err.trim());
+    process.exitCode = 1;
+    return false;
+  }
+
+  const lines = out.trim().split(/\r?\n/);
+  const version = lines[0] ?? '';
+  const edition = lines[1] ?? '';
+  console.log('version    : ' + version);
+  console.log('edition    : ' + edition);
+  if (edition !== selection.expectedEdition) {
+    console.error(
+      `status     : FAILED: ${selection.executable} reported ${edition || 'no edition'}; ` +
+        `expected ${selection.expectedEdition}`,
+    );
+    process.exitCode = 1;
+    return false;
+  }
+  console.log('commands   : ' + registeredNames().length + ' translated, others pass through');
+  console.log('status     : OK');
+  return true;
 }

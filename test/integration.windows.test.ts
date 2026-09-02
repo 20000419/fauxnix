@@ -1,6 +1,6 @@
 /**
- * Integration tests — execute translated commands through real Windows
- * PowerShell 5.1. Skipped automatically on non-Windows platforms.
+ * Integration tests — execute translated commands through the selected real
+ * Windows PowerShell host. Skipped automatically on non-Windows platforms.
  */
 import { beforeAll, afterAll, describe, expect, it } from 'vitest';
 import { getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -11,14 +11,18 @@ import { join } from 'node:path';
 import { parseCommand } from '../src/parser.js';
 import { translateCommandList } from '../src/translator.js';
 import { FauxnixSession } from '../src/executor.js';
+import { resolvePowerShell } from '../src/powershell.js';
 import '../src/commands/install-all.js';
 
 const onWindows = process.platform === 'win32';
+const selectedPowerShell = resolvePowerShell();
 const hasPs =
   onWindows &&
-  spawnSync('powershell.exe', ['-NoProfile', '-Command', 'exit 0'], { shell: false }).status === 0;
+  !selectedPowerShell.error &&
+  spawnSync(selectedPowerShell.executable, ['-NoProfile', '-Command', 'exit 0'], { shell: false })
+    .status === 0;
 
-describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () => {
+describe.skipIf(!hasPs)(`integration (real ${selectedPowerShell.executable})`, { timeout: 30000 }, () => {
   let dir: string;
   let session: FauxnixSession;
 

@@ -48,7 +48,7 @@ function unescapeClixml(t: string): string {
 }
 
 /**
- * When stderr is redirected, powershell.exe serializes error records as
+ * When stderr is redirected, PowerShell can serialize error records as
  * CLIXML (`#< CLIXML` + XML). Unwrap the real message lines and drop
  * progress records, so agents see plain bash-style text.
  */
