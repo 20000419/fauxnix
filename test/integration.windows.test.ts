@@ -1363,6 +1363,26 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect(g.exitCode).toBe(0);
   });
 
+  it('ansi native preference does not re-decode UTF-8 host frames', async () => {
+    const previous = process.env.FAUXNIX_NATIVE_ENCODING;
+    process.env.FAUXNIX_NATIVE_ENCODING = 'ansi';
+    const ansiSession = new FauxnixSession();
+    try {
+      const plans = translateCommandList(
+        parseCommand("printf '中文\\n'; echo '错误' 1>&2; printf '路径\\n' > ansi-zh.txt"),
+      );
+      const result = await ansiSession.run(plans, { cwd: dir });
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe('中文\n');
+      expect(result.stderr).toBe('错误\n');
+      expect(readFileSync(join(dir, 'ansi-zh.txt'), 'utf8')).toBe('路径\n');
+    } finally {
+      await ansiSession.dispose();
+      if (previous === undefined) delete process.env.FAUXNIX_NATIVE_ENCODING;
+      else process.env.FAUXNIX_NATIVE_ENCODING = previous;
+    }
+  });
+
   it('yes | head terminates (no hang)', async () => {
     const r = await run('yes | head -3');
     expect(r.stdout.split(/\r?\n/).filter((l) => l === 'y').length).toBe(3);

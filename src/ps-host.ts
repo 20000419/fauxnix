@@ -15,7 +15,10 @@ export const DEFAULT_STDERR_LIMIT = 1_048_576;
 
 export interface HostInvokeResult {
   stdout: Buffer;
+  /** UTF-8 stderr captured inside the JSON-framed host protocol. */
   stderr: Buffer;
+  /** Bytes written directly to the PowerShell process stderr OS pipe. */
+  nativeStderr?: Buffer;
   exitCode: number;
   timedOut: boolean;
   cancelled: boolean;
@@ -241,7 +244,8 @@ export class PowerShellHost {
       const native = this.drainNativeStderr();
       return {
         stdout: msg.stdout,
-        stderr: native.length ? Buffer.concat([msg.stderr, native]) : msg.stderr,
+        stderr: msg.stderr,
+        nativeStderr: native,
         exitCode: msg.exitCode,
         timedOut: false,
         cancelled: false,
@@ -502,7 +506,8 @@ export class PowerShellHost {
     const n = Number(end.exitCode);
     return {
       stdout: Buffer.from(Buffer.concat(out)),
-      stderr: native.length ? Buffer.from(Buffer.concat([capturedErr, native])) : capturedErr,
+      stderr: capturedErr,
+      nativeStderr: native,
       exitCode: Number.isFinite(n) ? n : 0,
       timedOut: end.timedOut === true,
       cancelled: end.cancelled === true,
