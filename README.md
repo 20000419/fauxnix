@@ -247,6 +247,8 @@ npm run build
 npx tsx scratch/run.mjs "any bash command"   # quick live check
 ```
 
+Differential vs Git Bash is opt-in (`FAUXNIX_DIFF_ORACLE=1`; skips if unset or `bash.exe` is missing — Git Bash is not required). See [`test/differential/README.md`](test/differential/README.md). This is the RFC C-7 scaffold, not the 200-case 1.0 gate.
+
 Architecture map: `src/parser.ts` (bash subset → AST) · `src/translator.ts` (AST → PowerShell +
 executor wrapper) · `src/executor.ts` (spawn, redirects, session persistence) ·
 `src/commands/*.ts` (per-command generators) · `src/mcp.ts` (MCP server) · `src/cli.ts`.

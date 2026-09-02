@@ -1,0 +1,215 @@
+{
+  "gate": {
+    "targetCases": 200,
+    "identity": 0.95,
+    "note": "RFC 1.0 C-7 / #118. The 1.0 hard gate is ≥200 curated cases at ≥95% byte-identical on scheduled oracle runs. This file is a high-value scaffold sourced from already-shipped audit repros, not that gate."
+  },
+  "files": {
+    "fruits.txt": "apple\nBanana\napple pie\ncherry\n",
+    "letters.txt": "a\nb\nc\n",
+    "three.txt": "one\ntwo\nthree\n",
+    "abc.txt": "abc"
+  },
+  "cases": [
+    {
+      "id": "echo-dev-null",
+      "cmd": "echo hi >/dev/null",
+      "source": "#147 / docs/rfc-redirect-fd-ownership.md"
+    },
+    {
+      "id": "printf-grep-split",
+      "cmd": "printf 'a\\nb\\n' | grep b",
+      "source": "#153"
+    },
+    {
+      "id": "head-lines-neg",
+      "cmd": "head --lines=-1 three.txt",
+      "source": "#151"
+    },
+    {
+      "id": "grep-e-or",
+      "cmd": "grep -e a -e c letters.txt",
+      "source": "#152"
+    },
+    {
+      "id": "middle-stdin-redirect",
+      "cmd": "printf x | cat < fruits.txt | head -1",
+      "source": "#147 / docs/rfc-redirect-fd-ownership.md"
+    },
+    {
+      "id": "lastwins-null-then-file",
+      "cmd": "echo hi >/dev/null > lastwins.txt; cat lastwins.txt",
+      "source": "#147"
+    },
+    {
+      "id": "stderr-to-null",
+      "cmd": "cat missing.txt 2>/dev/null; echo OK",
+      "source": "#147"
+    },
+    {
+      "id": "dup-then-null",
+      "cmd": "echo hi 2>&1 >/dev/null",
+      "source": "#164"
+    },
+    {
+      "id": "both-to-null",
+      "cmd": "cat missing.txt >/dev/null 2>&1; echo OK",
+      "source": "#164"
+    },
+    {
+      "id": "amp-null",
+      "cmd": "cat missing.txt &>/dev/null; echo OK",
+      "source": "#147"
+    },
+    {
+      "id": "pipe-last-true",
+      "cmd": "false | true",
+      "source": "#124"
+    },
+    {
+      "id": "pipe-last-false",
+      "cmd": "true | false",
+      "source": "#124"
+    },
+    {
+      "id": "pipe-and-after-empty",
+      "cmd": "grep NO fruits.txt | head -1 && echo AFTER",
+      "source": "#124"
+    },
+    {
+      "id": "pipe-or-last-fail",
+      "cmd": "true | false || echo FALLBACK",
+      "source": "#124"
+    },
+    {
+      "id": "grep-m1",
+      "cmd": "grep -m1 apple fruits.txt",
+      "source": "#141"
+    },
+    {
+      "id": "grep-v-or",
+      "cmd": "grep -v -e a -e c letters.txt",
+      "source": "#152"
+    },
+    {
+      "id": "grep-regexp-or",
+      "cmd": "grep --regexp a --regexp c letters.txt",
+      "source": "#152"
+    },
+    {
+      "id": "grep-Fo-multi-e",
+      "cmd": "printf 'ba\\n' | grep -F -o -e a -e b",
+      "source": "#162"
+    },
+    {
+      "id": "grep-match",
+      "cmd": "grep apple fruits.txt",
+      "source": "integration: grep + exit codes"
+    },
+    {
+      "id": "grep-nomatch",
+      "cmd": "grep zz fruits.txt",
+      "source": "integration: grep + exit codes"
+    },
+    {
+      "id": "head-1",
+      "cmd": "head -1 fruits.txt",
+      "source": "#141"
+    },
+    {
+      "id": "sed-sub",
+      "cmd": "sed 's/apple/MANGO/g' fruits.txt",
+      "source": "integration: sed substitution"
+    },
+    {
+      "id": "pipeline-grep-sort",
+      "cmd": "cat fruits.txt | grep -i apple | sort",
+      "source": "integration: cat | grep | sort"
+    },
+    {
+      "id": "head-bytes-neg",
+      "cmd": "head --bytes=-1 abc.txt",
+      "source": "#151"
+    },
+    {
+      "id": "head-bytes-2",
+      "cmd": "head --bytes=2 abc.txt",
+      "source": "#151"
+    },
+    {
+      "id": "bracket-file",
+      "cmd": "[[ -f fruits.txt ]] && echo yes",
+      "source": "#80"
+    },
+    {
+      "id": "echo-n",
+      "cmd": "echo -n abc",
+      "source": "integration: echo/printf semantics"
+    },
+    {
+      "id": "printf-fmt",
+      "cmd": "printf '%s=%d\\n' x 42",
+      "source": "integration: echo/printf semantics"
+    },
+    {
+      "id": "arith-add",
+      "cmd": "echo $((1+1))",
+      "source": "#119"
+    },
+    {
+      "id": "arith-mul-quoted",
+      "cmd": "echo \"$((2*3))\"",
+      "source": "#119"
+    },
+    {
+      "id": "arith-assign",
+      "cmd": "i=3; i=$((i+1)); echo $i",
+      "source": "#119"
+    },
+    {
+      "id": "if-true",
+      "cmd": "if true; then echo YES; fi",
+      "source": "#112"
+    },
+    {
+      "id": "elif-true",
+      "cmd": "if false; then echo A; elif true; then echo B; else echo C; fi",
+      "source": "#120"
+    },
+    {
+      "id": "for-words",
+      "cmd": "for x in a b c; do echo $x; done",
+      "source": "#112"
+    },
+    {
+      "id": "status-false",
+      "cmd": "false; echo $?",
+      "source": "integration: $? reflects the previous segment"
+    },
+    {
+      "id": "param-default",
+      "cmd": "unset X; echo ${X:-def}",
+      "source": "#112"
+    },
+    {
+      "id": "strlen",
+      "cmd": "X=abcd; echo ${#X}",
+      "source": "#112"
+    },
+    {
+      "id": "cmdsub",
+      "cmd": "echo $(echo nested)",
+      "source": "#112"
+    },
+    {
+      "id": "or-fallback",
+      "cmd": "cat missing.txt || echo FELLBACK",
+      "source": "integration: && and || short-circuit"
+    },
+    {
+      "id": "echo-pipe-grep",
+      "cmd": "echo hi | grep hi",
+      "source": "#153"
+    }
+  ]
+}
