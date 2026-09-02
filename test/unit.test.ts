@@ -1,5 +1,10 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { runCli, USAGE } from '../src/cli.js';
+import { collectDoctorReport } from '../src/doctor.js';
 import { FauxnixParseError, isUnquotedLiteral, wordToString } from '../src/ast.js';
 import { parseCommand as parse, tokenize } from '../src/parser.js';
 import {
@@ -1270,5 +1275,217 @@ describe('cli check spawn error', () => {
     expect(check).toContain("probe.on('error'");
     expect(check).toMatch(/FAILED to run powershell\.exe:.*e\.message/);
     expect(check).toContain('process.exit(1)');
+  });
+});
+
+describe('cli doctor', () => {
+  it('USAGE lists doctor', async () => {
+    expect(USAGE).toMatch(/fauxnix doctor/);
+    const src = readFileSync('src/cli.ts', 'utf8');
+    expect(src).toContain("verb === 'doctor'");
+    const lines: string[] = [];
+    const orig = console.log;
+    console.log = (...args: unknown[]) => {
+      lines.push(args.map((a) => String(a)).join(' '));
+    };
+    try {
+      await runCli([]);
+    } finally {
+      console.log = orig;
+    }
+    expect(lines.join('\n')).toContain('fauxnix doctor');
+  });
+
+  it('collectDoctorReport does not throw when no harness configs exist', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fauxnix-doctor-'));
+    try {
+      const report = await collectDoctorReport({
+        home: dir,
+        cwd: dir,
+        env: {},
+        nodeVersion: 'v20.11.0',
+      });
+      const text = report.lines.join('\n');
+      expect(text).toContain('UTF-8 default');
+      expect(text).toContain('FAUXNIX_NATIVE_ENCODING=unset → utf8 (default)');
+      expect(text).toMatch(/claude\s+: not detected — see README/);
+      expect(text).toMatch(/codex\s+: not detected — see README/);
+      expect(text).toMatch(/opencode\s+: not detected — see README/);
+      expect(text).toContain('start with: fauxnix mcp');
+      expect(text).toContain('module loads');
+      expect(text).toContain('v20.11.0');
+      expect(report.ok).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports encoding override and Node/MCP failures', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fauxnix-doctor-'));
+    try {
+      const ansi = await collectDoctorReport({
+        home: dir,
+        cwd: dir,
+        env: { FAUXNIX_NATIVE_ENCODING: 'ansi' },
+        nodeVersion: 'v22.0.0',
+      });
+      expect(ansi.lines.join('\n')).toContain('ansi → GBK-native admin tools');
+      expect(ansi.ok).toBe(true);
+
+      const oldNode = await collectDoctorReport({
+        home: dir,
+        cwd: dir,
+        env: {},
+        nodeVersion: 'v16.20.0',
+        loadMcp: async () => ({ startMcpServer: async () => {} }),
+      });
+      expect(oldNode.ok).toBe(false);
+      expect(oldNode.lines.join('\n')).toContain('FAILED (requires >=18)');
+
+      const badMcp = await collectDoctorReport({
+        home: dir,
+        cwd: dir,
+        env: {},
+        nodeVersion: 'v20.0.0',
+        loadMcp: async () => {
+          throw new Error('boom');
+        },
+      });
+      expect(badMcp.ok).toBe(false);
+      expect(badMcp.lines.join('\n')).toContain('FAILED to load: boom');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('detects harness configs conservatively', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fauxnix-doctor-'));
+    try {
+      const empty = await collectDoctorReport({ home: dir, cwd: dir, env: {}, nodeVersion: 'v20.0.0' });
+      expect(empty.lines.join('\n')).toMatch(/claude\s+: not detected — see README/);
+
+      writeFileSync(
+        join(dir, '.claude.json'),
+        JSON.stringify({
+          notes: 'I cloned fauxnix',
+          projects: { 'C:\\repos\\fauxnix': { allowedTools: ['Bash'] } },
+        }),
+      );
+      const mention = await collectDoctorReport({ home: dir, cwd: dir, env: {}, nodeVersion: 'v20.0.0' });
+      expect(mention.lines.join('\n')).toContain('fauxnix MCP not listed');
+      expect(mention.lines.join('\n')).not.toContain('fauxnix MCP configured');
+
+      writeFileSync(
+        join(dir, '.claude.json'),
+        JSON.stringify({
+          projects: {
+            'C:\\work\\app': { mcpServers: { fauxnix: { command: 'fauxnix', args: ['mcp'] } } },
+          },
+        }),
+      );
+      const claudeLocal = await collectDoctorReport({ home: dir, cwd: dir, env: {}, nodeVersion: 'v20.0.0' });
+      expect(claudeLocal.lines.join('\n')).toMatch(/claude\s+: fauxnix MCP configured/);
+
+      writeFileSync(
+        join(dir, '.claude.json'),
+        JSON.stringify({ mcpServers: { fauxnix: { command: 'fauxnix', args: ['mcp'] } } }),
+      );
+      const claude = await collectDoctorReport({ home: dir, cwd: dir, env: {}, nodeVersion: 'v20.0.0' });
+      expect(claude.lines.join('\n')).toMatch(/claude\s+: fauxnix MCP configured/);
+
+      const homeDir = join(dir, 'home');
+      const cwdDir = join(dir, 'cwd');
+      mkdirSync(homeDir);
+      mkdirSync(cwdDir);
+      writeFileSync(
+        join(cwdDir, '.claude.json'),
+        JSON.stringify({ mcpServers: { fauxnix: { command: 'fauxnix', args: ['mcp'] } } }),
+      );
+      const cwdClaude = await collectDoctorReport({
+        home: homeDir,
+        cwd: cwdDir,
+        env: {},
+        nodeVersion: 'v20.0.0',
+      });
+      expect(cwdClaude.lines.join('\n')).toMatch(/claude\s+: not detected — see README/);
+
+      rmSync(join(dir, '.claude.json'));
+      writeFileSync(
+        join(dir, '.mcp.json'),
+        JSON.stringify({ mcpServers: { fauxnix: { command: 'fauxnix', args: ['mcp'] } } }),
+      );
+      const project = await collectDoctorReport({ home: dir, cwd: dir, env: {}, nodeVersion: 'v20.0.0' });
+      expect(project.lines.join('\n')).toMatch(/claude\s+: fauxnix MCP configured/);
+      expect(project.lines.join('\n')).toContain('.mcp.json');
+
+      writeFileSync(join(dir, '.mcp.json'), JSON.stringify({ name: 'unrelated', fauxnix: true }));
+      const unrelatedMcp = await collectDoctorReport({
+        home: dir,
+        cwd: dir,
+        env: {},
+        nodeVersion: 'v20.0.0',
+      });
+      expect(unrelatedMcp.lines.join('\n')).toMatch(/claude\s+: not detected — see README/);
+
+      mkdirSync(join(dir, '.codex'));
+      writeFileSync(join(dir, '.codex', 'config.toml'), '[model]\nmodel = "gpt-5"\n');
+      const codexBare = await collectDoctorReport({ home: dir, cwd: dir, env: {}, nodeVersion: 'v20.0.0' });
+      expect(codexBare.lines.join('\n')).toContain('codex mcp add fauxnix');
+
+      writeFileSync(
+        join(dir, '.codex', 'config.toml'),
+        '[mcp_servers.fauxnix]\ncommand = "fauxnix"\nargs = ["mcp"]\n',
+      );
+      const codex = await collectDoctorReport({ home: dir, cwd: dir, env: {}, nodeVersion: 'v20.0.0' });
+      expect(codex.lines.join('\n')).toMatch(/codex\s+: fauxnix MCP configured/);
+
+      mkdirSync(join(dir, '.config', 'opencode'), { recursive: true });
+      writeFileSync(
+        join(dir, '.config', 'opencode', 'opencode.json'),
+        JSON.stringify({ mcp: { fauxnix: { type: 'local', command: ['fauxnix', 'mcp'] } } }),
+      );
+      const opencode = await collectDoctorReport({ home: dir, cwd: dir, env: {}, nodeVersion: 'v20.0.0' });
+      expect(opencode.lines.join('\n')).toMatch(/opencode\s+: fauxnix MCP configured/);
+
+      writeFileSync(
+        join(dir, '.config', 'opencode', 'opencode.json'),
+        JSON.stringify({
+          mcp: { servers: { fauxnix: { type: 'local', command: ['fauxnix', 'mcp'] } } },
+        }),
+      );
+      const opencodeV2 = await collectDoctorReport({ home: dir, cwd: dir, env: {}, nodeVersion: 'v20.0.0' });
+      expect(opencodeV2.lines.join('\n')).toMatch(/opencode\s+: fauxnix MCP configured/);
+
+      rmSync(join(dir, '.config'), { recursive: true, force: true });
+      writeFileSync(
+        join(dir, 'opencode.json'),
+        JSON.stringify({ mcp: { fauxnix: { type: 'local', command: ['fauxnix', 'mcp'] } } }),
+      );
+      const cwdOnly = await collectDoctorReport({ home: dir, cwd: dir, env: {}, nodeVersion: 'v20.0.0' });
+      expect(cwdOnly.lines.join('\n')).toMatch(/opencode\s+: not detected — see README/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe.skipIf(process.platform !== 'win32')('cli doctor spawn', () => {
+  it('node src/index.ts doctor does not throw', () => {
+    const tsx = join(process.cwd(), 'node_modules', 'tsx', 'dist', 'cli.mjs');
+    expect(existsSync(tsx)).toBe(true);
+    const r = spawnSync(process.execPath, [tsx, 'src/index.ts', 'doctor'], {
+      encoding: 'utf8',
+      timeout: 30000,
+      env: process.env,
+    });
+    expect(r.error).toBeUndefined();
+    expect(r.stdout).toContain('powershell');
+    expect(r.stdout).toContain('encoding');
+    expect(r.stdout).toContain('FAUXNIX_NATIVE_ENCODING');
+    expect(r.stdout).toContain('start with: fauxnix mcp');
+    expect(r.stdout).toMatch(/claude\s+:/);
+    expect(r.stdout).toMatch(/codex\s+:/);
+    expect(r.stdout).toMatch(/opencode\s+:/);
+    expect(r.status).toBe(0);
   });
 });
