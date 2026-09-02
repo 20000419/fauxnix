@@ -1903,17 +1903,38 @@ const awk: Handler = (args) => {
 
   // -v may repeat; collect all of them
   const vvars: Array<[string, string]> = [];
+  const addVVar = (nv: string): void => {
+    const eq = nv.indexOf('=');
+    if (eq < 1) {
+      throw new FauxnixParseError("fauxnix: awk invalid -v assignment '" + nv + "'");
+    }
+    const name = nv.slice(0, eq);
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+      throw new FauxnixParseError("fauxnix: awk invalid variable name '" + name + "'");
+    }
+    vvars.push([name, nv.slice(eq + 1)]);
+  };
+  let onlyOperands = false;
   for (let i = 0; i < args.length; i++) {
     const t = wordToString(args[i]);
-    if (t === '-v' && i + 1 < args.length) {
-      const nv = wordToString(args[i + 1]);
-      const eq = nv.indexOf('=');
-      if (eq > 0) vvars.push([nv.slice(0, eq), nv.slice(eq + 1)]);
+    if (t === '--') {
+      onlyOperands = true;
+      continue;
+    }
+    if (onlyOperands) continue;
+    if (t === '-F') {
+      if (i + 1 < args.length) i++;
+      continue;
+    }
+    if (t.startsWith('-F') && t.length > 2) continue;
+    if (t === '-v') {
+      if (i + 1 >= args.length) {
+        throw new FauxnixParseError('fauxnix: awk -v requires an argument');
+      }
+      addVVar(wordToString(args[i + 1]));
       i++;
     } else if (t.startsWith('-v') && t.length > 2) {
-      const nv = t.slice(2);
-      const eq = nv.indexOf('=');
-      if (eq > 0) vvars.push([nv.slice(0, eq), nv.slice(eq + 1)]);
+      addVVar(t.slice(2));
     }
   }
 

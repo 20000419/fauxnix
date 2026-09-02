@@ -1438,6 +1438,67 @@ describe('CommandSpec text-io leftovers (#143)', () => {
     expect(follow).not.toContain('fx-read');
   });
 
+  it('tail rejects code syntax in separate, attached, long, and bundled count forms', () => {
+    const bad = [
+      "tail -n '1); Write-Output UNEXPECTED_TAIL_N; [int](1' f",
+      "tail -c '1); Write-Output UNEXPECTED_TAIL_C; [int](1' f",
+      "tail -n'1); Write-Output UNEXPECTED_TAIL_N_ATTACHED; [int](1' f",
+      "tail -c'1); Write-Output UNEXPECTED_TAIL_C_ATTACHED; [int](1' f",
+      "tail -qn'1); Write-Output UNEXPECTED_TAIL_N_BUNDLED; [int](1' f",
+      "tail --lines='1); Write-Output UNEXPECTED_TAIL_LINES; [int](1' f",
+      "tail --bytes='1); Write-Output UNEXPECTED_TAIL_BYTES; [int](1' f",
+      "tail --lines '1); Write-Output UNEXPECTED_TAIL_LINES_SEPARATE; [int](1' f",
+      "tail --bytes '1); Write-Output UNEXPECTED_TAIL_BYTES_SEPARATE; [int](1' f",
+    ];
+    for (const cmd of bad) {
+      const body = bodyOf(cmd);
+      expect(body, cmd).toContain('tail: invalid number of');
+      expect(body, cmd).toContain('$script:fx_exit = 1');
+      expect(body, cmd).not.toContain('$fx_count = [int](');
+    }
+  });
+
+  it('tail emits canonical Int32 counts and fails loud on syntax or overflow', () => {
+    expect(bodyOf('tail -n 0002 f')).toContain('$fx_count = [int](2)');
+    expect(bodyOf('tail -n2 f')).toContain('$fx_count = [int](2)');
+    expect(bodyOf('tail -qn2 f')).toContain('$fx_count = [int](2)');
+    expect(bodyOf('tail -vc2 f')).toContain('$fx_count = [int](2)');
+    expect(bodyOf('tail --lines 2 f')).toContain('$fx_count = [int](2)');
+    expect(bodyOf('tail --bytes 2 f')).toContain('$fx_count = [int](2)');
+    expect(bodyOf('tail --lines=+0002 f')).toContain('$fx_count = [int](2)');
+    expect(bodyOf('tail --lines=2147483647 f')).toContain(
+      '$fx_count = [int](2147483647)',
+    );
+    expect(bodyOf('tail --bytes=2147483647 f')).toContain(
+      '$fx_count = [int](2147483647)',
+    );
+    expect(bodyOf('tail -c -2 f')).toContain('$fx_txt.Length - $fx_count');
+    expect(bodyOf('tail -c +2 f')).toContain('$fx_st = $fx_count - 1');
+
+    const mixed = bodyOf('tail --bytes=1 --lines=2 f');
+    expect(mixed).toContain('$fx_count = [int](2)');
+    expect(mixed).toContain('$fx_ls.Count - $fx_count');
+    const repeated = bodyOf('tail --lines=+2 --lines=1 f');
+    expect(repeated).toContain('$fx_from = $false');
+
+    const bad = [
+      'tail -n --1 f',
+      'tail --lines=+-1 f',
+      'tail -c 1KB f',
+      'tail --bytes=0x10 f',
+      'tail --lines=2147483648 f',
+      'tail -n -2147483648 f',
+      'tail -c -2147483648 f',
+      'tail --lines=bogus --lines=1 f',
+      'tail --lines=+2 --lines=bogus f',
+    ];
+    for (const cmd of bad) {
+      const body = bodyOf(cmd);
+      expect(body, cmd).toContain('tail: invalid number of');
+      expect(body, cmd).not.toContain('$fx_count = [int](');
+    }
+  });
+
   it('wc -l/-w/-c/-m are spec\'d; find/xargs/nl stay unspec\'d', () => {
     expect(lookupSpec('wc')).toBeTruthy();
     expect(bodyOf('wc -lwm f')).not.toContain('invalid option');
@@ -1451,6 +1512,45 @@ describe('CommandSpec text-io leftovers (#143)', () => {
 
 describe('CommandSpec text-filters leftovers (#143)', () => {
   const bodyOf = (cmd: string): string => translateCommandList(parse(cmd))[0].body;
+
+  it('awk -v only generates PowerShell names from strict awk identifiers', () => {
+    const body = bodyOf(
+      "awk -v _=0 -v answer=42 -v empty= -v 'pair=a=b' -v 'message=hello world' 'BEGIN { print answer }'",
+    );
+    expect(body).toContain('$fxv__ = [double]0');
+    expect(body).toContain('$fxv_answer = [double]42');
+    expect(body).toContain("$fxv_empty = ''");
+    expect(body).toContain("$fxv_pair = 'a=b'");
+    expect(body).toContain("$fxv_message = 'hello world'");
+    expect(bodyOf("awk -vname_2=7 'BEGIN { print name_2 }'")).toContain(
+      '$fxv_name_2 = [double]7',
+    );
+    expect(() => bodyOf("awk -- 'BEGIN { print 1 }' '-vbad-name=1'")).not.toThrow();
+    expect(bodyOf("awk -F -- -v answer=42 'BEGIN { print answer }'")).toContain(
+      '$fxv_answer = [double]42',
+    );
+    expect(() => bodyOf("awk -F '-vbad-name=1' 'BEGIN { print 1 }'")).not.toThrow();
+  });
+
+  it('awk -v rejects malformed and code-bearing names before generation', () => {
+    const invalidNames = [
+      "awk -v '9name=1' 'BEGIN { print 1 }'",
+      "awk -v 'bad-name=1' 'BEGIN { print 1 }'",
+      "awk -v '名字=1' 'BEGIN { print 1 }'",
+      "awk -v 'x; Write-Output UNEXPECTED_AWK; $z=1' 'BEGIN { print 1 }'",
+      "awk '-vx; Write-Output UNEXPECTED_AWK_ATTACHED; $z=1' 'BEGIN { print 1 }'",
+    ];
+    for (const cmd of invalidNames) {
+      expect(() => bodyOf(cmd)).toThrow(/awk invalid variable name/);
+    }
+    expect(() => bodyOf("awk -v name 'BEGIN { print 1 }'")).toThrow(
+      /awk invalid -v assignment/,
+    );
+    expect(() => bodyOf("awk -v '=1' 'BEGIN { print 1 }'")).toThrow(
+      /awk invalid -v assignment/,
+    );
+    expect(() => bodyOf("awk 'BEGIN { print 1 }' -v")).toThrow(/awk -v requires an argument/);
+  });
 
   it('sort/uniq/cut/tr are spec\'d; sed/awk/egrep stay unspec\'d', () => {
     expect(lookupSpec('sort')).toBeTruthy();
