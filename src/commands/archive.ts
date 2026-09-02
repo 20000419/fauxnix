@@ -319,7 +319,7 @@ const zip: Handler = (args) => {
     "    $fx_dst = $fx_arc",
     '    $fx_rename = $false',
     "    if (-not $fx_arc.ToLower().EndsWith('.zip')) { $fx_dst = $fx_arc + '.zip'; $fx_rename = $true }",
-    '    Compress-Archive -Path $fx_valid -DestinationPath $fx_dst -Force -ErrorAction Stop',
+    '    Compress-Archive -LiteralPath $fx_valid -DestinationPath $fx_dst -Force -ErrorAction Stop',
     // PS 5.1 Compress-Archive writes `\` entry separators; rewrite them to `/`
     // so GNU unzip/bsdtar see proper directory entries.
     '    Add-Type -AssemblyName System.IO.Compression.FileSystem',

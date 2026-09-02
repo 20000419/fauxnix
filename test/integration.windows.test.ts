@@ -977,6 +977,62 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect(z.stdout).toBe('');
   });
 
+  it('zip archives wildcard-looking names literally', async () => {
+    writeFileSync(join(dir, '[.]env'), 'bracket-dot\n', 'utf8');
+    writeFileSync(join(dir, '.env'), 'plain-dot\n', 'utf8');
+    writeFileSync(join(dir, '[wild].txt'), 'bracket-name\n', 'utf8');
+    writeFileSync(join(dir, 'w.txt'), 'wildcard-match\n', 'utf8');
+
+    const zipped = await run("zip literal-paths.zip '[.]env' '.env' '[wild].txt'");
+    expect(zipped.exitCode).toBe(0);
+    expect(zipped.stderr).toBe('');
+
+    const listed = await run('unzip -l literal-paths.zip');
+    expect(listed.exitCode).toBe(0);
+    expect(listed.stdout).toContain('[.]env');
+    expect(listed.stdout).toContain('.env');
+    expect(listed.stdout).toContain('[wild].txt');
+    expect(listed.stdout).not.toContain('w.txt');
+
+    const extracted = await run('unzip -o -d literal-out literal-paths.zip');
+    expect(extracted.exitCode).toBe(0);
+    expect(readFileSync(join(dir, 'literal-out', '[.]env'), 'utf8')).toBe('bracket-dot\n');
+    expect(readFileSync(join(dir, 'literal-out', '.env'), 'utf8')).toBe('plain-dot\n');
+    expect(readFileSync(join(dir, 'literal-out', '[wild].txt'), 'utf8')).toBe(
+      'bracket-name\n',
+    );
+    expect(existsSync(join(dir, 'literal-out', 'w.txt'))).toBe(false);
+
+    for (const [operand, archive] of [
+      ['*', 'literal-star.zip'],
+      ['?', 'literal-question.zip'],
+    ] as const) {
+      const missing = await run(`zip ${archive} '${operand}'`);
+      expect(missing.exitCode).toBe(12);
+      expect(missing.stderr).toContain('name not matched');
+      expect(existsSync(join(dir, archive))).toBe(false);
+    }
+  });
+
+  it('zip literal paths retain multi-input recursion and force-overwrite behavior', async () => {
+    mkdirSync(join(dir, 'zip-tree', 'nested'), { recursive: true });
+    writeFileSync(join(dir, 'zip-tree', 'nested', 'inside.txt'), 'inside\n', 'utf8');
+
+    const initial = await run('zip -r zip-shape.zip zip-tree fruits.txt');
+    expect(initial.exitCode).toBe(0);
+    const initialList = (await run('unzip -l zip-shape.zip')).stdout.replaceAll('\\', '/');
+    expect(initialList).toContain('zip-tree/nested/inside.txt');
+    expect(initialList).toContain('fruits.txt');
+
+    writeFileSync(join(dir, '[replacement].txt'), 'replacement\n', 'utf8');
+    const replaced = await run("zip zip-shape.zip '[replacement].txt'");
+    expect(replaced.exitCode).toBe(0);
+    const replacedList = (await run('unzip -l zip-shape.zip')).stdout.replaceAll('\\', '/');
+    expect(replacedList).toContain('[replacement].txt');
+    expect(replacedList).not.toContain('zip-tree/');
+    expect(replacedList).not.toContain('fruits.txt');
+  });
+
   it('printf CRLF without a trailing LF is preserved on redirect', async () => {
     const r = await run("printf 'a\\r\\nb' > cr.txt; wc -c cr.txt");
     expect(r.exitCode).toBe(0);
