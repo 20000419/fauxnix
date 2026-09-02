@@ -253,7 +253,7 @@ const env: Handler = (args, ctx) => {
       return (
         '[Console]::Error.WriteLine(' +
         psStr(
-          'fauxnix: env -i/--ignore-environment is not supported (would silently keep inherited secrets)',
+          'fauxnix: env -i/--ignore-environment is not supported (would silently keep inherited secrets). Use env -u NAME or unset first instead.',
         ) +
         '); $script:fx_exit = 2'
       );
@@ -2624,7 +2624,7 @@ const source: Handler = (args) => {
 
 const evalCmd: Handler = () => {
   return (
-    "[Console]::Error.WriteLine('fauxnix: eval is not supported; pass the command itself'); $script:fx_exit = 1"
+    "[Console]::Error.WriteLine('fauxnix: eval is not supported; pass the command itself instead'); $script:fx_exit = 1"
   );
 };
 
@@ -2658,7 +2658,7 @@ const alias: Handler = (args) => {
     return t !== '' && !t.startsWith('-');
   });
   if (!has) return '';
-  return "[Console]::Error.WriteLine('fauxnix: alias is not supported'); $script:fx_exit = 1";
+  return "[Console]::Error.WriteLine('fauxnix: alias is not supported. Invoke the real command instead.'); $script:fx_exit = 1";
 };
 
 const set: Handler = (args) => {
@@ -2683,7 +2683,7 @@ const set: Handler = (args) => {
     return (
       '[Console]::Error.WriteLine(' +
       psStr(
-        'fauxnix: set -e/-u/-x is not supported (would silently lie); use explicit || exit',
+        'fauxnix: set -e/-u/-x is not supported (would silently lie); use explicit || exit instead',
       ) +
       '); $script:fx_exit = 2'
     );
