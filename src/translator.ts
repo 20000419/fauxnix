@@ -1,7 +1,6 @@
 import {
   Assignment,
   CommandList,
-  FauxnixParseError,
   Redirect,
   ShellCommand,
   SimpleCommand,
@@ -382,16 +381,11 @@ export function argListExpr(words: Word[], fn: (w: Word) => string = exprOfWord)
  * Unquoted command words join non-empty lines with a space (IFS
  * word-split approximation). Handlers often emit one string object, so
  * a bare `$(…)` interpolation would keep those newlines.
+ * Lists (`;` `&&` `||`) reuse translateListInline inside the fx-csub
+ * scriptblock so the newline contract is unchanged.
  */
 export function translateCmdSub(cmdText: string, keepNl = false): string {
-  const list = parseCommand(cmdText);
-  if (list.segments.length !== 1) {
-    throw new FauxnixParseError(
-      'fauxnix: command substitution with ; && || is not supported yet',
-    );
-  }
-  const { defs, call } = translatePipelineBody(list.segments[0].pipeline);
-  const inner = defs ? defs + '\n' + call : call;
+  const inner = translateListInline(parseCommand(cmdText));
   const collected = '(fx-csub { ' + inner + ' })';
   if (keepNl) return collected;
   return (
@@ -1211,7 +1205,16 @@ export function wrapScript(body: string, opts: WrapScriptOptions = {}): string {
       '  $script:fx_csub = $true',
       '  try { $fx_o = @(& $b | ForEach-Object { [string]$_ }) }',
       '  finally { $script:fx_csub = $fx_prevcs }',
-      '  $fx_s = ($fx_o -join [string][char]10)',
+      // Line items (no trailing NL) get a NL between them. Chunks that
+      // already end in NL concatenate, so $(echo a; echo b) is a\nb.
+      "  $fx_s = ''",
+      '  foreach ($fx_x in $fx_o) {',
+      '    $fx_t = [string]$fx_x',
+      '    if ($fx_s.Length -gt 0 -and $fx_s[$fx_s.Length - 1] -ne [char]10) {',
+      '      $fx_s += [string][char]10',
+      '    }',
+      '    $fx_s += $fx_t',
+      '  }',
       '  while ($fx_s.Length -gt 0 -and $fx_s[$fx_s.Length - 1] -eq [char]10) {',
       '    $fx_s = $fx_s.Substring(0, $fx_s.Length - 1)',
       '  }',

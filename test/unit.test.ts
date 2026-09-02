@@ -95,6 +95,26 @@ describe('parser', () => {
     expect(exprOfWord(a.assignments[0].value, { preserveCmdSub: true })).not.toContain("-join ' '");
   });
 
+  it('translates multi-segment command substitution (C-4)', () => {
+    expect(() => translateCommandList(parse('echo $(echo a; echo b)'))).not.toThrow();
+    const body = translateCommandList(parse('echo $(echo a; echo b)'))[0].body;
+    expect(body).toContain('fx-csub');
+    expect(body).toContain("'a'");
+    expect(body).toContain("'b'");
+    expect(body).toContain('-split [string][char]10');
+    const quoted = exprOfWord(
+      parse('echo "$(echo a; echo b)"').segments[0].pipeline.commands[0].args[0],
+    );
+    expect(quoted).toContain('fx-csub');
+    expect(quoted).toContain("'a'");
+    expect(quoted).toContain("'b'");
+    expect(quoted).not.toContain('-split [string][char]10');
+    const andBody = translateCommandList(parse('echo $(true && echo y)'))[0].body;
+    expect(andBody).toContain('fx-csub');
+    expect(andBody).toContain('if ($script:fx_exit -eq 0)');
+    expect(andBody).toContain("'y'");
+  });
+
   it('set -e is a loud usage error, not a silent no-op', () => {
     const script = translateCommandList(parse('set -e'))[0].script;
     expect(script).toMatch(/set -e\/-u\/-x is not supported/);
