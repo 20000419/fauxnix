@@ -369,6 +369,21 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect(r.stdout.trim()).toBe('apple');
   });
 
+  it('rejects stdout redirect on a non-last pipeline stage', () => {
+    expect(() => translateCommandList(parseCommand('echo hi >f | cat'))).toThrow(
+      'fauxnix: stdout redirect on a non-last pipeline stage is not supported yet; write the file in a previous list segment (cmd >f; cat f) or wait for per-stage fds (#157)',
+    );
+  });
+
+  it('last-stage stdout redirect still writes', async () => {
+    const r = await run('echo hi | cat > lastpipe.txt');
+    expect(r.exitCode).toBe(0);
+    expect(readFileSync(join(dir, 'lastpipe.txt'), 'utf8').trim()).toBe('hi');
+    const single = await run('echo hi > singleout.txt');
+    expect(single.exitCode).toBe(0);
+    expect(readFileSync(join(dir, 'singleout.txt'), 'utf8').trim()).toBe('hi');
+  });
+
   it(
     '[[ ]] file and string tests, including =~',
     async () => {
