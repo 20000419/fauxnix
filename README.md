@@ -252,6 +252,11 @@ executor wrapper) · `src/executor.ts` (spawn, redirects, session persistence) �
 Roadmap: [docs/rfc-roadmap-to-1.0.md](docs/rfc-roadmap-to-1.0.md) — tracks, milestones,
 and the RFC process for proposing waves.
 
+## Security
+
+Trust model, host protocol, kill semantics, network guard, and reporting:
+[SECURITY.md](SECURITY.md).
+
 ## License
 
 MIT © 20000419
