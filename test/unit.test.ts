@@ -1,10 +1,11 @@
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runCli, USAGE } from '../src/cli.js';
 import { collectDoctorReport } from '../src/doctor.js';
+import { kimiConfigPath, qwenConfigPath, runInstall } from '../src/install.js';
 import { FauxnixParseError, isUnquotedLiteral, wordToString } from '../src/ast.js';
 import { parseCommand as parse, tokenize } from '../src/parser.js';
 import {
@@ -1613,6 +1614,351 @@ describe('cli doctor', () => {
       );
       const cwdOnly = await collectDoctorReport({ home: dir, cwd: dir, env: {}, nodeVersion: 'v20.0.0' });
       expect(cwdOnly.lines.join('\n')).toMatch(/opencode\s+: not detected — see README/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('cli install', () => {
+  it('USAGE lists install', async () => {
+    expect(USAGE).toMatch(/fauxnix install --claude/);
+    expect(USAGE).toContain('--codex');
+    expect(USAGE).toContain('--opencode');
+    expect(USAGE).toContain('--kimi');
+    expect(USAGE).toContain('--qwen');
+    const src = readFileSync('src/cli.ts', 'utf8');
+    expect(src).toContain("verb === 'install'");
+    const lines: string[] = [];
+    const orig = console.log;
+    console.log = (...args: unknown[]) => {
+      lines.push(args.map((a) => String(a)).join(' '));
+    };
+    try {
+      await runCli([]);
+    } finally {
+      console.log = orig;
+    }
+    expect(lines.join('\n')).toContain('fauxnix install');
+  });
+
+  it('runCli install without flags prints usage and does not write', async () => {
+    const lines: string[] = [];
+    const orig = console.log;
+    const prev = process.exitCode;
+    console.log = (...args: unknown[]) => {
+      lines.push(args.map((a) => String(a)).join(' '));
+    };
+    process.exitCode = undefined;
+    try {
+      await runCli(['install']);
+      expect(process.exitCode).toBe(1);
+    } finally {
+      console.log = orig;
+      process.exitCode = prev;
+    }
+    expect(lines.join('\n')).toContain('--claude');
+    expect(lines.join('\n')).toContain('select a harness');
+  });
+});
+
+describe('install harness config', () => {
+  function opts(dir: string, env: NodeJS.ProcessEnv = {}) {
+    return { home: dir, cwd: dir, env };
+  }
+
+  async function doctorText(dir: string, env: NodeJS.ProcessEnv = {}): Promise<string> {
+    const report = await collectDoctorReport({
+      home: dir,
+      cwd: dir,
+      env,
+      nodeVersion: 'v20.0.0',
+    });
+    return report.lines.join('\n');
+  }
+
+  it('rejects unknown flags and --help without writing', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fauxnix-install-'));
+    expect(dir).not.toBe(homedir());
+    try {
+      const bad = runInstall(['--nope'], opts(dir));
+      expect(bad.ok).toBe(false);
+      expect(bad.lines.join('\n')).toContain('unknown harness: --nope');
+      expect(existsSync(join(dir, '.claude.json'))).toBe(false);
+
+      const help = runInstall(['--help'], opts(dir));
+      expect(help.ok).toBe(true);
+      expect(help.lines.join('\n')).toContain('fauxnix install --claude');
+      expect(existsSync(join(dir, '.claude.json'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('writes Claude user config, preserves unrelated keys, and is idempotent', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fauxnix-install-'));
+    expect(dir).not.toBe(homedir());
+    try {
+      const claudePath = join(dir, '.claude.json');
+      writeFileSync(
+        claudePath,
+        JSON.stringify(
+          {
+            theme: 'dark',
+            projects: { 'C:\\work\\app': { allowedTools: ['Bash'] } },
+            mcpServers: { github: { command: 'npx' } },
+          },
+          null,
+          2,
+        ),
+      );
+      const r = runInstall(['--claude'], opts(dir));
+      expect(r.ok).toBe(true);
+      expect(r.lines[0]).toContain('patched');
+      expect(r.lines[0]).toContain(claudePath);
+      const data = JSON.parse(readFileSync(claudePath, 'utf8')) as {
+        theme: string;
+        projects: unknown;
+        mcpServers: Record<string, unknown>;
+      };
+      expect(data.theme).toBe('dark');
+      expect(data.projects).toEqual({ 'C:\\work\\app': { allowedTools: ['Bash'] } });
+      expect(data.mcpServers.github).toEqual({ command: 'npx' });
+      expect(data.mcpServers.fauxnix).toEqual({ command: 'fauxnix', args: ['mcp'] });
+      expect(await doctorText(dir)).toMatch(/claude\s+: fauxnix MCP configured/);
+
+      const before = readFileSync(claudePath, 'utf8');
+      const again = runInstall(['--claude'], opts(dir));
+      expect(again.ok).toBe(true);
+      expect(again.lines[0]).toContain('already configured');
+      expect(readFileSync(claudePath, 'utf8')).toBe(before);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('creates Claude config and respects CLAUDE_CONFIG_DIR', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fauxnix-install-'));
+    try {
+      const created = runInstall(['--claude'], opts(dir));
+      expect(created.ok).toBe(true);
+      expect(created.lines[0]).toContain('created');
+      expect(JSON.parse(readFileSync(join(dir, '.claude.json'), 'utf8'))).toEqual({
+        mcpServers: { fauxnix: { command: 'fauxnix', args: ['mcp'] } },
+      });
+
+      const cfgDir = join(dir, 'custom-claude');
+      const env = { CLAUDE_CONFIG_DIR: cfgDir };
+      const custom = runInstall(['--claude'], opts(dir, env));
+      expect(custom.ok).toBe(true);
+      expect(existsSync(join(cfgDir, '.claude.json'))).toBe(true);
+      expect(custom.lines[0]).toContain(join(cfgDir, '.claude.json'));
+      expect(await doctorText(dir, env)).toMatch(/claude\s+: fauxnix MCP configured/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not overwrite invalid Claude JSON or a non-object mcpServers', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fauxnix-install-'));
+    try {
+      const claudePath = join(dir, '.claude.json');
+      writeFileSync(claudePath, '{ not json');
+      const bad = runInstall(['--claude'], opts(dir));
+      expect(bad.ok).toBe(false);
+      expect(bad.lines[0]).toContain('not valid JSON');
+      expect(readFileSync(claudePath, 'utf8')).toBe('{ not json');
+
+      writeFileSync(claudePath, JSON.stringify({ mcpServers: ['nope'] }));
+      const wrong = runInstall(['--claude'], opts(dir));
+      expect(wrong.ok).toBe(false);
+      expect(wrong.lines[0]).toContain('mcpServers is not an object');
+      expect(JSON.parse(readFileSync(claudePath, 'utf8'))).toEqual({ mcpServers: ['nope'] });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not write project .mcp.json for Claude', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fauxnix-install-'));
+    try {
+      writeFileSync(join(dir, '.mcp.json'), JSON.stringify({ keep: true }));
+      const r = runInstall(['--claude'], opts(dir));
+      expect(r.ok).toBe(true);
+      expect(existsSync(join(dir, '.claude.json'))).toBe(true);
+      expect(JSON.parse(readFileSync(join(dir, '.mcp.json'), 'utf8'))).toEqual({ keep: true });
+      expect(await doctorText(dir)).toMatch(/claude\s+: fauxnix MCP configured/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('appends Codex TOML without rewriting comments and is idempotent', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fauxnix-install-'));
+    try {
+      mkdirSync(join(dir, '.codex'));
+      const path = join(dir, '.codex', 'config.toml');
+      writeFileSync(path, '# keep me\r\n[model]\r\nmodel = "gpt-5"\r\n');
+      const r = runInstall(['--codex'], opts(dir));
+      expect(r.ok).toBe(true);
+      expect(r.lines[0]).toContain('patched');
+      const out = readFileSync(path, 'utf8');
+      expect(out.startsWith('# keep me')).toBe(true);
+      expect(out).toContain('[model]');
+      expect(out).toContain('model = "gpt-5"');
+      expect(out).toContain('[mcp_servers.fauxnix]');
+      expect(out).toContain('command = "fauxnix"');
+      expect(out).toContain('args = ["mcp"]');
+      expect(await doctorText(dir)).toMatch(/codex\s+: fauxnix MCP configured/);
+
+      const before = readFileSync(path, 'utf8');
+      const again = runInstall(['--codex'], opts(dir));
+      expect(again.lines[0]).toContain('already configured');
+      expect(readFileSync(path, 'utf8')).toBe(before);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('creates Codex config and respects CODEX_HOME', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fauxnix-install-'));
+    try {
+      const created = runInstall(['--codex'], opts(dir));
+      expect(created.ok).toBe(true);
+      expect(created.lines[0]).toContain('created');
+      expect(readFileSync(join(dir, '.codex', 'config.toml'), 'utf8')).toContain(
+        '[mcp_servers.fauxnix]',
+      );
+
+      const home = join(dir, 'my-codex');
+      const env = { CODEX_HOME: home };
+      const custom = runInstall(['--codex'], opts(dir, env));
+      expect(custom.ok).toBe(true);
+      expect(existsSync(join(home, 'config.toml'))).toBe(true);
+      expect(await doctorText(dir, env)).toMatch(/codex\s+: fauxnix MCP configured/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('writes OpenCode mcp.fauxnix, nested servers, and respects XDG_CONFIG_HOME', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fauxnix-install-'));
+    try {
+      const path = join(dir, '.config', 'opencode', 'opencode.json');
+      mkdirSync(join(dir, '.config', 'opencode'), { recursive: true });
+      writeFileSync(
+        path,
+        JSON.stringify({
+          $schema: 'https://opencode.ai/config.json',
+          model: 'x',
+          mcp: { github: { type: 'remote', url: 'https://example' } },
+        }),
+      );
+      const r = runInstall(['--opencode'], opts(dir));
+      expect(r.ok).toBe(true);
+      expect(r.lines[0]).toContain('patched');
+      const data = JSON.parse(readFileSync(path, 'utf8')) as {
+        $schema: string;
+        model: string;
+        mcp: Record<string, unknown>;
+      };
+      expect(data.$schema).toBe('https://opencode.ai/config.json');
+      expect(data.model).toBe('x');
+      expect(data.mcp.github).toEqual({ type: 'remote', url: 'https://example' });
+      expect(data.mcp.fauxnix).toEqual({ type: 'local', command: ['fauxnix', 'mcp'] });
+      expect(await doctorText(dir)).toMatch(/opencode\s+: fauxnix MCP configured/);
+
+      const nestedDir = join(dir, 'xdg');
+      const nestedPath = join(nestedDir, 'opencode', 'opencode.json');
+      mkdirSync(join(nestedDir, 'opencode'), { recursive: true });
+      writeFileSync(
+        nestedPath,
+        JSON.stringify({
+          mcp: { servers: { github: { type: 'local', command: ['npx'] } } },
+        }),
+      );
+      const env = { XDG_CONFIG_HOME: nestedDir };
+      const nested = runInstall(['--opencode'], opts(dir, env));
+      expect(nested.ok).toBe(true);
+      const nestedData = JSON.parse(readFileSync(nestedPath, 'utf8')) as {
+        mcp: { servers: Record<string, unknown> };
+      };
+      expect(nestedData.mcp.servers.github).toEqual({ type: 'local', command: ['npx'] });
+      expect(nestedData.mcp.servers.fauxnix).toEqual({
+        type: 'local',
+        command: ['fauxnix', 'mcp'],
+      });
+      expect(await doctorText(dir, env)).toMatch(/opencode\s+: fauxnix MCP configured/);
+
+      writeFileSync(join(dir, 'opencode.json'), JSON.stringify({ keep: true }));
+      const cwdFile = readFileSync(join(dir, 'opencode.json'), 'utf8');
+      runInstall(['--opencode'], opts(dir));
+      expect(readFileSync(join(dir, 'opencode.json'), 'utf8')).toBe(cwdFile);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('writes Kimi ~/.kimi-code/mcp.json and Qwen ~/.qwen/settings.json', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fauxnix-install-'));
+    try {
+      const kimiPath = kimiConfigPath(dir, {});
+      mkdirSync(join(dir, '.kimi-code'));
+      writeFileSync(
+        kimiPath,
+        JSON.stringify({ mcpServers: { other: { command: 'npx' } } }, null, 2),
+      );
+      const kimi = runInstall(['--kimi'], opts(dir));
+      expect(kimi.ok).toBe(true);
+      expect(kimi.lines[0]).toContain('patched');
+      const kimiData = JSON.parse(readFileSync(kimiPath, 'utf8')) as {
+        mcpServers: Record<string, unknown>;
+      };
+      expect(kimiData.mcpServers.other).toEqual({ command: 'npx' });
+      expect(kimiData.mcpServers.fauxnix).toEqual({ command: 'fauxnix', args: ['mcp'] });
+
+      const qwenPath = qwenConfigPath(dir, {});
+      mkdirSync(join(dir, '.qwen'));
+      writeFileSync(
+        qwenPath,
+        JSON.stringify({ theme: 'dark', mcpServers: { other: { command: 'npx' } } }, null, 2),
+      );
+      const qwen = runInstall(['--qwen'], opts(dir));
+      expect(qwen.ok).toBe(true);
+      const qwenData = JSON.parse(readFileSync(qwenPath, 'utf8')) as {
+        theme: string;
+        mcpServers: Record<string, unknown>;
+      };
+      expect(qwenData.theme).toBe('dark');
+      expect(qwenData.mcpServers.other).toEqual({ command: 'npx' });
+      expect(qwenData.mcpServers.fauxnix).toEqual({ command: 'fauxnix', args: ['mcp'] });
+
+      const kimiHome = join(dir, 'kimi-home');
+      const kimiEnv = { KIMI_CODE_HOME: kimiHome };
+      const custom = runInstall(['--kimi'], opts(dir, kimiEnv));
+      expect(custom.ok).toBe(true);
+      expect(existsSync(join(kimiHome, 'mcp.json'))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('installs multiple harnesses in one invocation', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fauxnix-install-'));
+    try {
+      const r = runInstall(['--claude', '--codex', '--opencode', '--kimi', '--qwen'], opts(dir));
+      expect(r.ok).toBe(true);
+      expect(r.lines).toHaveLength(5);
+      expect(r.lines.every((l) => l.includes('created'))).toBe(true);
+      expect(existsSync(join(dir, '.claude.json'))).toBe(true);
+      expect(existsSync(join(dir, '.codex', 'config.toml'))).toBe(true);
+      expect(existsSync(join(dir, '.config', 'opencode', 'opencode.json'))).toBe(true);
+      expect(existsSync(join(dir, '.kimi-code', 'mcp.json'))).toBe(true);
+      expect(existsSync(join(dir, '.qwen', 'settings.json'))).toBe(true);
+      const text = await doctorText(dir);
+      expect(text).toMatch(/claude\s+: fauxnix MCP configured/);
+      expect(text).toMatch(/codex\s+: fauxnix MCP configured/);
+      expect(text).toMatch(/opencode\s+: fauxnix MCP configured/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

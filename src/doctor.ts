@@ -85,10 +85,20 @@ function detectClaude(home: string, cwd: string, env: NodeJS.ProcessEnv): string
   return `found ${projectPath}, fauxnix MCP not listed — see README`;
 }
 
-function claudeUserConfigPath(home: string, env: NodeJS.ProcessEnv): string {
+export function claudeUserConfigPath(home: string, env: NodeJS.ProcessEnv): string {
   const dir = env.CLAUDE_CONFIG_DIR?.trim();
   if (dir) return join(dir, '.claude.json');
   return join(home, '.claude.json');
+}
+
+export function codexConfigPath(home: string, env: NodeJS.ProcessEnv): string {
+  const codexHome = env.CODEX_HOME?.trim() || join(home, '.codex');
+  return join(codexHome, 'config.toml');
+}
+
+export function openCodeConfigPath(home: string, env: NodeJS.ProcessEnv): string {
+  const xdg = env.XDG_CONFIG_HOME?.trim() || join(home, '.config');
+  return join(xdg, 'opencode', 'opencode.json');
 }
 
 function inspectClaudeJson(path: string): {
@@ -124,8 +134,7 @@ function inspectClaudeJson(path: string): {
 }
 
 function detectCodex(home: string, env: NodeJS.ProcessEnv): string {
-  const codexHome = env.CODEX_HOME?.trim() || join(home, '.codex');
-  const path = join(codexHome, 'config.toml');
+  const path = codexConfigPath(home, env);
   if (!existsSync(path)) return 'not detected — see README';
   const text = readText(path);
   if (text === undefined) return `found ${path} (unreadable) — see README`;
@@ -133,7 +142,7 @@ function detectCodex(home: string, env: NodeJS.ProcessEnv): string {
   return `found ${path}, fauxnix MCP not listed — run: codex mcp add fauxnix -- fauxnix mcp`;
 }
 
-function hasCodexFauxnix(text: string): boolean {
+export function hasCodexFauxnix(text: string): boolean {
   if (/^\s*\[mcp_servers\.(?:fauxnix|"fauxnix"|'fauxnix')\]/im.test(text)) return true;
   const tables = text.split(/^\s*\[/m);
   for (const table of tables) {
@@ -153,8 +162,7 @@ function hasCodexFauxnix(text: string): boolean {
 }
 
 function detectOpenCode(home: string, env: NodeJS.ProcessEnv): string {
-  const xdg = env.XDG_CONFIG_HOME?.trim() || join(home, '.config');
-  const path = join(xdg, 'opencode', 'opencode.json');
+  const path = openCodeConfigPath(home, env);
   if (!existsSync(path)) return 'not detected — see README';
   const text = readText(path);
   if (text === undefined) return `found ${path} (unreadable) — see README`;
@@ -168,7 +176,7 @@ function detectOpenCode(home: string, env: NodeJS.ProcessEnv): string {
   return `found ${path}, fauxnix MCP not listed — add mcp.fauxnix (see README)`;
 }
 
-function hasOpenCodeFauxnix(data: unknown): boolean {
+export function hasOpenCodeFauxnix(data: unknown): boolean {
   if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
   const mcp = (data as Record<string, unknown>).mcp;
   if (!isServerMap(mcp)) return false;
@@ -177,11 +185,11 @@ function hasOpenCodeFauxnix(data: unknown): boolean {
   return isServerMap(nested) && serverMapHasFauxnix(nested);
 }
 
-function isServerMap(value: unknown): boolean {
+export function isServerMap(value: unknown): boolean {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
-function serverMapHasFauxnix(value: unknown): boolean {
+export function serverMapHasFauxnix(value: unknown): boolean {
   if (!isServerMap(value)) return false;
   for (const [name, cfg] of Object.entries(value as Record<string, unknown>)) {
     if (name === 'servers') continue;

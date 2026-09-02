@@ -100,6 +100,9 @@ fauxnix translate "find . -name '*.log' -mtime +7 -delete"
 fauxnix check
 fauxnix doctor                   # check + encoding, harness config, MCP
 
+# write user-level MCP config (idempotent; also --codex/--opencode/--kimi/--qwen)
+fauxnix install --claude
+
 # run the MCP stdio server (what agent harnesses connect to)
 fauxnix mcp
 ```
@@ -110,7 +113,9 @@ with argv-style quoting — no string re-parsing, no quoting bugs.
 ## Use with your agent harness
 
 fauxnix ships an MCP stdio server exposing a `bash` tool (plus `fauxnix_translate` and
-`fauxnix_session`). Point any MCP-capable harness at it:
+`fauxnix_session`). Point any MCP-capable harness at it with
+`fauxnix install --claude` (or `--codex` / `--opencode` / `--kimi` / `--qwen`).
+Idempotent; prints what changed. Manual configs below.
 
 **Claude Code**
 ```bash
@@ -138,6 +143,15 @@ interactively and approve once).
 
 **Kimi Code** — unlike the others, MCP servers live in a JSON file, not the
 TOML config: `~/.kimi-code/mcp.json`
+```json
+{
+  "mcpServers": {
+    "fauxnix": { "command": "fauxnix", "args": ["mcp"] }
+  }
+}
+```
+
+**Qwen Code** (`~/.qwen/settings.json`)
 ```json
 {
   "mcpServers": {
