@@ -209,7 +209,7 @@ Exit codes follow bash conventions: 0 ok, 1 fail, 2 usage/serious, 127 command n
 ```
 bash command ──parser──▶ AST ──translator──▶ PowerShell script ──executor──▶ powershell.exe
                                                                               │
-agent ◀── GNU-style output, bash-style errors ◀── decoder (UTF-8 → GBK fallback) ◀┘
+agent ◀── GNU-style output, bash-style errors ◀── UTF-8 framed host protocol ◀┘
 ```
 
 - **Deterministic translation, zero LLM calls** at runtime.
@@ -217,9 +217,10 @@ agent ◀── GNU-style output, bash-style errors ◀── decoder (UTF-8 →
   "Fauxnix contract": string-per-line stdout, `[Console]::Error.WriteLine` for bash-style
   stderr, `$script:fx_exit` for exit codes, `$input` for stdin.
 - The executor wraps every script with UTF-8 enforcement (`[Console]::OutputEncoding`,
-  `$OutputEncoding`, `chcp 65001`), decodes output as strict-UTF-8 with a GBK(936) fallback for
-  legacy native tools, strips CLIXML serialization and PowerShell noise from stderr, and rewrites
-  common PowerShell errors (including zh-CN locale messages) into bash phrasing.
+  `$OutputEncoding`, `chcp 65001`), decodes native output at the process boundary (UTF-8 by
+  default or GBK(936) in `ansi` mode), keeps host frames UTF-8, strips CLIXML serialization and
+  PowerShell noise from stderr, and rewrites common PowerShell errors (including zh-CN locale
+  messages) into bash phrasing.
 - Scripts run via `-EncodedCommand` (UTF-16LE) and transparently fall back to a temp `.ps1` file
   when the 32 KB command-line limit would be exceeded.
 

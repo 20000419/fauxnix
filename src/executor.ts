@@ -545,8 +545,14 @@ async function runPlans(
     // GNU line discipline: the PS host terminates Write-Output lines with
     // CRLF. Exact writers (fx-write / printf / echo -n) must keep embedded
     // CR so `printf 'a\r\nb' > out` stays 4 bytes.
-    const segOut = normalizeHostNewlines(decodeOutput(inv.stdout, decodePref));
-    let segErr = normalizeHostNewlines(normalizeStderr(decodeOutput(inv.stderr, decodePref)));
+    // Captured protocol frames are always UTF-8. FAUXNIX_NATIVE_ENCODING is
+    // consumed at the native-process boundary inside fx-native; applying it
+    // again here double-decodes every translated/non-ASCII frame. Only bytes
+    // written directly to the host's OS stderr pipe retain a native encoding.
+    const segOut = normalizeHostNewlines(decodeOutput(inv.stdout, 'utf8'));
+    const framedErr = decodeOutput(inv.stderr, 'utf8');
+    const nativeErr = decodeOutput(inv.nativeStderr ?? Buffer.alloc(0), decodePref);
+    let segErr = normalizeHostNewlines(normalizeStderr(framedErr + nativeErr));
 
     if (inv.timedOut) {
       segErr += timeoutMessage;

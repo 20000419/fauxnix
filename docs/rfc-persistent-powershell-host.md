@@ -47,7 +47,7 @@ Host → Node:
 {"id":"<uuid>","stdoutB64":"<bytes>","stderrB64":"<bytes>","exitCode":0}
 ```
 
-Captured command streams are the UTF-8 bytes of `[Console]::Out` / `[Console]::Error` after redirecting those writers for the frame. Pipeline objects (`Write-Output` / `fx-write` line mode) are `WriteLine`d to the same `Console.Out` as they arrive so `echo -n` / `printf` exact writes still interleave correctly. Node runs the existing `decodeOutput` + `normalizeHostNewlines` path on those bytes.
+Captured command streams are the UTF-8 bytes of `[Console]::Out` / `[Console]::Error` after redirecting those writers for the frame. Pipeline objects (`Write-Output` / `fx-write` line mode) are `WriteLine`d to the same `Console.Out` as they arrive so `echo -n` / `printf` exact writes still interleave correctly. Node always decodes these framed bytes as UTF-8. Bytes written directly to the host's OS stderr pipe stay separate and use the selected native-tool decoder before both strings are normalized and joined.
 
 The per-frame script is `wrapScript(body, { mode: 'host' })`: same cwd/env persist files and try/catch as spawn mode, **no `exit`**, **no helper re-emit** (the bootstrap already defined every `fx-*`).
 
