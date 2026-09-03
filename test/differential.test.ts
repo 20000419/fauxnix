@@ -33,6 +33,12 @@ describe('differential corpus growth (C-7 / #118)', () => {
       'printf-grep-split',
       'head-lines-neg',
       'grep-e-or',
+      'middle-stdin-redirect',
+      'last-stage-stderr-file',
+      'last-stage-stderr-append',
+      'last-stage-stderr-to-stdout',
+      'attached-digit-stdout-append',
+      'last-stage-stdout-to-stderr',
     ]));
     expect(corpus.files['three.txt']?.split('\n').filter(Boolean)).toHaveLength(3);
     if (skipOracle) console.log(`differential oracle skipped: ${skipWhy}`);

@@ -396,6 +396,27 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     );
   });
 
+  it.each([
+    [
+      'cat missing.txt 2>err.txt | cat',
+      'fauxnix: stderr redirect (2>) on a non-last pipeline stage is not supported yet; spool the stage first (cmd >out 2>err; cat out | next) or wait for per-stage fds (#157)',
+    ],
+    [
+      'cat missing.txt 2>>err.txt | cat',
+      'fauxnix: stderr redirect (2>>) on a non-last pipeline stage is not supported yet; spool the stage first (cmd >out 2>>err; cat out | next) or wait for per-stage fds (#157)',
+    ],
+    [
+      'cat missing.txt 2>&1 | grep missing',
+      'fauxnix: 2>&1 on a non-last pipeline stage is not supported yet; spool the merged output first (cmd >out 2>&1; cat out | next) or wait for per-stage fds (#157)',
+    ],
+    [
+      'echo hi 1>&2 | cat',
+      'fauxnix: 1>&2 on a non-last pipeline stage is not supported yet; run the stage separately (cmd 1>&2; next </dev/null) or wait for per-stage fds (#157)',
+    ],
+  ])('rejects remaining non-last-stage fd redirect in %s', (command, message) => {
+    expect(() => translateCommandList(parseCommand(command))).toThrow(message);
+  });
+
   it('last-stage stdout redirect still writes', async () => {
     const r = await run('echo hi | cat > lastpipe.txt');
     expect(r.exitCode).toBe(0);
@@ -403,6 +424,42 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     const single = await run('echo hi > singleout.txt');
     expect(single.exitCode).toBe(0);
     expect(readFileSync(join(dir, 'singleout.txt'), 'utf8').trim()).toBe('hi');
+  });
+
+  it('keeps an attached word-final 2 as argv before stdout append', async () => {
+    const r = await run('echo file2>>attached-two.txt; cat attached-two.txt');
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe('file2\n');
+    expect(r.stderr).toBe('');
+  });
+
+  it('last-stage stderr and fd-dup redirects still execute through real PowerShell', async () => {
+    const stderrFile = await run('echo hi | cat missing-last-fd.txt 2> last-fd.err');
+    expect(stderrFile.exitCode).toBe(1);
+    expect(stderrFile.stdout).toBe('');
+    expect(stderrFile.stderr).toBe('');
+    expect(readFileSync(join(dir, 'last-fd.err'), 'utf8')).toContain(
+      'cat: missing-last-fd.txt: No such file or directory',
+    );
+
+    const append = await run(
+      'cat missing-append-one.txt 2> last-append.err; cat missing-append-two.txt 2>> last-append.err',
+    );
+    expect(append.exitCode).toBe(1);
+    expect(append.stderr).toBe('');
+    const appended = readFileSync(join(dir, 'last-append.err'), 'utf8');
+    expect(appended).toContain('cat: missing-append-one.txt: No such file or directory');
+    expect(appended).toContain('cat: missing-append-two.txt: No such file or directory');
+
+    const merged = await run('echo hi | cat missing-merged-fd.txt 2>&1');
+    expect(merged.exitCode).toBe(1);
+    expect(merged.stdout).toContain('cat: missing-merged-fd.txt: No such file or directory');
+    expect(merged.stderr).toBe('');
+
+    const stdoutToStderr = await run('printf x | echo last-fd-two 1>&2');
+    expect(stdoutToStderr.exitCode).toBe(0);
+    expect(stdoutToStderr.stdout).toBe('');
+    expect(stdoutToStderr.stderr).toBe('last-fd-two\n');
   });
 
   it(

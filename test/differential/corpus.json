@@ -11,7 +11,8 @@
     "abc.txt": "abc",
     "nums.txt": "1 2\n3 4\n5 6\n",
     "dups.txt": "aaa\naaa\nbbb\n",
-    "dotenv.env": "FOO=bar\nexport BAZ=qux\n"
+    "dotenv.env": "FOO=bar\nexport BAZ=qux\n",
+    "emit-streams.js": "process.stdout.write('OUT\\n');\nprocess.stderr.write('ERR');\n"
   },
   "cases": [
     {
@@ -63,6 +64,31 @@
       "id": "amp-null",
       "cmd": "cat missing.txt &>/dev/null; echo OK",
       "source": "#147"
+    },
+    {
+      "id": "last-stage-stderr-file",
+      "cmd": "node emit-streams.js 2> diff-stderr.txt; wc -c diff-stderr.txt",
+      "source": "#157 fail-loud safety / last-stage compatibility"
+    },
+    {
+      "id": "last-stage-stderr-append",
+      "cmd": "node emit-streams.js 2> diff-stderr-append.txt; node emit-streams.js 2>> diff-stderr-append.txt; wc -c diff-stderr-append.txt",
+      "source": "#157 fail-loud safety / last-stage compatibility"
+    },
+    {
+      "id": "last-stage-stderr-to-stdout",
+      "cmd": "node emit-streams.js 2>&1",
+      "source": "#157 fail-loud safety / last-stage compatibility"
+    },
+    {
+      "id": "attached-digit-stdout-append",
+      "cmd": "printf '' >diff-attached.txt; echo file2>>diff-attached.txt; cat diff-attached.txt",
+      "source": "#157 tokenizer boundary regression"
+    },
+    {
+      "id": "last-stage-stdout-to-stderr",
+      "cmd": "node emit-streams.js 1>&2",
+      "source": "#157 fail-loud safety / last-stage compatibility"
     },
     {
       "id": "pipe-last-true",

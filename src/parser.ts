@@ -34,7 +34,7 @@ interface Token {
 }
 
 const OPERATORS = [
-  '&&', '||', '>>', '<<', '2>&1', '1>&2', '2>', '&>>', '&>', '>', '<', '|', ';;', ';', '&',
+  '&&', '||', '2>>', '>>', '<<', '2>&1', '1>&2', '2>', '&>>', '&>', '>', '<', '|', ';;', ';', '&',
 ] as const;
 
 const BACKGROUND_MSG =
@@ -109,6 +109,11 @@ export function tokenize(input: string): Token[] {
     // try operators (longest first — list above is ordered)
     let matched: string | undefined;
     for (const op of OPERATORS) {
+      // A digit-leading fd operator is only a direct token at a word boundary.
+      // Otherwise consume the digit normally: `file2>>out` is word `file2`
+      // plus stdout `>>out`, while `12>>out` stays one unsupported fd token
+      // and fails loud instead of being stolen by `2>>`.
+      if (cur.length > 0 && /^\d/.test(op)) continue;
       if (input.startsWith(op, i)) {
         matched = op;
         break;
@@ -235,8 +240,10 @@ export function tokenize(input: string): Token[] {
       continue;
     }
 
-    // track leading digits (potential fd number for redirects)
-    if (/[0-9]/.test(ch) && cur.length === 0 && fdDigits.length < 2) {
+    // Track an all-digit word as a potential fd number. Keep consuming every
+    // leading digit so unsupported multi-digit fds stay intact and fail loud
+    // instead of becoming argv plus a different redirect.
+    if (/[0-9]/.test(ch) && (cur.length === 0 || fdDigits.length === cur.length)) {
       beginWordPart();
       fdDigits += ch;
       cur.push({ kind: 'Text', text: ch });
