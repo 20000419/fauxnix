@@ -79,8 +79,12 @@ export function normalizeStderr(stderr: string): string {
     let m = line.match(/^The term '(.+?)' is not recognized/);
     if (m) return commandNotFound(m[1]);
 
-    // zh-CN: 无法将"x"项识别为 cmdlet、函数、脚本文件或可运行程序的名称
-    m = line.match(/^无法将["'”]?([^"'”]+)["'”]?项识别为/);
+    // zh-CN: & : 无法将“x”项识别为 cmdlet、函数、脚本文件或可运行程序的名称。
+    // Require the PowerShell-specific suffix so ordinary Chinese prose that
+    // happens to contain “无法将…项识别为” is not rewritten.
+    m = line.match(
+      /^(?:\S+\s*:\s*)?无法将[“"'‘]?(.+?)[”"'’]?项识别为\s*cmdlet、函数、脚本文件或可运行程序的名称(?:。|$)/,
+    );
     if (m) return commandNotFound(m[1]);
 
     // "x : The term 'y' is not recognized ..." (with source prefix)
@@ -100,7 +104,9 @@ export function normalizeStderr(stderr: string): string {
     }
 
     // zh-CN: "Get-Content : 找不到路径“X”，因为该路径不存在。"
-    m = line.match(/^(\S+)\s*:\s*找不到路径[“'"](.+?)[”'"]，因为该路径不存在\.?$/);
+    m = line.match(
+      /^(\S+)\s*:\s*找不到路径[“"'‘](.+?)[”"'’]，因为该路径不存在[。.]?$/,
+    );
     if (m) {
       return m[1].toLowerCase() + ': ' + m[2].replace(/\\/g, '/') + ': No such file or directory';
     }
@@ -109,9 +115,21 @@ export function normalizeStderr(stderr: string): string {
     m = line.match(/^(\S+)\s*:\s*Cannot find drive\..*name '(.+?)'.*$/);
     if (m) return m[1].toLowerCase() + ': ' + m[2] + ': No such file or directory';
 
+    // zh-CN: "Get-Content : 找不到驱动器。名为“Z”的驱动器不存在。"
+    m = line.match(
+      /^(\S+)\s*:\s*找不到驱动器[。.]\s*名为[“"'‘](.+?)[”"'’]的驱动器不存在[。.]?$/,
+    );
+    if (m) return m[1].toLowerCase() + ': ' + m[2] + ': No such file or directory';
+
     // "rm : Cannot remove item ... Access is denied"
     m = line.match(/^(\S+)\s*:\s*(.*)Access to the path '(.+?)' is denied\.?$/);
     if (m) return m[1].toLowerCase() + ': cannot remove \'' + m[3] + '\': Permission denied';
+
+    // zh-CN: "rm : 对路径“C:\\protected”的访问被拒绝。"
+    m = line.match(
+      /^(\S+)\s*:\s*对路径[“"'‘](.+?)[”"'’]的访问被拒绝[。.]?$/,
+    );
+    if (m) return m[1].toLowerCase() + ': cannot remove \'' + m[2] + '\': Permission denied';
 
     // leftover PS not-recognized lines that the rewrites above did not catch
     if (/\.sh'?/.test(line) && /is not recognized/.test(line)) {
