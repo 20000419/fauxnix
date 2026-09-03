@@ -1,8 +1,9 @@
 import { FauxnixParseError, Word, WordPart, isUnquotedLiteral, wordToString } from '../ast.js';
-import { Handler, lookup, parseWords, psStr, registeredNames } from '../registry.js';
+import { CommandSpec, Handler, lookup, parseWords, psErr, psStr, registeredNames } from '../registry.js';
 import {
   argListExpr,
   exprOfWord,
+  literalOfWord,
   operandExpr,
   translateSimple,
   wrapTempEnv,
@@ -87,6 +88,31 @@ function splitAssignWord(w: Word): AssignSplit | null {
   return null;
 }
 
+/** Remove an unquoted literal option prefix while preserving dynamic Word parts. */
+function wordAfterPrefix(w: Word, prefix: string): Word | null {
+  let remaining = prefix;
+  const out: Word = [];
+  for (const part of w) {
+    if (remaining === '') {
+      out.push(part);
+      continue;
+    }
+    if (part.kind !== 'Text') return null;
+    if (remaining.startsWith(part.text)) {
+      remaining = remaining.slice(part.text.length);
+      continue;
+    }
+    if (part.text.startsWith(remaining)) {
+      const tail = part.text.slice(remaining.length);
+      if (tail !== '') out.push({ kind: 'Text', text: tail });
+      remaining = '';
+      continue;
+    }
+    return null;
+  }
+  return remaining === '' ? out : null;
+}
+
 /** Text Words -> PS array expression. */
 function textArgs(words: Word[]): string {
   return argListExpr(words, exprOfWord);
@@ -129,10 +155,10 @@ const PS_WHICH_FN = [
   "  foreach ($fx_d in ($env:PATH -split ';')) {",
   "    if ($fx_d -eq '') { continue }",
   '    $fx_c = Join-Path $fx_d $n',
-  '    if (Test-Path -LiteralPath $fx_c) { return $fx_c }',
+  '    if (Test-Path -LiteralPath $fx_c -PathType Leaf) { return $fx_c }',
   "    $fx_exts = @(($env:PATHEXT -split ';') + '.exe') | Select-Object -Unique",
   '    foreach ($fx_e in $fx_exts) {',
-  '      if (Test-Path -LiteralPath ($fx_c + $fx_e)) { return ($fx_c + $fx_e) }',
+  '      if (Test-Path -LiteralPath ($fx_c + $fx_e) -PathType Leaf) { return ($fx_c + $fx_e) }',
   '    }',
   '  }',
   "  return ''",
@@ -148,23 +174,24 @@ const PS_MON_FN =
 /* ------------------------------------------------------------------ */
 
 const cd: Handler = (args) => {
-  if (args.length === 0) {
+  const { operandWords } = parseWords(args);
+  if (operandWords.length === 0) {
     return [
       'try { Set-Location -LiteralPath $HOME }',
       "catch { [Console]::Error.WriteLine('bash: cd: ' + $_.Exception.Message); $script:fx_exit = 1 }",
     ].join('\n');
   }
-  if (args.length > 1) {
+  if (operandWords.length > 1) {
     return "[Console]::Error.WriteLine('bash: cd: too many arguments'); $script:fx_exit = 1";
   }
-  if (wordToString(args[0]) === '-') {
+  if (wordToString(operandWords[0]) === '-') {
     return [
       "if (-not $env:FAUXNIX_OLDPWD) { [Console]::Error.WriteLine('bash: cd: OLDPWD not set'); $script:fx_exit = 1 }",
       'else { try { Set-Location -LiteralPath $env:FAUXNIX_OLDPWD } catch { [Console]::Error.WriteLine("bash: cd: " + $env:FAUXNIX_OLDPWD + ": No such file or directory"); $script:fx_exit = 1 } }',
     ].join('\n');
   }
   return [
-    '$fx_ds = ' + argListExpr([args[0]]),
+    '$fx_ds = ' + argListExpr([operandWords[0]]),
     "if ($fx_ds.Count -ne 1) { [Console]::Error.WriteLine('bash: cd: too many arguments'); $script:fx_exit = 1 }",
     'else { $fx_d = [string]$fx_ds[0]',
     'if (-not (Test-Path -LiteralPath $fx_d)) { [Console]::Error.WriteLine("bash: cd: " + $fx_d + ": No such file or directory"); $script:fx_exit = 1 }',
@@ -174,7 +201,9 @@ const cd: Handler = (args) => {
 };
 
 const pwd: Handler = (args) => {
-  void args; // -P accepted; physical == logical for Windows providers
+  const { operandWords } = parseWords(args);
+  if (operandWords.length > 0) return psErr('pwd', "extra operand '" + wordToString(operandWords[0]) + "'. Try 'pwd --help'.");
+  // -L is the default. CommandSpec rejects -P because junctions make it distinct.
   return "(Get-Location).Path.Replace('\\', '/')";
 };
 
@@ -190,7 +219,8 @@ const exportCmd: Handler = (args) => {
   const sets: AssignSplit[] = [];
   for (const w of args) {
     const t = wordToString(w);
-    if (t.startsWith('-')) continue; // -n / -f accepted and ignored
+    if (t === '-') return psErr('export', "invalid option '-'. Try 'export --help'.");
+    if (t.startsWith('-')) continue; // validated by CommandSpec
     const sp = splitAssignWord(w);
     if (sp === null) continue; // `export VAR` (bare name) -> no-op success
     if (!NAME_RE.test(sp.name)) {
@@ -245,34 +275,76 @@ const env: Handler = (args, ctx) => {
   const unsets: string[] = [];
   let i = 0;
   let cmdIdx = -1;
-  while (i < raw.length) {
-    const t = raw[i];
-    if (t === '--') {
-      cmdIdx = i + 1;
-      break;
-    }
-    if (t === '-i' || t === '--ignore-environment') {
+  let optionsDone = false;
+  const addUnset = (word: Word | undefined): string | null => {
+    const name = word ? literalOfWord(word) : null;
+    if (name === null || !NAME_RE.test(name)) {
       return (
         '[Console]::Error.WriteLine(' +
         psStr(
-          'fauxnix: env -i/--ignore-environment is not supported (would silently keep inherited secrets). Use env -u NAME or unset first instead.',
+          'env: -u/--unset requires a literal variable name in fauxnix; expand and unset the name in a separate command instead',
         ) +
-        '); $script:fx_exit = 2'
+        '); $script:fx_exit = 125'
       );
     }
-    if (t === '-u' || t === '--unset') {
-      if (i + 1 < raw.length) unsets.push(raw[i + 1]);
-      i += 2;
-      continue;
-    }
-    if (t.startsWith('-u=') || t.startsWith('--unset=')) {
-      unsets.push(t.slice(t.indexOf('=') + 1));
-      i++;
-      continue;
-    }
-    if (t.startsWith('-')) {
-      i++; // unknown flags ignored
-      continue;
+    unsets.push(name);
+    return null;
+  };
+  while (i < raw.length) {
+    const t = raw[i];
+    if (!optionsDone) {
+      if (t === '-') {
+        return (
+          '[Console]::Error.WriteLine(' +
+          psStr(
+            'env: option - (ignore environment) is not supported by fauxnix; use env -u NAME or unset first',
+          ) +
+          '); $script:fx_exit = 125'
+        );
+      }
+      if (t === '--') {
+        optionsDone = true;
+        i++;
+        continue;
+      }
+      if (t === '-i' || t === '--ignore-environment') {
+        return (
+          '[Console]::Error.WriteLine(' +
+          psStr(
+            'fauxnix: env -i/--ignore-environment is not supported (would silently keep inherited secrets). Use env -u NAME or unset first instead.',
+          ) +
+          '); $script:fx_exit = 2'
+        );
+      }
+      if (t === '-u' || t === '--unset') {
+        const err = addUnset(args[i + 1]);
+        if (err) return err;
+        i += 2;
+        continue;
+      }
+      if (t.startsWith('-u=')) {
+        const err = addUnset(wordAfterPrefix(args[i], '-u=') ?? undefined);
+        if (err) return err;
+        i++;
+        continue;
+      }
+      if (t.startsWith('--unset=')) {
+        const err = addUnset(wordAfterPrefix(args[i], '--unset=') ?? undefined);
+        if (err) return err;
+        i++;
+        continue;
+      }
+      if (t.startsWith('-u') && t.length > 2) {
+        const err = addUnset(wordAfterPrefix(args[i], '-u') ?? undefined);
+        if (err) return err;
+        i++;
+        continue;
+      }
+      if (t.startsWith('-')) {
+        i++; // unknown flags are rejected by CommandSpec
+        continue;
+      }
+      optionsDone = true;
     }
     const sp = splitAssignWord(args[i]);
     if (sp !== null && NAME_RE.test(sp.name)) {
@@ -301,7 +373,7 @@ const env: Handler = (args, ctx) => {
 };
 
 const printenv: Handler = (args) => {
-  const names = stripFlags(args);
+  const { operandWords: names } = parseWords(args);
   if (names.length === 0) return ENV_LIST_PS;
   return [
     '$fx_ns = ' + textArgs(names),
@@ -317,12 +389,12 @@ const printenv: Handler = (args) => {
 /* ------------------------------------------------------------------ */
 
 const ps: Handler = (args) => {
-  const raw = args.map(wordToString);
   const { flags, operandWords } = parseWords(args);
-  const full =
-    operandWords.some((w) => wordToString(w) === 'aux') ||
-    (flags.has('e') && flags.has('f')) ||
-    raw.includes('-ef');
+  const badOperand = operandWords.find((w) => wordToString(w) !== 'aux');
+  if (badOperand) {
+    return psErr('ps', "unsupported operand '" + wordToString(badOperand) + "'. Use 'ps', 'ps -ef', or 'ps aux'.");
+  }
+  const full = operandWords.some((w) => wordToString(w) === 'aux') || flags.has('f');
 
   if (full) {
     return [
@@ -576,7 +648,7 @@ const sleep: Handler = (args) => {
 
 const which: Handler = (args) => {
   const ws = stripFlags(args);
-  if (ws.length === 0) return '';
+  if (ws.length === 0) return psErr('which', "missing command name. Try 'which --help'.");
   return [
     PS_WHICH_FN,
     '$fx_b = @(' + builtinNames().map(psStr).join(', ') + ')',
@@ -590,7 +662,7 @@ const which: Handler = (args) => {
 };
 
 const type: Handler = (args) => {
-  const ws = stripFlags(args);
+  const { operandWords: ws } = parseWords(args);
   if (ws.length === 0) return '';
   return [
     PS_WHICH_FN,
@@ -610,11 +682,16 @@ const type: Handler = (args) => {
 /** `command -v name` (and bare `command name args` as a no-alias run). */
 const commandCmd: Handler = (args, ctx) => {
   let i = 0;
-  let identify = false;
+  let identify: 'path' | 'verbose' | null = null;
   while (i < args.length) {
     const t = wordToString(args[i]);
-    if (t === '-v' || t === '-V') {
-      identify = true;
+    if (t === '-v') {
+      identify = 'path';
+      i++;
+      continue;
+    }
+    if (t === '-V') {
+      identify = 'verbose';
       i++;
       continue;
     }
@@ -622,25 +699,29 @@ const commandCmd: Handler = (args, ctx) => {
       i++;
       break;
     }
-    if (t.startsWith('-')) {
+    if (t.startsWith('-') && t !== '-') {
       i++;
       continue;
     }
     break;
   }
   const rest = args.slice(i);
-  if (identify) {
+  if (identify !== null) {
     if (rest.length === 0) return '';
     return [
       PS_WHICH_FN,
       '$fx_b = @(' + builtinNames().map(psStr).join(', ') + ')',
       '$fx_ns = ' + textArgs(rest),
       'foreach ($fx_n in $fx_ns) {',
-      "  if ($fx_b -contains $fx_n) { '/usr/bin/' + $fx_n }",
+      identify === 'verbose'
+        ? "  if ($fx_b -contains $fx_n) { $fx_n + ' is /usr/bin/' + $fx_n }"
+        : "  if ($fx_b -contains $fx_n) { '/usr/bin/' + $fx_n }",
       '  else {',
       '    $fx_w = fx-which $fx_n',
       "    if ($fx_w -eq '') { $script:fx_exit = 1 }",
-      "    else { $fx_w.Replace('\\', '/') }",
+      identify === 'verbose'
+        ? "    else { $fx_n + ' is ' + $fx_w.Replace('\\', '/') }"
+        : "    else { $fx_w.Replace('\\', '/') }",
       '  }',
       '}',
     ].join('\n');
@@ -663,11 +744,21 @@ const commandCmd: Handler = (args, ctx) => {
 /* whoami / id / groups                                                */
 /* ------------------------------------------------------------------ */
 
-const whoami: Handler = () => '$env:USERNAME.ToLower()';
+const whoami: Handler = (args) => {
+  const { operandWords } = parseWords(args);
+  if (operandWords.length > 0) return psErr('whoami', "extra operand '" + wordToString(operandWords[0]) + "'. Try 'whoami --help'.");
+  return '$env:USERNAME.ToLower()';
+};
 
 const id: Handler = (args) => {
-  const { flags } = parseWords(args);
-  const wantNum = flags.has('u') || flags.has('g') || flags.has('G');
+  const { flags, operandWords } = parseWords(args);
+  if (operandWords.length > 0) {
+    return psErr('id', 'user operands are not supported; omit USER to inspect the current account');
+  }
+  const selectors = ['u', 'g', 'G'].filter((flag) => flags.has(flag));
+  if (selectors.length > 1) return psErr('id', 'cannot print multiple ID selectors together');
+  if (flags.has('n') && selectors.length === 0) return psErr('id', "option '-n' requires -u or -g");
+  const wantNum = selectors.length === 1;
   const wantName = flags.has('n');
   const uidPs = [
     '$fx_sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value',
@@ -683,7 +774,11 @@ const id: Handler = (args) => {
   ].join('\n');
 };
 
-const groups: Handler = () => {
+const groups: Handler = (args) => {
+  const { operandWords } = parseWords(args);
+  if (operandWords.length > 0) {
+    return psErr('groups', 'user operands are not supported; omit USER to inspect the current account');
+  }
   return [
     '$fx_id = [System.Security.Principal.WindowsIdentity]::GetCurrent()',
     '$fx_gs = @()',
@@ -769,8 +864,8 @@ const DATE_FNS = [
 ].join('\n');
 
 const date: Handler = (args) => {
-  const { flags, operandWords } = parseWords(args, ['d']);
-  const utc = flags.has('u');
+  const { flags, longs, operandWords } = parseWords(args, ['d'], ['--date']);
+  const utc = flags.has('u') || longs.has('--utc');
   // find the -d value as a Word (so dynamic values stay PS expressions)
   const raw = args.map(wordToString);
   let dWord: Word | null = null;
@@ -779,8 +874,27 @@ const date: Handler = (args) => {
       dWord = args[k + 1] ?? null;
       break;
     }
+    if (raw[k].startsWith('--date=')) {
+      dWord = wordAfterPrefix(args[k], '--date=');
+      break;
+    }
+    if (raw[k].startsWith('-') && !raw[k].startsWith('--')) {
+      const body = raw[k].slice(1);
+      const dIndex = body.indexOf('d');
+      if (dIndex >= 0) {
+        const prefix = '-' + body.slice(0, dIndex + 1);
+        const attached = wordAfterPrefix(args[k], prefix);
+        dWord = attached && attached.length > 0 ? attached : (args[k + 1] ?? null);
+        break;
+      }
+    }
   }
-  const fmtWord = operandWords.find((w) => wordToString(w).startsWith('+'));
+  const fmtWords = operandWords.filter((w) => wordToString(w).startsWith('+'));
+  const badOperand = operandWords.find((w) => !wordToString(w).startsWith('+'));
+  if (badOperand || fmtWords.length > 1) {
+    return psErr('date', "extra operand '" + wordToString(badOperand ?? fmtWords[1]) + "'. Try 'date --help'.");
+  }
+  const fmtWord = fmtWords[0];
 
   const lines: string[] = [DATE_FNS];
   lines.push('$fx_d = ' + (utc ? '[DateTime]::UtcNow' : 'Get-Date'));
@@ -789,7 +903,7 @@ const date: Handler = (args) => {
     lines.push('$fx_ds = ' + exprOfWord(dWord));
     lines.push("if ($fx_ds -like '@*') {");
     lines.push(
-      "  try { $fx_n = [long]($fx_ds.Substring(1)); $fx_d = ([datetime]'1970-01-01').AddSeconds($fx_n)" +
+      "  try { $fx_n = [long]($fx_ds.Substring(1)); $fx_epoch = [DateTime]::SpecifyKind([datetime]'1970-01-01', [DateTimeKind]::Utc); $fx_d = $fx_epoch.AddSeconds($fx_n)" +
         (utc ? ' }' : '.ToLocalTime() }'),
     );
     lines.push('  catch { $fx_ok = $false }');
@@ -817,8 +931,10 @@ const date: Handler = (args) => {
 const ARCH_PS = "($(if ($env:PROCESSOR_ARCHITECTURE -like 'ARM*') { 'ARM64' } else { 'x86_64' }))";
 
 const uname: Handler = (args) => {
-  const { flags } = parseWords(args);
-  if (flags.has('a')) {
+  const { flags, longs, operandWords } = parseWords(args);
+  if (operandWords.length > 0) return psErr('uname', "extra operand '" + wordToString(operandWords[0]) + "'. Try 'uname --help'.");
+  const has = (short: string, long: string) => flags.has(short) || longs.has(long);
+  if (has('a', '--all')) {
     return (
       "('Linux ' + $env:COMPUTERNAME + ' 6.8.0-fauxnix #1 SMP PREEMPT_DYNAMIC ' + " +
       ARCH_PS +
@@ -826,19 +942,27 @@ const uname: Handler = (args) => {
     );
   }
   const parts: string[] = [];
-  if (flags.has('s') || flags.size === 0) parts.push("'Linux'");
-  if (flags.has('n')) parts.push('$env:COMPUTERNAME');
-  if (flags.has('r')) parts.push("'6.8.0-fauxnix'");
-  if (flags.has('v')) parts.push("'#1 SMP PREEMPT_DYNAMIC'");
-  if (flags.has('m') || flags.has('p')) parts.push(ARCH_PS);
-  if (flags.has('o')) parts.push("'GNU/Linux'");
+  if (has('s', '--kernel-name') || (flags.size === 0 && longs.size === 0)) parts.push("'Linux'");
+  if (has('n', '--nodename')) parts.push('$env:COMPUTERNAME');
+  if (has('r', '--kernel-release')) parts.push("'6.8.0-fauxnix'");
+  if (has('v', '--kernel-version')) parts.push("'#1 SMP PREEMPT_DYNAMIC'");
+  if (has('m', '--machine') || has('p', '--processor')) parts.push(ARCH_PS);
+  if (has('o', '--operating-system')) parts.push("'GNU/Linux'");
   if (parts.length === 0) parts.push("'Linux'");
   return '(@(' + parts.join(', ') + ") -join ' ')";
 };
 
-const hostname: Handler = () => '$env:COMPUTERNAME';
+const hostname: Handler = (args) => {
+  const { operandWords } = parseWords(args);
+  if (operandWords.length > 0) {
+    return psErr('hostname', 'setting or selecting a host is not supported; omit operands to print the current hostname');
+  }
+  return '$env:COMPUTERNAME';
+};
 
-const uptime: Handler = () => {
+const uptime: Handler = (args) => {
+  const { operandWords } = parseWords(args);
+  if (operandWords.length > 0) return psErr('uptime', "extra operand '" + wordToString(operandWords[0]) + "'. Try 'uptime --help'.");
   return [
     '$fx_now = Get-Date',
     '$fx_os = Get-CimInstance Win32_OperatingSystem',
@@ -852,8 +976,43 @@ const uptime: Handler = () => {
 };
 
 const free: Handler = (args) => {
-  const { flags } = parseWords(args);
-  const unit = flags.has('h') ? 'h' : flags.has('g') ? 'g' : flags.has('m') ? 'm' : 'k';
+  const { flags, longs, operandWords } = parseWords(args);
+  if (operandWords.length > 0) return psErr('free', "extra operand '" + wordToString(operandWords[0]) + "'. Try 'free --help'.");
+  void flags;
+  void longs;
+  let unit = 'k';
+  let sawHuman = false;
+  let nonHumanUnits = 0;
+  for (const raw of args.map(wordToString)) {
+    if (raw === '--human') {
+      unit = 'h';
+      sawHuman = true;
+    } else if (raw === '--gibi') {
+      unit = 'g';
+      nonHumanUnits++;
+    } else if (raw === '--mebi') {
+      unit = 'm';
+      nonHumanUnits++;
+    } else if (raw === '--kibi') {
+      unit = 'k';
+      nonHumanUnits++;
+    }
+    else if (raw.startsWith('-') && !raw.startsWith('--')) {
+      for (const flag of raw.slice(1)) {
+        if (flag === 'h') {
+          unit = 'h';
+          sawHuman = true;
+        } else if (flag === 'g' || flag === 'm' || flag === 'k') {
+          unit = flag;
+          nonHumanUnits++;
+        }
+      }
+    }
+  }
+  if (!sawHuman && nonHumanUnits > 1) {
+    return psErr('free', 'multiple unit options are not supported together; choose one of -k, -m, or -g');
+  }
+  if (sawHuman) unit = 'h';
   // value converter for KB-based memory values
   let conv: (v: string) => string;
   if (unit === 'k') conv = (v) => '[string]' + v;
@@ -906,13 +1065,20 @@ const free: Handler = (args) => {
   return lines.join('\n');
 };
 
-const nproc: Handler = () => '[string][Environment]::ProcessorCount';
+const nproc: Handler = (args) => {
+  const { operandWords } = parseWords(args);
+  if (operandWords.length > 0) return psErr('nproc', "extra operand '" + wordToString(operandWords[0]) + "'. Try 'nproc --help'.");
+  return '[string][Environment]::ProcessorCount';
+};
 
 /* ------------------------------------------------------------------ */
 /* clear / true / false / :                                            */
 /* ------------------------------------------------------------------ */
 
-const clear: Handler = () => "([char]27 + '[2J' + [char]27 + '[H')";
+const clear: Handler = (args) => {
+  if (args.length > 0) return psErr('clear', "extra operand '" + wordToString(args[0]) + "'. Try 'clear --help'.");
+  return "([char]27 + '[2J' + [char]27 + '[H')";
+};
 
 const trueCmd: Handler = () => '';
 
@@ -2723,6 +2889,322 @@ const shiftCmd: Handler = (args) => {
 };
 
 /* ------------------------------------------------------------------ */
+
+export const specs: CommandSpec[] = [
+  {
+    names: ['cd'],
+    options: [
+      { short: 'L', support: 'implemented' },
+      { short: 'P', support: 'unsupported', reason: 'physical symlink/junction resolution' },
+      { short: 'e', support: 'unsupported', reason: 'physical-resolution failure mode' },
+      { short: '@', support: 'unsupported', reason: 'extended-attribute directory view' },
+    ],
+    effects: ['read'],
+    platform: 'windows-ps51',
+    dispatch: 'translated',
+    usageExit: 2,
+    handler: cd,
+  },
+  {
+    names: ['pwd'],
+    options: [
+      { short: 'L', support: 'implemented' },
+      { short: 'P', support: 'unsupported', reason: 'physical symlink/junction resolution' },
+      { short: 'W', support: 'unsupported', reason: 'MSYS Windows-path output' },
+    ],
+    effects: ['read'],
+    platform: 'windows-ps51',
+    dispatch: 'translated',
+    usageExit: 2,
+    handler: pwd,
+  },
+  {
+    names: ['export'],
+    options: [
+      { short: 'f', support: 'unsupported', reason: 'shell functions are not supported' },
+      { short: 'n', support: 'unsupported', reason: 'all fauxnix variables live in the session environment' },
+      { short: 'p', support: 'unsupported', reason: 'declare-style shell output' },
+    ],
+    effects: ['read', 'write'],
+    platform: 'windows-ps51',
+    dispatch: 'translated',
+    usageExit: 2,
+    handler: exportCmd,
+  },
+  {
+    names: ['unset'],
+    options: [
+      { short: 'v', support: 'implemented' },
+      { short: 'f', support: 'unsupported', reason: 'shell functions are not supported' },
+      { short: 'n', support: 'unsupported', reason: 'nameref variables are not supported' },
+    ],
+    effects: ['write'],
+    platform: 'windows-ps51',
+    dispatch: 'translated',
+    usageExit: 2,
+    handler: unset,
+  },
+  {
+    names: ['env'],
+    options: [
+      {
+        short: 'u',
+        long: '--unset',
+        takesValue: true,
+        support: 'implemented',
+        reason: 'literal variable names only',
+      },
+      {
+        short: 'i',
+        long: '--ignore-environment',
+        support: 'unsupported',
+        reason: 'would silently keep inherited secrets; use env -u NAME or unset first',
+      },
+      { short: '0', long: '--null', support: 'unsupported', reason: 'NUL-terminated output' },
+      { short: 'C', long: '--chdir', takesValue: true, support: 'unsupported', reason: 'temporary working directory' },
+      { short: 'S', long: '--split-string', takesValue: true, support: 'unsupported', reason: 'shell-like string splitting' },
+    ],
+    effects: ['process'],
+    platform: 'windows-ps51',
+    dispatch: 'dynamic',
+    usageExit: 125,
+    leadingOptions: true,
+    handler: env,
+  },
+  {
+    names: ['printenv'],
+    options: [
+      { short: '0', long: '--null', support: 'unsupported', reason: 'NUL-terminated output' },
+    ],
+    effects: ['read'],
+    platform: 'windows-ps51',
+    dispatch: 'translated',
+    usageExit: 2,
+    handler: printenv,
+  },
+  {
+    names: ['ps'],
+    options: [
+      { short: 'e', long: '--everyone', support: 'implemented' },
+      { short: 'A', long: '--all', support: 'implemented' },
+      { short: 'f', support: 'implemented' },
+      { short: 'a', support: 'unsupported', reason: 'terminal-based process selection' },
+      { short: 'x', support: 'unsupported', reason: 'terminal-based process selection' },
+      { short: 'u', support: 'unsupported', reason: 'BSD user-oriented format' },
+      { long: '--user', takesValue: true, support: 'unsupported', reason: 'user filtering' },
+      { short: 'p', long: '--pid', takesValue: true, support: 'unsupported', reason: 'PID filtering' },
+      { short: 'o', long: '--format', takesValue: true, support: 'unsupported', reason: 'custom output columns' },
+      { long: '--sort', takesValue: true, support: 'unsupported', reason: 'custom process ordering' },
+    ],
+    effects: ['process'],
+    platform: 'windows-ps51',
+    dispatch: 'translated',
+    handler: ps,
+  },
+  {
+    names: ['sleep'],
+    options: [],
+    effects: ['process'],
+    platform: 'windows-ps51',
+    dispatch: 'translated',
+    handler: sleep,
+  },
+  {
+    names: ['which'],
+    options: [
+      { short: 'a', long: '--all', support: 'unsupported', reason: 'all matching PATH entries' },
+      { short: 's', support: 'unsupported', reason: 'silent status-only mode' },
+    ],
+    effects: ['read'],
+    platform: 'windows-ps51',
+    dispatch: 'translated',
+    handler: which,
+  },
+  {
+    names: ['type'],
+    options: [
+      { short: 'a', support: 'unsupported', reason: 'all matching definitions' },
+      { short: 'f', support: 'unsupported', reason: 'shell functions are not supported' },
+      { short: 'P', support: 'unsupported', reason: 'forced PATH lookup' },
+      { short: 'p', support: 'unsupported', reason: 'PATH-only lookup' },
+      { short: 't', support: 'unsupported', reason: 'type-name-only output' },
+    ],
+    effects: ['read'],
+    platform: 'windows-ps51',
+    dispatch: 'translated',
+    usageExit: 2,
+    handler: type,
+  },
+  {
+    names: ['command'],
+    options: [
+      { short: 'v', support: 'implemented' },
+      { short: 'V', support: 'implemented' },
+      { short: 'p', support: 'unsupported', reason: 'guaranteed default utility PATH' },
+    ],
+    effects: ['process'],
+    platform: 'windows-ps51',
+    dispatch: 'dynamic',
+    usageExit: 2,
+    leadingOptions: true,
+    handler: commandCmd,
+  },
+  {
+    names: ['whoami'],
+    options: [],
+    effects: ['read'],
+    platform: 'windows-ps51',
+    dispatch: 'translated',
+    handler: whoami,
+  },
+  {
+    names: ['id'],
+    options: [
+      { short: 'u', support: 'implemented' },
+      { short: 'g', support: 'implemented' },
+      { short: 'n', support: 'implemented' },
+      { short: 'G', support: 'unsupported', reason: 'supplementary group ID mapping' },
+      { short: 'r', support: 'unsupported', reason: 'real versus effective IDs' },
+      { short: 'z', support: 'unsupported', reason: 'NUL-terminated output' },
+      { short: 'Z', support: 'unsupported', reason: 'SELinux security context' },
+    ],
+    effects: ['read'],
+    platform: 'windows-ps51',
+    dispatch: 'translated',
+    handler: id,
+  },
+  {
+    names: ['groups'],
+    options: [],
+    effects: ['read'],
+    platform: 'windows-ps51',
+    dispatch: 'translated',
+    handler: groups,
+  },
+  {
+    names: ['date'],
+    options: [
+      { short: 'u', long: '--utc', support: 'implemented' },
+      {
+        short: 'd',
+        long: '--date',
+        takesValue: true,
+        support: 'implemented',
+        reason: '@SECONDS input only',
+      },
+      { short: 'I', long: '--iso-8601', support: 'unsupported', reason: 'ISO precision selection' },
+      { short: 'R', long: '--rfc-email', support: 'unsupported', reason: 'RFC email formatting' },
+      { long: '--rfc-3339', takesValue: true, support: 'unsupported', reason: 'RFC 3339 precision selection' },
+      { short: 'r', long: '--reference', takesValue: true, support: 'unsupported', reason: 'file timestamp lookup' },
+      { short: 's', long: '--set', takesValue: true, support: 'unsupported', reason: 'changing the system clock' },
+    ],
+    effects: ['read'],
+    platform: 'windows-ps51',
+    dispatch: 'translated',
+    handler: date,
+  },
+  {
+    names: ['uname'],
+    options: [
+      { short: 'a', long: '--all', support: 'implemented' },
+      { short: 's', long: '--kernel-name', support: 'implemented' },
+      { short: 'n', long: '--nodename', support: 'implemented' },
+      { short: 'r', long: '--kernel-release', support: 'implemented' },
+      { short: 'v', long: '--kernel-version', support: 'implemented' },
+      { short: 'm', long: '--machine', support: 'implemented' },
+      { short: 'p', long: '--processor', support: 'implemented' },
+      { short: 'o', long: '--operating-system', support: 'implemented' },
+      { short: 'i', long: '--hardware-platform', support: 'unsupported', reason: 'hardware-platform distinction' },
+    ],
+    effects: ['read'],
+    platform: 'windows-ps51',
+    dispatch: 'translated',
+    handler: uname,
+  },
+  {
+    names: ['hostname'],
+    options: [
+      { short: 's', long: '--short', support: 'unsupported', reason: 'short-name selection' },
+      { short: 'f', long: '--fqdn', support: 'unsupported', reason: 'FQDN lookup' },
+      { short: 'd', long: '--domain', support: 'unsupported', reason: 'DNS domain lookup' },
+      { short: 'i', long: '--ip-address', support: 'unsupported', reason: 'address lookup' },
+      { short: 'I', long: '--all-ip-addresses', support: 'unsupported', reason: 'all-address lookup' },
+      { short: 'F', long: '--file', takesValue: true, support: 'unsupported', reason: 'changing the hostname from a file' },
+    ],
+    effects: ['read'],
+    platform: 'windows-ps51',
+    dispatch: 'translated',
+    handler: hostname,
+  },
+  {
+    names: ['uptime'],
+    options: [
+      { short: 'p', long: '--pretty', support: 'unsupported', reason: 'pretty duration output' },
+      { short: 's', long: '--since', support: 'unsupported', reason: 'boot timestamp output' },
+    ],
+    effects: ['read'],
+    platform: 'windows-ps51',
+    dispatch: 'translated',
+    handler: uptime,
+  },
+  {
+    names: ['free'],
+    options: [
+      { short: 'h', long: '--human', support: 'implemented' },
+      { short: 'k', long: '--kibi', support: 'implemented' },
+      { short: 'm', long: '--mebi', support: 'implemented' },
+      { short: 'g', long: '--gibi', support: 'implemented' },
+      { short: 'b', long: '--bytes', support: 'unsupported', reason: 'byte-unit output' },
+      { long: '--si', support: 'unsupported', reason: 'powers-of-1000 units' },
+      { short: 't', long: '--total', support: 'unsupported', reason: 'total row' },
+      { short: 'w', long: '--wide', support: 'unsupported', reason: 'wide buffer/cache columns' },
+      { short: 's', long: '--seconds', takesValue: true, support: 'unsupported', reason: 'repeating output' },
+      { short: 'c', long: '--count', takesValue: true, support: 'unsupported', reason: 'repeating output' },
+    ],
+    effects: ['read'],
+    platform: 'windows-ps51',
+    dispatch: 'translated',
+    handler: free,
+  },
+  {
+    names: ['nproc'],
+    options: [
+      { long: '--all', support: 'unsupported', reason: 'installed versus available processor distinction' },
+      { long: '--ignore', takesValue: true, support: 'unsupported', reason: 'processor-count subtraction' },
+    ],
+    effects: ['read'],
+    platform: 'windows-ps51',
+    dispatch: 'translated',
+    handler: nproc,
+  },
+  {
+    names: ['clear'],
+    options: [
+      { short: 'x', support: 'unsupported', reason: 'scrollback-preserving terminal control' },
+      { short: 'T', takesValue: true, support: 'unsupported', reason: 'alternate terminal type' },
+    ],
+    effects: [],
+    platform: 'windows-ps51',
+    dispatch: 'translated',
+    handler: clear,
+  },
+  {
+    names: ['timeout'],
+    options: [
+      { short: 's', long: '--signal', takesValue: true, support: 'unsupported', reason: 'signal selection' },
+      { short: 'k', long: '--kill-after', takesValue: true, support: 'unsupported', reason: 'two-phase termination' },
+      { long: '--preserve-status', support: 'unsupported', reason: 'child-status preservation after timeout' },
+      { long: '--foreground', support: 'unsupported', reason: 'interactive foreground process groups' },
+      { short: 'v', long: '--verbose', support: 'unsupported', reason: 'signal diagnostics' },
+    ],
+    effects: ['process'],
+    platform: 'windows-ps51',
+    dispatch: 'dynamic',
+    usageExit: 125,
+    leadingOptions: true,
+    handler: timeout,
+  },
+];
 
 export const handlers: Record<string, Handler> = {
   cd,

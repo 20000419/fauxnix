@@ -18,7 +18,17 @@ import {
   wrapScript,
   hostBootstrapScript,
 } from '../src/translator.js';
-import { listCommandsJson, lookup, lookupSpec, parseWords, psStr } from '../src/registry.js';
+import {
+  AGENT_DAILY_60,
+  COMMAND_SPEC_EXCLUSIONS,
+  listCommandsJson,
+  lookup,
+  lookupSpec,
+  parseWords,
+  psStr,
+  registeredNames,
+  specsMarkdown,
+} from '../src/registry.js';
 import { decodeOutput, encodeCommand, normalizeHostNewlines } from '../src/encoding.js';
 import {
   normalizeStderr,
@@ -33,7 +43,6 @@ import {
   positionalCountFromEnv,
 } from '../src/mcp.js';
 import '../src/commands/install-all.js';
-import { specsMarkdown } from '../src/registry.js';
 
 /* ---------------------------- parser ---------------------------- */
 
@@ -421,9 +430,9 @@ describe('parser', () => {
 
   it('env -i is a loud usage error, not a silent ignore', () => {
     const script = translateCommandList(parse('env -i echo hi'))[0].script;
-    expect(script).toMatch(/env -i\/--ignore-environment is not supported/);
+    expect(script).toMatch(/option ''-i'' is not supported by fauxnix/);
     expect(script).toMatch(/env -u NAME|unset first instead/);
-    expect(script).toContain('$script:fx_exit = 2');
+    expect(script).toContain('$script:fx_exit = 125');
     expect(script).not.toContain("fx-write");
   });
 
@@ -1375,6 +1384,165 @@ describe('command-specs.md (#143)', () => {
       '\n',
     );
     expect(onDisk).toBe(specsMarkdown());
+  });
+});
+
+describe('CommandSpec agent-daily 60 (C-5 / #143)', () => {
+  const bodyOf = (cmd: string): string => translateCommandList(parse(cmd))[0].body;
+  const sysinfoDaily = [
+    'cd',
+    'pwd',
+    'export',
+    'unset',
+    'env',
+    'printenv',
+    'ps',
+    'sleep',
+    'which',
+    'type',
+    'command',
+    'whoami',
+    'id',
+    'groups',
+    'date',
+    'uname',
+    'hostname',
+    'uptime',
+    'free',
+    'nproc',
+    'clear',
+    'timeout',
+  ];
+
+  it('defines 60 unique registered daily names and specs every one', () => {
+    expect(AGENT_DAILY_60).toHaveLength(60);
+    expect(new Set(AGENT_DAILY_60).size).toBe(60);
+    const registered = new Set(registeredNames());
+    for (const name of AGENT_DAILY_60) {
+      expect(registered.has(name), name).toBe(true);
+      expect(lookupSpec(name), name).toBeTruthy();
+    }
+    expect(listCommandsJson().filter((row) => row.spec !== null).length).toBeGreaterThanOrEqual(60);
+  });
+
+  it('keeps parser/native exclusions explicit and outside generic CommandSpec', () => {
+    expect(COMMAND_SPEC_EXCLUSIONS.flatMap((entry) => [...entry.names])).toEqual([
+      'find',
+      'sed',
+      'awk',
+      'egrep',
+      'tar',
+    ]);
+    for (const entry of COMMAND_SPEC_EXCLUSIONS) {
+      expect(entry.reason.length).toBeGreaterThan(20);
+      for (const name of entry.names) expect(lookupSpec(name), name).toBeUndefined();
+    }
+    expect(specsMarkdown()).toContain('Coverage: **60 / 60 spec\'d**.');
+    expect(specsMarkdown()).toContain('structural rationale, not a claim');
+  });
+
+  it('specs the 22-command sysinfo slice and rejects unknown options', () => {
+    for (const name of sysinfoDaily) {
+      expect(lookupSpec(name), name).toBeTruthy();
+      const body = bodyOf(name + ' -Q');
+      expect(body, name).toMatch(/invalid option|unrecognized option/);
+      expect(body, name).toContain("Try ''" + name + " --help'' for more information.");
+    }
+  });
+
+  it('accepts implemented aliases and fixes their value/format semantics', () => {
+    expect(bodyOf('cd -L .')).toContain('Set-Location');
+    expect(bodyOf('pwd -L')).toContain('Get-Location');
+    expect(bodyOf('cd -P .')).toContain('physical symlink/junction resolution');
+    expect(bodyOf('pwd -P')).toContain('physical symlink/junction resolution');
+    expect(bodyOf('unset -v FX_C5')).toContain('Remove-Item');
+    for (const cmd of [
+      'env -u FX_C5 printenv FX_C5',
+      'env -uFX_C5 printenv FX_C5',
+      'env -u=FX_C5 printenv FX_C5',
+      'env --unset=FX_C5 printenv FX_C5',
+    ]) {
+      expect(bodyOf(cmd), cmd).toContain("'FX_C5'");
+      expect(bodyOf(cmd), cmd).not.toContain('invalid option');
+    }
+    expect(bodyOf('ps -f')).toContain("'USER','PID','%CPU'");
+    expect(bodyOf('ps -ef')).toContain("'USER','PID','%CPU'");
+    expect(bodyOf('ps aux')).toContain("'USER','PID','%CPU'");
+    expect(bodyOf('command -V node')).toContain("$fx_n + ' is '");
+    expect(bodyOf('command -v node')).not.toContain("$fx_n + ' is '");
+    expect(bodyOf('id -un')).toContain('$env:USERNAME');
+    for (const cmd of [
+      'date -d @0 +%s',
+      'date -d@0 +%s',
+      'date --date=@0 +%s',
+      'date -ud @0 +%s',
+      'date -ud@0 +%s',
+    ]) {
+      expect(bodyOf(cmd), cmd).toContain('$fx_epoch.AddSeconds($fx_n)');
+    }
+    expect(bodyOf('uname --machine')).toContain('PROCESSOR_ARCHITECTURE');
+    expect(bodyOf('free --mebi')).toContain('/ 1KB');
+  });
+
+  it('fails missing values and high-frequency unsupported options before handlers run', () => {
+    const envMissing = bodyOf('env -u');
+    expect(envMissing).toContain("option requires an argument -- ''u''");
+    expect(envMissing).toContain('$script:fx_exit = 125');
+    const dateMissing = bodyOf('date --date');
+    expect(dateMissing).toContain("option ''--date'' requires an argument");
+    expect(dateMissing).toContain('$script:fx_exit = 1');
+
+    const unsetFunction = bodyOf('unset -f PATH');
+    expect(unsetFunction).toContain("option ''-f'' is not supported");
+    expect(unsetFunction).not.toContain('Remove-Item');
+    expect(bodyOf('export -n PATH')).toContain("option ''-n'' is not supported");
+    expect(bodyOf('printenv -0 PATH')).toContain('NUL-terminated output');
+    expect(bodyOf('ps -o pid')).toContain('custom output columns');
+    expect(bodyOf('which -a node')).toContain('all matching PATH entries');
+    expect(bodyOf('type -t node')).toContain('type-name-only output');
+    expect(bodyOf('id -G')).toContain('supplementary group ID mapping');
+    expect(bodyOf('uptime -p')).toContain('pretty duration output');
+    expect(bodyOf('nproc --ignore=1')).toContain('processor-count subtraction');
+    expect(bodyOf('timeout --preserve-status 1 true')).toContain(
+      'child-status preservation after timeout',
+    );
+    expect(bodyOf('which')).toContain('missing command name');
+    expect(bodyOf('env -')).toContain('ignore environment');
+    expect(bodyOf('env -')).toContain('$script:fx_exit = 125');
+    expect(bodyOf('env -u "$FX_NAME" printenv PATH')).toContain('requires a literal variable name');
+    expect(bodyOf('env -u$FX_NAME printenv PATH')).toContain('requires a literal variable name');
+  });
+
+  it('stops env/command/timeout option scanning before child argv', () => {
+    expect(bodyOf('env node -v')).not.toContain('invalid option');
+    expect(bodyOf('env FX_C5=1 node -v')).not.toContain('invalid option');
+    expect(bodyOf('env FX_C5=1 -u PATH')).toContain("fx-native '-u'");
+    expect(bodyOf('command node -v')).not.toContain('invalid option');
+    expect(bodyOf('command -')).toContain("fx-native '-'");
+    expect(bodyOf('timeout 1 echo -n hi')).not.toContain('invalid option');
+  });
+
+  it('rejects ignored operands and invalid id/free option combinations', () => {
+    for (const cmd of [
+      'pwd extra',
+      'whoami extra',
+      'id other-user',
+      'groups other-user',
+      'date extra',
+      'uname extra',
+      'hostname replacement',
+      'uptime extra',
+      'free extra',
+      'nproc extra',
+      'clear extra',
+    ]) {
+      expect(bodyOf(cmd), cmd).toMatch(/extra operand|user operands are not supported|setting or selecting a host/);
+    }
+    expect(bodyOf('id -n')).toContain("option ''-n'' requires -u or -g");
+    expect(bodyOf('id -ug')).toContain('cannot print multiple ID selectors together');
+    expect(bodyOf('free -gm')).toContain('multiple unit options are not supported together');
+    expect(bodyOf('free -mh')).toContain('function fx-fh');
+    expect(bodyOf('free -hm')).toContain('function fx-fh');
   });
 });
 

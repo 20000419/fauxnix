@@ -2,7 +2,7 @@ import { registerAll, registerSpecs } from '../registry.js';
 import { handlers as files, specs as fileSpecs } from './files.js';
 import { handlers as textFilters, specs as textFilterSpecs } from './text-filters.js';
 import { handlers as textIo, specs as textIoSpecs } from './text-io.js';
-import { handlers as sysinfo } from './sysinfo.js';
+import { handlers as sysinfo, specs as sysinfoSpecs } from './sysinfo.js';
 import { handlers as net } from './net.js';
 import { handlers as archive, specs as archiveSpecs } from './archive.js';
 
@@ -18,6 +18,7 @@ export function installAll(): void {
   registerSpecs(textIoSpecs);
   registerSpecs(textFilterSpecs);
   registerSpecs(archiveSpecs);
+  registerSpecs(sysinfoSpecs);
 }
 
 installAll();
