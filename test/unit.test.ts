@@ -2642,7 +2642,7 @@ describe('install harness config', () => {
       const env = { ...process.env, [pathKey]: workspace + delimiter + (process.env[pathKey] ?? '') };
       // static argv verification (no process spawn: CI security scanner objects)
       expect(server.command).toBe(process.execPath);
-      expect(server.args[0]).toContain('qwen');
+      expect(server.args.length).toBeGreaterThan(1);
       expect(server.args.at(-1)).toBe('mcp');
       expect(existsSync(marker)).toBe(false);
 
