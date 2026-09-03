@@ -1641,6 +1641,81 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     }
   }, 30000);
 
+  it('unset inherited env stays absent after a timeout restart, including native children', async () => {
+    const key = 'FAUXNIX_RESTART_TIMEOUT_CASE';
+    const unsetSpelling = 'fauxnix_restart_timeout_case';
+    const old = process.env[key];
+    process.env[key] = 'parent-baseline';
+    const extra = new FauxnixSession();
+    try {
+      expect((await extra.run(translateCommandList(parseCommand('printenv ' + key)))).stdout.trim()).toBe(
+        'parent-baseline',
+      );
+      expect((await extra.run(translateCommandList(parseCommand('unset ' + unsetSpelling)))).exitCode).toBe(0);
+
+      const timedOut = await extra.run(translateCommandList(parseCommand('sleep 5')), {
+        timeoutMs: 800,
+      });
+      expect(timedOut.timedOut).toBe(true);
+      expect(timedOut.exitCode).toBe(124);
+
+      const printenv = await extra.run(translateCommandList(parseCommand('printenv ' + key)));
+      expect(printenv.exitCode).toBe(1);
+      expect(printenv.stdout).toBe('');
+      const native = await extra.run(
+        translateCommandList(
+          parseCommand(`node -e "process.stdout.write(process.env.${key} ?? 'missing')"`),
+        ),
+      );
+      expect(native.exitCode).toBe(0);
+      expect(native.stdout.trim()).toBe('missing');
+
+      await extra.reset();
+      expect((await extra.run(translateCommandList(parseCommand('printenv ' + key)))).stdout.trim()).toBe(
+        'parent-baseline',
+      );
+    } finally {
+      await extra.dispose();
+      if (old === undefined) delete process.env[key];
+      else process.env[key] = old;
+    }
+  }, 30000);
+
+  it('unset inherited env stays absent after an aborted request', async () => {
+    const key = 'FAUXNIX_RESTART_ABORT_CASE';
+    const old = process.env[key];
+    process.env[key] = 'parent-baseline';
+    const extra = new FauxnixSession();
+    try {
+      expect((await extra.run(translateCommandList(parseCommand('unset ' + key)))).exitCode).toBe(0);
+      const ac = new AbortController();
+      const pending = extra.run(translateCommandList(parseCommand('sleep 5')), {
+        timeoutMs: 30_000,
+        signal: ac.signal,
+      });
+      await new Promise((r) => setTimeout(r, 250));
+      ac.abort();
+      const cancelled = await pending;
+      expect(cancelled.cancelled).toBe(true);
+      expect(cancelled.exitCode).toBe(130);
+
+      const printenv = await extra.run(translateCommandList(parseCommand('printenv ' + key)));
+      expect(printenv.exitCode).toBe(1);
+      expect(printenv.stdout).toBe('');
+      const native = await extra.run(
+        translateCommandList(
+          parseCommand(`node -e "process.stdout.write(process.env.${key} ?? 'missing')"`),
+        ),
+      );
+      expect(native.exitCode).toBe(0);
+      expect(native.stdout.trim()).toBe('missing');
+    } finally {
+      await extra.dispose();
+      if (old === undefined) delete process.env[key];
+      else process.env[key] = old;
+    }
+  }, 30000);
+
   it('adds a default PATHEXT only when no case variant is present', async () => {
     const extra = new FauxnixSession();
     const overrides = extra.env as Record<string, string | undefined>;
