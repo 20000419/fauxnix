@@ -1888,6 +1888,13 @@ describe('CommandSpec archive leftovers (#143)', () => {
     expect(bodyOf('zip -Z a.zip f')).toContain("invalid option -- ''Z''");
   });
 
+  it('zip passes validated wildcard-looking operands as literal paths', () => {
+    const body = bodyOf("zip a.zip '*' '?' '[.]env'");
+    expect(body).toContain('Test-Path -LiteralPath $fx_p');
+    expect(body).toContain('Compress-Archive -LiteralPath $fx_valid');
+    expect(body).not.toContain('Compress-Archive -Path $fx_valid');
+  });
+
   it('unzip -l/-o/-d still translate; unknown flags fail', () => {
     expect(bodyOf('unzip -l a.zip')).toContain('OpenRead');
     expect(bodyOf('unzip -o a.zip')).toContain('-Force:$true');
