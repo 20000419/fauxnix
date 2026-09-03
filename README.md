@@ -154,13 +154,13 @@ TOML config: `~/.kimi-code/mcp.json`
 ```
 
 **Qwen Code** (`~/.qwen/settings.json`)
-```json
-{
-  "mcpServers": {
-    "fauxnix": { "command": "fauxnix", "args": ["mcp"] }
-  }
-}
+```bash
+fauxnix install --qwen
 ```
+The installer preserves the rest of `settings.json` and writes an absolute
+Node + package-entry launcher so Qwen startup does not depend on its working
+directory or `PATH` order. See [the Qwen example](docs/examples/qwen.md) for
+the generated JSON shape.
 
 **Any MCP client** — stdio server: `fauxnix mcp`. The tool name is `bash` (override with
 `FAUXNIX_TOOL_NAME`). Tool description already teaches the model the supported subset, so no

@@ -1,7 +1,7 @@
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, isAbsolute, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runCli, USAGE } from '../src/cli.js';
 import { collectDoctorReport } from '../src/doctor.js';
@@ -36,6 +36,7 @@ import {
   SH_SCRIPT_WINDOWS_HINT,
 } from '../src/errors.js';
 import { decodeHostResponse, encodeHostRequest, parseHostLine } from '../src/ps-host.js';
+import { packageVersion } from '../src/version.js';
 import {
   bashToolResult,
   formatBashText,
@@ -2526,7 +2527,7 @@ describe('install harness config', () => {
     }
   });
 
-  it('writes Kimi ~/.kimi-code/mcp.json and Qwen ~/.qwen/settings.json', () => {
+  it('writes Kimi ~/.kimi-code/mcp.json and Qwen ~/.qwen/settings.json', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fauxnix-install-'));
     try {
       const kimiPath = kimiConfigPath(dir, {});
@@ -2558,13 +2559,150 @@ describe('install harness config', () => {
       };
       expect(qwenData.theme).toBe('dark');
       expect(qwenData.mcpServers.other).toEqual({ command: 'npx' });
-      expect(qwenData.mcpServers.fauxnix).toEqual({ command: 'fauxnix', args: ['mcp'] });
+      const qwenServer = qwenData.mcpServers.fauxnix as {
+        command: string;
+        args: string[];
+      };
+      expect(qwenServer.command).toBe(process.execPath);
+      expect(isAbsolute(qwenServer.command)).toBe(true);
+      expect(qwenServer.args).toEqual([join(process.cwd(), 'dist', 'index.js'), 'mcp']);
+      expect(isAbsolute(qwenServer.args[0])).toBe(true);
+      expect(await doctorText(dir)).toMatch(
+        /qwen\s+: fauxnix MCP configured with an absolute launcher/,
+      );
 
       const kimiHome = join(dir, 'kimi-home');
       const kimiEnv = { KIMI_CODE_HOME: kimiHome };
       const custom = runInstall(['--kimi'], opts(dir, kimiEnv));
       expect(custom.ok).toBe(true);
       expect(existsSync(join(kimiHome, 'mcp.json'))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('upgrades a PATH-based Qwen entry, preserves fields, and launches outside project PATH', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fauxnix-install-'));
+    try {
+      const qwenPath = qwenConfigPath(dir, {});
+      const workspace = join(dir, 'workspace with spaces');
+      mkdirSync(join(dir, '.qwen'));
+      mkdirSync(workspace);
+      const marker = join(workspace, 'wrong-launcher.txt');
+      writeFileSync(
+        join(workspace, 'fauxnix.cmd'),
+        `@echo off\r\n>"${marker}" echo wrong\r\nexit /b 0\r\n`,
+      );
+      writeFileSync(
+        qwenPath,
+        JSON.stringify(
+          {
+            theme: 'dark',
+            mcpServers: {
+              other: { command: 'npx' },
+              fauxnix: {
+                command: 'fauxnix',
+                args: ['mcp'],
+                timeout: 30_000,
+                env: { KEEP: 'yes' },
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      );
+
+      expect(await doctorText(dir)).toMatch(/qwen\s+: .*launcher does not match this installation/);
+      const installed = runInstall(['--qwen'], opts(dir));
+      expect(installed.ok).toBe(true);
+      expect(installed.lines[0]).toContain('updated mcpServers.fauxnix launcher');
+
+      const data = JSON.parse(readFileSync(qwenPath, 'utf8')) as {
+        theme: string;
+        mcpServers: Record<string, unknown>;
+      };
+      expect(data.theme).toBe('dark');
+      expect(data.mcpServers.other).toEqual({ command: 'npx' });
+      const server = data.mcpServers.fauxnix as {
+        command: string;
+        args: string[];
+        timeout: number;
+        env: Record<string, string>;
+      };
+      expect(server.timeout).toBe(30_000);
+      expect(server.env).toEqual({ KEEP: 'yes' });
+      expect(server.command).toBe(process.execPath);
+      expect(server.args.at(-1)).toBe('mcp');
+
+      const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === 'path') ?? 'PATH';
+      const env = { ...process.env, [pathKey]: workspace + delimiter + (process.env[pathKey] ?? '') };
+      const launched = spawnSync(server.command, [...server.args.slice(0, -1), '--version'], {
+        cwd: workspace,
+        env,
+        encoding: 'utf8',
+        shell: false,
+      });
+      expect(launched.error).toBeUndefined();
+      expect(launched.status).toBe(0);
+      expect(launched.stdout.trim()).toBe(`fauxnix ${packageVersion}`);
+      expect(existsSync(marker)).toBe(false);
+
+      const before = readFileSync(qwenPath, 'utf8');
+      const again = runInstall(['--qwen'], opts(dir));
+      expect(again.ok).toBe(true);
+      expect(again.lines[0]).toContain('already configured with an absolute launcher');
+      expect(readFileSync(qwenPath, 'utf8')).toBe(before);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('doctor reports a Qwen launcher that does not match this installation', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fauxnix-install-'));
+    try {
+      const qwenPath = qwenConfigPath(dir, {});
+      mkdirSync(join(dir, '.qwen'));
+      writeFileSync(
+        qwenPath,
+        JSON.stringify({
+          mcpServers: {
+            fauxnix: {
+              command: join(dir, 'missing-node.exe'),
+              args: [join(dir, 'missing-package', 'dist', 'index.js'), 'mcp'],
+            },
+          },
+        }),
+      );
+      expect(await doctorText(dir)).toMatch(/qwen\s+: .*launcher does not match this installation/);
+      expect(await doctorText(dir)).toContain('fauxnix install --qwen');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not add a second Qwen launcher beside a differently named fauxnix entry', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fauxnix-install-'));
+    try {
+      const qwenPath = qwenConfigPath(dir, {});
+      mkdirSync(join(dir, '.qwen'));
+      const original = JSON.stringify(
+        {
+          theme: 'dark',
+          mcpServers: {
+            legacy: { command: 'fauxnix', args: ['mcp'], timeout: 10_000 },
+          },
+        },
+        null,
+        2,
+      );
+      writeFileSync(qwenPath, original);
+
+      const installed = runInstall(['--qwen'], opts(dir));
+      expect(installed.ok).toBe(false);
+      expect(installed.lines[0]).toContain('another fauxnix MCP entry (legacy)');
+      expect(readFileSync(qwenPath, 'utf8')).toBe(original);
+      expect(await doctorText(dir)).toMatch(/qwen\s+: .*additional fauxnix MCP entries/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -2637,6 +2775,7 @@ describe.skipIf(process.platform !== 'win32')('cli doctor spawn', () => {
     expect(r.stdout).toMatch(/claude\s+:/);
     expect(r.stdout).toMatch(/codex\s+:/);
     expect(r.stdout).toMatch(/opencode\s+:/);
+    expect(r.stdout).toMatch(/qwen\s+:/);
     expect(r.status).toBe(0);
   }, 30000);
 });

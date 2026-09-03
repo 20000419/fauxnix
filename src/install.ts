@@ -4,12 +4,14 @@ import { dirname, join } from 'node:path';
 import {
   claudeUserConfigPath,
   codexConfigPath,
+  fauxnixServerNames,
   hasCodexFauxnix,
   hasOpenCodeFauxnix,
   isServerMap,
   openCodeConfigPath,
   serverMapHasFauxnix,
 } from './doctor.js';
+import { resolveQwenLaunchTuple, sameQwenLaunchTuple } from './qwen-launch.js';
 
 export type InstallOptions = {
   home?: string;
@@ -111,8 +113,56 @@ function installHarness(name: HarnessName, ctx: Ctx): One {
     case 'kimi':
       return patchMcpServers(kimiConfigPath(ctx.home, ctx.env), 'kimi');
     case 'qwen':
-      return patchMcpServers(qwenConfigPath(ctx.home, ctx.env), 'qwen');
+      return patchQwen(qwenConfigPath(ctx.home, ctx.env));
   }
+}
+
+function patchQwen(path: string): One {
+  const launch = resolveQwenLaunchTuple();
+  if (!launch.ok) return { ok: false, line: `qwen: ${launch.reason} — not modified` };
+
+  const read = readJsonObject(path);
+  if (read.state === 'invalid') {
+    return { ok: false, line: `qwen: ${path} is ${read.reason} — not modified` };
+  }
+  const existed = read.state !== 'missing';
+  const data = read.state === 'ok' ? read.data : {};
+  if (data.mcpServers != null && !isServerMap(data.mcpServers)) {
+    return { ok: false, line: `qwen: ${path} mcpServers is not an object — not modified` };
+  }
+  if (!isServerMap(data.mcpServers)) data.mcpServers = {};
+
+  const servers = data.mcpServers as Record<string, unknown>;
+  const extraNames = fauxnixServerNames(servers).filter((name) => name !== 'fauxnix');
+  if (extraNames.length) {
+    return {
+      ok: false,
+      line: `qwen: ${path} has another fauxnix MCP entry (${extraNames.join(', ')}) — remove the extra entry, then retry; not modified`,
+    };
+  }
+  const current = servers.fauxnix;
+  if (current != null && !isServerMap(current)) {
+    return {
+      ok: false,
+      line: `qwen: ${path} mcpServers.fauxnix is not an object — not modified`,
+    };
+  }
+  if (sameQwenLaunchTuple(current, launch.value)) {
+    return { ok: true, line: `qwen: already configured with an absolute launcher (${path})` };
+  }
+
+  servers.fauxnix = {
+    ...(isServerMap(current) ? (current as Record<string, unknown>) : {}),
+    command: launch.value.command,
+    args: [...launch.value.args],
+  };
+  return writeJson(
+    path,
+    data,
+    'qwen',
+    existed,
+    current == null ? 'added mcpServers.fauxnix' : 'updated mcpServers.fauxnix launcher',
+  );
 }
 
 function patchMcpServers(path: string, harness: HarnessName): One {

@@ -11,22 +11,32 @@ fauxnix is a bash→PowerShell translation layer for AI agents on Windows — no
 
 ## Install
 
-Preferred (idempotent; writes the same keys as the block below):
+Preferred (idempotent):
 
 ```bash
 fauxnix install --qwen
 ```
 
-If `install` is not in your build, paste the block by hand.
+The installer writes an absolute launcher for the Node executable and this
+fauxnix installation's `dist/index.js`. That keeps Qwen Code startup independent
+of its working directory and `PATH` order. Re-run the installer after moving or
+reinstalling Node.js or fauxnix-cli.
 
 **Path:** `%USERPROFILE%\.qwen\settings.json`
 
-Merge `mcpServers.fauxnix`; do not wipe other keys.
+The generated shape is shown below. Paths are examples; use the values written
+by `fauxnix install --qwen` rather than copying them from another machine.
 
 ```json
 {
   "mcpServers": {
-    "fauxnix": { "command": "fauxnix", "args": ["mcp"] }
+    "fauxnix": {
+      "command": "C:\\Program Files\\nodejs\\node.exe",
+      "args": [
+        "C:\\Users\\you\\AppData\\Roaming\\npm\\node_modules\\fauxnix-cli\\dist\\index.js",
+        "mcp"
+      ]
+    }
   }
 }
 ```
@@ -38,7 +48,9 @@ fauxnix check
 fauxnix doctor
 ```
 
-Encoding is UTF-8 by default (`FAUXNIX_NATIVE_ENCODING` unset). v0.10.0 `doctor` does not list a qwen row; it still confirms PowerShell, encoding, and `mcp : module loads`. Restart Qwen Code so it reloads MCP.
+Encoding is UTF-8 by default (`FAUXNIX_NATIVE_ENCODING` unset). `doctor` reports
+whether Qwen's fauxnix entry uses the generated absolute launcher. Restart Qwen
+Code so it reloads MCP.
 
 ## Smoke
 
