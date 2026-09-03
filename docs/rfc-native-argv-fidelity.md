@@ -29,8 +29,11 @@ That violates fail-loud / never silently-wrong.
 - Empty `[object[]]` must not unwrap to `$null` (that became a phantom `""`
   argv). `.cmd`/`.bat` Applications go through `cmd.exe /d /s /c` because
   `CreateProcess` cannot launch them with `UseShellExecute = $false`. The
-  `/c` tail is wrapped in extra quotes (`/s` strips that pair); arguments
-  containing `& | ( ) < > ^` are CRT-quoted so cmd.exe does not split them.
+  `/c` tail is wrapped in extra quotes (`/s` strips that pair), delayed
+  expansion is forced off, and arguments containing `! ^ & | ( ) < >` are
+  quoted so cmd.exe does not split them. A separate `fx-cmdargv` boundary
+  rejects `%`, embedded double quotes, CR/LF, and NUL because cmd.exe cannot
+  represent those values losslessly in this command-string path.
 - Pipelines still work: `$input` is copied to the child stdin; stdout/stderr
   are captured without the `& @array` splat.
 - Dynamic/`[@]` command names use the same helper. If the name is not an
@@ -44,8 +47,8 @@ That violates fail-loud / never silently-wrong.
 
 ## Non-goals
 
-- Byte-identical cmd.exe quirks beyond that quoting (`%VAR%` expansion,
-  delayed-expansion `!`, nested quote encoding).
+- Lossless `.cmd`/`.bat` arguments outside the documented `fx-cmdargv`
+  character contract; they fail loudly instead of being rewritten.
 - `pwsh` 7 `ArgumentList`.
 - Version bump / npm publish.
 
@@ -56,6 +59,9 @@ empty arg, space, embedded `"`, leading `--foo`.
 (`node -e` is a bad oracle on Windows: `-e` is omitted from `process.argv`,
 so `slice(2)` drops the first user argument.)
 `printf -- 'a b\n' | xargs node dump-argv.js` → `["a","b"]` (xargs splits on blanks).
+Direct `.cmd`/`.bat` plus xargs default/`-n`/`-I` cover preserved empty,
+space, backslash, parentheses, `! ^ & | < >` arguments and fail-loud `%`,
+double-quote, CR/LF, and NUL boundaries.
   });
 
 `.cmd` that echoes `%*`: `'a&b'` / `'--flag=a&b'` stay one argument containing `&`.

@@ -1224,6 +1224,7 @@ const WRAP_HELPER_ORDER = [
   'fx-subst',
   'fx-slice',
   'fx-winargv',
+  'fx-cmdargv',
   'fx-native',
 ] as const;
 
@@ -1252,7 +1253,8 @@ const WRAP_HELPER_DEPS: Record<WrapHelper, WrapHelper[]> = {
   'fx-subst': [],
   'fx-slice': [],
   'fx-winargv': [],
-  'fx-native': ['fx-winargv'],
+  'fx-cmdargv': ['fx-winargv'],
+  'fx-native': ['fx-cmdargv'],
 };
 
 /** Helpers the body calls that wrapScript still has to emit (not already defined there). */
@@ -1694,6 +1696,23 @@ export function wrapScript(body: string, opts: WrapScriptOptions = {}): string {
       "  return (($parts.ToArray()) -join ' ')",
       '}',
     ],
+    'fx-cmdargv': [
+      'function fx-cmdargv($argv) {',
+      // cmd.exe performs percent expansion even inside quotes, and embedded
+      // quotes can reopen its metacharacter grammar. CR/LF/NUL cannot be
+      // represented as one batch argument. Reject those values instead of
+      // silently handing a different argv to the shim.
+      '  if ($null -eq $argv) { $argv = @() }',
+      '  foreach ($a in @($argv)) {',
+      '    $s = [string]$a',
+      "    if ($s.IndexOf('%') -ge 0) { throw \"fauxnix: cannot pass '%' to a .cmd/.bat file without changing the argument; invoke the underlying executable directly\" }",
+      '    if ($s.IndexOf([char]34) -ge 0) { throw \'fauxnix: cannot pass a double quote to a .cmd/.bat file without changing the argument; invoke the underlying executable directly\' }',
+      '    if ($s.IndexOf([char]13) -ge 0 -or $s.IndexOf([char]10) -ge 0) { throw \'fauxnix: cannot pass a line break to a .cmd/.bat file as one argument; invoke the underlying executable directly\' }',
+      '    if ($s.IndexOf([char]0) -ge 0) { throw \'fauxnix: cannot pass NUL to a .cmd/.bat file as one argument; invoke the underlying executable directly\' }',
+      '  }',
+      '  return (fx-winargv $argv $true)',
+      '}',
+    ],
     'fx-native': [
       'function fx-native($name, $argv) {',
       '  if ($null -eq $argv) { $argv = @() } else { $argv = [object[]]@($argv) }',
@@ -1724,8 +1743,8 @@ export function wrapScript(body: string, opts: WrapScriptOptions = {}): string {
       '  $psi = New-Object System.Diagnostics.ProcessStartInfo',
       '  $ext = [IO.Path]::GetExtension([string]$app.Source)',
       // CreateProcess cannot launch .cmd/.bat with UseShellExecute=false (npm.cmd).
-      // /s strips one outer quote pair from the /c tail; CRT-quote cmd
-      // metacharacters so `&`/`|`/`()` do not start a second command.
+      // /s strips one outer quote pair from the /c tail. Build only the
+      // subset of batch argv that cmd.exe can pass through unchanged.
       "  if ($ext -eq '.cmd' -or $ext -eq '.bat') {",
       '    $comspec = Get-Command -Name cmd -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1',
       '    if ($null -eq $comspec) {',
@@ -1734,10 +1753,16 @@ export function wrapScript(body: string, opts: WrapScriptOptions = {}): string {
       '      return',
       '    }',
       '    $psi.FileName = $comspec.Source',
-      '    $fx_app = fx-winargv $app.Source $true',
-      '    $fx_rest = fx-winargv $argv $true',
+      '    try {',
+      '      $fx_app = fx-cmdargv $app.Source',
+      '      $fx_rest = fx-cmdargv $argv',
+      '    } catch {',
+      // Let the common wrapper report the validation error and stop the
+      // current pipeline. Returning here would let xargs mask the failure.
+      '      throw $_.Exception',
+      '    }',
       "    if ($fx_rest.Length -gt 0) { $fx_tail = $fx_app + ' ' + $fx_rest } else { $fx_tail = $fx_app }",
-      '    $psi.Arguments = \'/d /s /c "\' + $fx_tail + \'"\'',
+      '    $psi.Arguments = \'/d /s /v:off /c "\' + $fx_tail + \'"\'',
       '  } else {',
       '    $psi.FileName = $app.Source',
       '    $psi.Arguments = fx-winargv $argv',

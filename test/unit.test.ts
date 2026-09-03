@@ -891,10 +891,15 @@ describe('translator', () => {
     expect(builtin).toContain('xargs currently passes arguments to native commands');
   });
 
-  it('quotes cmd metacharacters on the .cmd /c tail', () => {
+  it('uses a cmd-specific argv boundary for .cmd/.bat files', () => {
     const script = translateCommandList(parse('node --version'))[0].script;
-    expect(script).toContain('fx-winargv $argv $true');
-    expect(script).toContain('/d /s /c "');
+    expect(script).toContain('function fx-cmdargv');
+    expect(script).toContain('fx-cmdargv $argv');
+    expect(script).toContain('/d /s /v:off /c "');
+    expect(script).toContain("$s.IndexOf('%')");
+    expect(script).toContain('$s.IndexOf([char]34)');
+    expect(script).toContain('$s.IndexOf([char]13)');
+    expect(script).toContain('$s.IndexOf([char]10)');
     expect(script).toContain("'&'");
     expect(script).toContain("'|'");
     const list = parse("./hit.cmd 'a&b'");

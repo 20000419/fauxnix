@@ -32,6 +32,16 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     );
     writeFileSync(join(dir, 'hit.cmd'), '@echo off\r\necho CMDHIT\r\n');
     writeFileSync(join(dir, 'dump-args.cmd'), '@echo off\r\necho ARGS:%*\r\necho DONE\r\n');
+    writeFileSync(
+      join(dir, 'forward-args.cmd'),
+      '@echo off\r\nnode "%~dp0dump-argv.js" %*\r\n',
+      'utf8',
+    );
+    writeFileSync(
+      join(dir, 'forward-args.bat'),
+      '@echo off\r\nnode "%~dp0dump-argv.js" %*\r\n',
+      'utf8',
+    );
     writeFileSync(join(dir, 'letters.txt'), 'a\nb\nc\n', 'utf8');
     writeFileSync(join(dir, 'nums.txt'), '1 2\n3 4\n5 6\n', 'utf8');
     writeFileSync(join(dir, 'dups.txt'), 'aaa\naaa\nbbb\n', 'utf8');
@@ -1571,6 +1581,116 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect(inject.stdout).toContain('a&echo INJECTED');
     expect(inject.stdout).toContain('DONE');
     expect(inject.stdout).not.toMatch(/^INJECTED$/m);
+  });
+
+  it('native .cmd argv keeps supported punctuation and rejects values cmd would rewrite', async () => {
+    const supported = [
+      '',
+      'a b',
+      'back\\slash',
+      'trail\\',
+      'a(b)',
+      'a!b',
+      'a^b',
+      'a&b',
+      'a|b',
+      'a<b',
+      'a>b',
+      'left!^&|<>right',
+    ];
+    const pass = await run(
+      './forward-args.cmd ' + supported.map((value) => "'" + value + "'").join(' '),
+    );
+    expect(pass.exitCode).toBe(0);
+    expect(JSON.parse(pass.stdout.trim())).toEqual(supported);
+
+    const percent = await run("FXPROBE=EXPANDED ./forward-args.cmd '%FXPROBE%'");
+    expect(percent.exitCode).not.toBe(0);
+    expect(percent.stdout).toBe('');
+    expect(percent.stderr).toContain("cannot pass '%' to a .cmd/.bat file");
+    expect(percent.stderr).not.toContain('EXPANDED');
+
+    const quote = await run('./forward-args.cmd \'a"&echo CHANGED\'');
+    expect(quote.exitCode).not.toBe(0);
+    expect(quote.stdout).toBe('');
+    expect(quote.stderr).toContain('cannot pass a double quote to a .cmd/.bat file');
+    expect(quote.stdout + quote.stderr).not.toMatch(/^CHANGED$/m);
+
+    const bat = await run("./forward-args.bat 'a!^&|<>b'");
+    expect(bat.exitCode).toBe(0);
+    expect(JSON.parse(bat.stdout.trim())).toEqual(['a!^&|<>b']);
+
+    for (const lineBreak of ['\r', '\n']) {
+      const broken = await run("./forward-args.cmd 'a" + lineBreak + "b'");
+      expect(broken.exitCode).not.toBe(0);
+      expect(broken.stderr).toContain('cannot pass a line break to a .cmd/.bat file');
+    }
+    const nul = await run("./forward-args.cmd 'a\0b'");
+    expect(nul.exitCode).not.toBe(0);
+    expect(nul.stdout).toBe('');
+    expect(nul.stderr).toContain('cannot pass NUL to a .cmd/.bat file');
+  });
+
+  it('xargs .cmd argv uses the same fidelity boundary in default, -n, and -I modes', async () => {
+    const expected = ['a!b', 'a^b', 'a&b', 'a|b', 'a<b', 'a>b'];
+    const ordinary = await run(
+      "printf -- '" + expected.join(' ') + "\\n' | xargs ./forward-args.cmd",
+    );
+    expect(ordinary.exitCode).toBe(0);
+    expect(JSON.parse(ordinary.stdout.trim())).toEqual(expected);
+
+    const batched = await run("printf -- 'a!b a^b a&b a|b\\n' | xargs -n 2 ./forward-args.cmd");
+    expect(batched.exitCode).toBe(0);
+    expect(batched.stdout.trim().split(/\r?\n/).map((line) => JSON.parse(line))).toEqual([
+      ['a!b', 'a^b'],
+      ['a&b', 'a|b'],
+    ]);
+
+    const replaced = await run(
+      "printf -- 'left!^&|<>right\\n' | xargs -I {} ./forward-args.cmd '{}'",
+    );
+    expect(replaced.exitCode).toBe(0);
+    expect(JSON.parse(replaced.stdout.trim())).toEqual(['left!^&|<>right']);
+
+    const forms = [
+      (value: string) => "printf -- '" + value + "\\n' | xargs ./forward-args.cmd",
+      (value: string) => "printf -- '" + value + "\\n' | xargs -n 1 ./forward-args.cmd",
+      (value: string) =>
+        "printf -- '" + value + "\\n' | xargs -I {} ./forward-args.cmd '{}'",
+    ];
+    for (const form of forms) {
+      for (const [value, message] of [
+        ['%FXPROBE%', "cannot pass '%' to a .cmd/.bat file"],
+        ['a"b', 'cannot pass a double quote to a .cmd/.bat file'],
+      ]) {
+        const cmd = 'FXPROBE=EXPANDED ' + form(value);
+        const rejected = await run(cmd);
+        expect(rejected.exitCode, cmd + ': ' + JSON.stringify(rejected)).not.toBe(0);
+        expect(rejected.stderr).toContain(message);
+        expect(rejected.stdout + rejected.stderr).not.toContain('EXPANDED');
+      }
+    }
+
+    const baseArgForms = [
+      (value: string) =>
+        "printf -- 'item\\n' | xargs ./forward-args.cmd '" + value + "'",
+      (value: string) =>
+        "printf -- 'item\\n' | xargs -n 1 ./forward-args.cmd '" + value + "'",
+      (value: string) =>
+        "printf -- 'item\\n' | xargs -I {} ./forward-args.cmd '" + value + "' '{}'",
+    ];
+    for (const form of baseArgForms) {
+      for (const [separator, message] of [
+        ['\r', 'cannot pass a line break to a .cmd/.bat file'],
+        ['\n', 'cannot pass a line break to a .cmd/.bat file'],
+        ['\0', 'cannot pass NUL to a .cmd/.bat file'],
+      ] as const) {
+        const cmd = form('a' + separator + 'b');
+        const rejected = await run(cmd);
+        expect(rejected.exitCode, cmd + ': ' + JSON.stringify(rejected)).not.toBe(0);
+        expect(rejected.stderr).toContain(message);
+      }
+    }
   });
 
   it('xargs runs native commands', async () => {
