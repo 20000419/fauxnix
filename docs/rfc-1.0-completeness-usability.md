@@ -65,7 +65,7 @@ into a repeatable gate.
 |---|---|---|
 | T-1 | `SECURITY.md` | trust model (local agent shell, same as any harness Bash tool), host-protocol surface, kill semantics, network guard, reporting policy |
 | T-2 | CONTRIBUTING: the RFC rule | when an RFC is required (new surface, protocol change, semantics), template pointer, maintainer turnaround expectation |
-| T-3 | Release checklist | CHANGELOG + tag + release notes + `test:package` green + npm publish steps in CONTRIBUTING (mostly exists; codify) |
+| T-3 | Release checklist | **Complete**: CONTRIBUTING codifies CHANGELOG, tag, release notes, RC/stable npm tags, 2FA publish, readback and rollback; `release:check` gates metadata and strict tagged publishes |
 | T-4 | Stability freeze | at 1.0.0-rc: CLI verbs, MCP tool schema, session env-var contract, host protocol v2 marked frozen; semver from 1.0.0 |
 
 ## Sequencing (each wave = independently reviewable PRs)

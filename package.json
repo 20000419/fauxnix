@@ -14,6 +14,8 @@
   "scripts": {
     "build": "tsc",
     "prepare": "npm run build",
+    "prepublishOnly": "npm run release:check -- --require-tag && npm run typecheck && npm test && npm run test:package",
+    "release:check": "node scripts/release-check.mjs",
     "test": "vitest run",
     "test:package": "node scripts/package-smoke.mjs",
     "test:watch": "vitest",
