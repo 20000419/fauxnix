@@ -49,6 +49,7 @@ describe.skipIf(!hasPs)(`integration (real ${selectedPowerShell.executable})`, {
     writeFileSync(join(dir, 'letters.txt'), 'a\nb\nc\n', 'utf8');
     writeFileSync(join(dir, 'nums.txt'), '1 2\n3 4\n5 6\n', 'utf8');
     writeFileSync(join(dir, 'dups.txt'), 'aaa\naaa\nbbb\n', 'utf8');
+    writeFileSync(join(dir, 'replace-apple.sed'), 's/apple/PEAR/g\n', 'utf8');
     mkdirSync(join(dir, 'sub'));
     writeFileSync(join(dir, 'sub', 'b.txt'), 'third line\n', 'utf8');
     mkdirSync(join(dir, 'grep-tree', 'src'), { recursive: true });
@@ -219,6 +220,23 @@ describe.skipIf(!hasPs)(`integration (real ${selectedPowerShell.executable})`, {
     const r = await run("sed 's/apple/MANGO/g' fruits.txt");
     expect(r.stdout).toContain('MANGO pie');
     expect(r.stdout).not.toContain('apple');
+  });
+
+  it('sed script options execute while -- and -e keep their normal meanings', async () => {
+    const script = JSON.stringify(join(dir, 'replace-apple.sed'));
+    const attached = await run('sed -f' + script + ' fruits.txt');
+    const separate = await run('sed -f ' + script + ' fruits.txt');
+    const afterDashDash = await run("sed -- 's/apple/PLUM/g' fruits.txt");
+    const expression = await run("sed -e 's/apple/MANGO/g' fruits.txt");
+
+    for (const result of [attached, separate]) {
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain('PEAR pie');
+    }
+    expect(afterDashDash.exitCode).toBe(0);
+    expect(afterDashDash.stdout).toContain('PLUM pie');
+    expect(expression.exitCode).toBe(0);
+    expect(expression.stdout).toContain('MANGO pie');
   });
 
   it('awk field printing and sum', async () => {

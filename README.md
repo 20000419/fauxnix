@@ -121,6 +121,10 @@ fauxnix install --claude
 fauxnix mcp
 ```
 
+`translate` only renders a script and does not read command operands. Because
+`sed -f` needs a script file, translate-only mode asks you to use `-e` with
+inline script text; normal command execution continues to support `sed -f`.
+
 Unknown commands (git, node, npm, python, cargo, gh, docker, ...) are **passed through natively**
 with argv-style quoting. Windows `.cmd`/`.bat` shims necessarily pass through `cmd.exe`; fauxnix
 preserves its supported punctuation and fails loudly for `%`, embedded double quotes, NUL, and
@@ -193,8 +197,9 @@ Windows path.
 development:
 
 - **files**: `ls cp mv rm mkdir rmdir touch mktemp ln readlink realpath basename dirname stat file du df find chmod chown diff`
-- **text filters**: `grep egrep sed awk sort uniq cut tr` — sed/awk scripts are parsed at
-  translate time (unsupported constructs throw named errors, never silently misbehave)
+- **text filters**: `grep egrep sed awk sort uniq cut tr` — sed/awk scripts are parsed while
+  preparing an executable plan (unsupported constructs throw named errors, never silently
+  misbehave); inspect-only `translate` keeps `sed -f` file reads out of that path
 - **text I/O**: `echo printf cat head tail wc tee nl tac md5sum sha1sum sha256sum base64 seq yes xargs`
 
 The curated **agent-daily 60** carry a `CommandSpec`: unknown options fail with a GNU-style
