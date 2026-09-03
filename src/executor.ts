@@ -1,14 +1,24 @@
 import { randomUUID } from 'node:crypto';
-import { promises as fs, readFileSync, existsSync, openSync, closeSync, writeSync } from 'node:fs';
+import {
+  promises as fs,
+  readFileSync,
+  existsSync,
+  openSync,
+  closeSync,
+  readSync,
+  rmSync,
+  writeSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Redirect } from './ast.js';
 import { SegmentPlan, normalizeLiteralPath, wrapScript } from './translator.js';
-import { decodeOutput, normalizeHostNewlines, resolveNativePref } from './encoding.js';
+import { decodeOutput, resolveNativePref } from './encoding.js';
 import { normalizeStderr } from './errors.js';
 import {
   DEFAULT_STDERR_LIMIT,
   DEFAULT_STDOUT_LIMIT,
+  HostStreamMode,
   PowerShellHost,
 } from './ps-host.js';
 import { PowerShellSelection, resolvePowerShell } from './powershell.js';
@@ -34,6 +44,31 @@ export interface ExecOptions {
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_WINDOWS_PATHEXT = '.COM;.EXE;.BAT;.CMD';
+const MAX_HOST_CAPTURE_LIMIT = 0x7fffffff;
+const UTF8_BOUNDARY_SUFFIX = 4;
+const MAX_CALLER_OUTPUT_LIMIT = MAX_HOST_CAPTURE_LIMIT - UTF8_BOUNDARY_SUFFIX;
+
+function validateOutputLimit(name: 'stdoutLimit' | 'stderrLimit', value: number): number {
+  if (!Number.isSafeInteger(value) || value < 0 || value > MAX_CALLER_OUTPUT_LIMIT) {
+    throw new RangeError(
+      'fauxnix: ' + name + ' must be an integer from 0 to ' + MAX_CALLER_OUTPUT_LIMIT,
+    );
+  }
+  return value;
+}
+
+/**
+ * Retain one complete codepoint beyond the logical caller budget so Node can
+ * detect truncation and clip at a UTF-8 boundary. The host itself stays
+ * bounded even when the caller has no remaining budget.
+ */
+function rawHostCaptureLimit(logicalBytes: number): number {
+  if (!Number.isFinite(logicalBytes)) {
+    return logicalBytes === Number.POSITIVE_INFINITY ? MAX_HOST_CAPTURE_LIMIT : 0;
+  }
+  const bytes = Math.max(0, Math.floor(logicalBytes));
+  return Math.min(MAX_HOST_CAPTURE_LIMIT, bytes + UTF8_BOUNDARY_SUFFIX);
+}
 
 function hasEnvKey(env: NodeJS.ProcessEnv, name: string): boolean {
   const normalized = name.toUpperCase();
@@ -386,17 +421,64 @@ async function runPlans(
 ): Promise<ExecResult> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const deadline = Date.now() + timeoutMs;
-  const stdoutLimit = opts.stdoutLimit ?? DEFAULT_STDOUT_LIMIT;
-  const stderrLimit = opts.stderrLimit ?? DEFAULT_STDERR_LIMIT;
+  const stdoutLimit = validateOutputLimit(
+    'stdoutLimit',
+    opts.stdoutLimit ?? DEFAULT_STDOUT_LIMIT,
+  );
+  const stderrLimit = validateOutputLimit(
+    'stderrLimit',
+    opts.stderrLimit ?? DEFAULT_STDERR_LIMIT,
+  );
   const timeoutMessage =
     '\nbash: command timed out after ' + Math.round(timeoutMs / 1000) + 's';
   let stdout = '';
   let stderr = '';
+  let stdoutBytes = 0;
+  let stderrBytes = 0;
+  let stdoutClosed = false;
+  let stderrClosed = false;
   let exitCode = 0;
   let timedOut = false;
   let cancelled = false;
   let truncated = false;
   let spawnError: ExecResult['spawnError'];
+  const appendCaller = (fd: 1 | 2, data: string): void => {
+    if (!data) return;
+    if (fd === 1 ? stdoutClosed : stderrClosed) return;
+    const used = fd === 1 ? stdoutBytes : stderrBytes;
+    const limit = fd === 1 ? stdoutLimit : stderrLimit;
+    const clipped = clipUtf8(data, Math.max(0, limit - used));
+    if (fd === 1) {
+      stdout += clipped.text;
+      stdoutBytes += Buffer.byteLength(clipped.text, 'utf8');
+    } else {
+      stderr += clipped.text;
+      stderrBytes += Buffer.byteLength(clipped.text, 'utf8');
+    }
+    if (clipped.truncated) {
+      if (fd === 1) stdoutClosed = true;
+      else stderrClosed = true;
+      truncated = true;
+    }
+  };
+  const remainingFor = (dest: FdDest): number => {
+    if (dest.kind !== 'caller') return 0;
+    if (dest.fd === 1 ? stdoutClosed : stderrClosed) return 0;
+    const limit = dest.fd === 1 ? stdoutLimit : stderrLimit;
+    const used = dest.fd === 1 ? stdoutBytes : stderrBytes;
+    return Math.max(0, limit - used);
+  };
+  const closeCallerDest = (dest: FdDest): void => {
+    if (dest.kind !== 'caller') return;
+    if (dest.fd === 1) stdoutClosed = true;
+    else stderrClosed = true;
+  };
+  const hostStream = (dest: FdDest): { mode: HostStreamMode; limit: number } => {
+    if (dest.kind === 'file') return { mode: 'spool', limit: 0 };
+    if (dest.kind === 'nul') return { mode: 'discard', limit: 0 };
+    if (dest.fd === 1 ? stdoutClosed : stderrClosed) return { mode: 'discard', limit: 0 };
+    return { mode: 'capture', limit: rawHostCaptureLimit(remainingFor(dest)) };
+  };
   // bash list semantics: `a && b ; c` runs c regardless of a; `a && b && c`
   // skips b AND c when a fails. chainOk models the value of the current
   // &&/|| chain; `;` segments always run and restart the chain.
@@ -419,7 +501,7 @@ async function runPlans(
       break;
     }
     if (Date.now() >= deadline) {
-      stderr += timeoutMessage;
+      appendCaller(2, timeoutMessage);
       exitCode = 124;
       timedOut = true;
       session.prevExit = exitCode;
@@ -449,10 +531,10 @@ async function runPlans(
     const emitPrepError = (msg: string) =>
       emitToPrepDest(prepStderr, msg, prepFds, {
         stdout: (s) => {
-          stdout += s;
+          appendCaller(1, s);
         },
         stderr: (s) => {
-          stderr += s;
+          appendCaller(2, s);
         },
       });
     for (const r of plan.redirects) {
@@ -506,7 +588,7 @@ async function runPlans(
       break;
     }
     if (remainingMs <= 0) {
-      stderr += timeoutMessage;
+      appendCaller(2, timeoutMessage);
       exitCode = 124;
       timedOut = true;
       session.prevExit = exitCode;
@@ -518,11 +600,11 @@ async function runPlans(
     // stderr onto the caller's stdout before stdout is pointed at NUL, so
     // captured stderr is still returned; `>/dev/null 2>&1` points both at NUL.
     const applyDests = lastStageOutputDests(plan.outputRedirects, resolveTarget);
-    // Response budgets cap what the CALLER receives — streams redirected to
-    // files must never be truncated by them (Codex-review P1: `printf … > f`
-    // with a small stdoutLimit was writing a clipped file). The final
-    // clipUtf8 below still enforces the returned-data budget.
-    const fileRedirected = applyDests.stdout.kind === 'file' || applyDests.stderr.kind === 'file';
+    // Each source stream is bounded according to its final destination.
+    // A file keeps the complete stream, /dev/null retains nothing, and a
+    // caller stream receives only the budget left by earlier list segments.
+    const hostStdout = hostStream(applyDests.stdout);
+    const hostStderr = hostStream(applyDests.stderr);
     const inv = await ensureHost().invoke(
       encoded,
       {
@@ -532,13 +614,19 @@ async function runPlans(
       },
       remainingMs,
       opts.signal,
-      fileRedirected
-        ? { stdoutLimit: 0, stderrLimit: 0 }
-        : { stdoutLimit, stderrLimit },
+      {
+        stdoutLimit: hostStdout.limit,
+        stderrLimit: hostStderr.limit,
+        stdoutMode: hostStdout.mode,
+        stderrMode: hostStderr.mode,
+      },
     );
 
     if (inv.spawnError === 'ENOENT' || inv.spawnError === 'START') {
-      stderr += inv.stderr.toString('utf8') || 'fauxnix: failed to start the selected PowerShell host\n';
+      appendCaller(
+        2,
+        inv.stderr.toString('utf8') || 'fauxnix: failed to start the selected PowerShell host\n',
+      );
       exitCode = 127;
       spawnError = inv.spawnError;
       session.prevExit = exitCode;
@@ -557,17 +645,14 @@ async function runPlans(
     afterSegment();
 
     const decodePref = resolveNativePref();
-    // GNU line discipline: the PS host terminates Write-Output lines with
-    // CRLF. Exact writers (fx-write / printf / echo -n) must keep embedded
-    // CR so `printf 'a\r\nb' > out` stays 4 bytes.
     // Captured protocol frames are always UTF-8. FAUXNIX_NATIVE_ENCODING is
     // consumed at the native-process boundary inside fx-native; applying it
     // again here double-decodes every translated/non-ASCII frame. Only bytes
     // written directly to the host's OS stderr pipe retain a native encoding.
-    const segOut = normalizeHostNewlines(decodeOutput(inv.stdout, 'utf8'));
+    const segOut = decodeOutput(inv.stdout, 'utf8');
     const framedErr = decodeOutput(inv.stderr, 'utf8');
     const nativeErr = decodeOutput(inv.nativeStderr ?? Buffer.alloc(0), decodePref);
-    let segErr = normalizeHostNewlines(normalizeStderr(framedErr + nativeErr));
+    let segErr = normalizeStderr(framedErr + nativeErr);
 
     if (inv.timedOut) {
       segErr += timeoutMessage;
@@ -586,23 +671,53 @@ async function runPlans(
           writeToPrepFd(prepFds, dest.path, data);
         } catch (e) {
           if (fromStdout) {
-            stderr += 'bash: ' + dest.path + ': cannot create: ' + (e as Error).message + '\n';
+            appendCaller(
+              2,
+              'bash: ' + dest.path + ': cannot create: ' + (e as Error).message + '\n',
+            );
             exitCode = 1;
             redirectOk = false;
-            stdout += data;
+            appendCaller(1, data);
           } else {
-            stderr += data;
+            appendCaller(2, data);
           }
         }
         return;
       }
-      if (dest.fd === 1) stdout += data;
-      else stderr += data;
+      appendCaller(dest.fd, data);
     };
-    deliverCaptured(applyDests.stdout, segOut, true);
-    deliverCaptured(applyDests.stderr, segErr, false);
+    const deliverSpool = (dest: FdDest, spool: string | undefined, fromStdout: boolean): void => {
+      if (!spool) return;
+      if (dest.kind !== 'file') {
+        throw new Error('fauxnix: host returned a spool for a non-file destination');
+      }
+      try {
+        writeSpoolToPrepFd(prepFds, spool, dest.path);
+      } catch (e) {
+        appendCaller(
+          2,
+          'bash: ' + dest.path + ': cannot write: ' + (e as Error).message + '\n',
+        );
+        exitCode = 1;
+        redirectOk = false;
+      }
+    };
+    const spools = [inv.stdoutSpool, inv.stderrSpool, inv.nativeStderrSpool].filter(
+      (file): file is string => !!file,
+    );
+    try {
+      deliverCaptured(applyDests.stdout, segOut, true);
+      if (inv.stdoutTruncated) closeCallerDest(applyDests.stdout);
+      deliverCaptured(applyDests.stderr, segErr, false);
+      if (inv.stderrTruncated) closeCallerDest(applyDests.stderr);
+      deliverSpool(applyDests.stdout, inv.stdoutSpool, true);
+      deliverSpool(applyDests.stderr, inv.stderrSpool, false);
+      deliverSpool(applyDests.stderr, inv.nativeStderrSpool, false);
+    } finally {
+      for (const spool of spools) rmSync(spool, { force: true });
+    }
     if (inv.truncated) truncated = true;
-    exitCode = inv.timedOut ? 124 : inv.cancelled ? 130 : inv.exitCode;
+    exitCode = !redirectOk ? 1 : inv.timedOut ? 124 : inv.cancelled ? 130 : inv.exitCode;
     if (inv.timedOut) timedOut = true;
     session.prevExit = exitCode;
     chainOk = exitCode === 0;
@@ -616,12 +731,9 @@ async function runPlans(
     }
   }
 
-  const clippedOut = clipUtf8(stdout, stdoutLimit);
-  const clippedErr = clipUtf8(stderr, stderrLimit);
-  if (clippedOut.truncated || clippedErr.truncated) truncated = true;
   return {
-    stdout: clippedOut.text,
-    stderr: clippedErr.text,
+    stdout,
+    stderr,
     exitCode,
     timedOut,
     cancelled,
@@ -632,7 +744,34 @@ async function runPlans(
 
 function clipUtf8(text: string, limit: number): { text: string; truncated: boolean } {
   if (Buffer.byteLength(text, 'utf8') <= limit) return { text, truncated: false };
-  let end = text.length;
-  while (end > 0 && Buffer.byteLength(text.slice(0, end), 'utf8') > limit) end--;
+  let used = 0;
+  let end = 0;
+  for (const codepoint of text) {
+    const size = Buffer.byteLength(codepoint, 'utf8');
+    if (used + size > limit) break;
+    used += size;
+    end += codepoint.length;
+  }
   return { text: text.slice(0, end), truncated: true };
+}
+
+/** Copy a host spool into an already-open redirect fd with bounded memory. */
+function writeSpoolToPrepFd(
+  fds: Map<string, number>,
+  file: string,
+  target: string,
+): void {
+  const outFd = fds.get(target);
+  if (outFd === undefined) throw new Error('fauxnix: redirect fd missing for ' + target);
+  const inFd = openSync(file, 'r');
+  const input = Buffer.allocUnsafe(65_536);
+  try {
+    while (true) {
+      const n = readSync(inFd, input, 0, input.length, null);
+      if (n <= 0) break;
+      writeAllSync(outFd, input.subarray(0, n));
+    }
+  } finally {
+    closeSync(inFd);
+  }
 }

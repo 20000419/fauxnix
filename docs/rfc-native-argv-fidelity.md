@@ -22,10 +22,10 @@ That violates fail-loud / never silently-wrong.
   builds a Win32 command line (`fx-winargv`) and starts
   `System.Diagnostics.Process` with redirected stdio. Empty arguments become
   `""`; quotes follow the CRT quoting rules.
-- Stdout/stderr are `ReadToEndAsync` started **before** writing stdin (a
-  chatty child must not fill the 64KB pipe). PS 5.1 cannot run a scriptblock
-  on the thread pool, so `Task.Factory.StartNew({ $p.StandardOutput.ReadToEnd() })`
-  throws and the wrap catch turns that into exit 1.
+- Stdout/stderr start concurrent `FauxnixTextPump.CopyAsync` drains into
+  temporary disk spools **before** stdin is written (a chatty child must not
+  fill the 64KB pipe). After the child exits, the spools are replayed through
+  the bounded host capture or the next pipeline stage and then removed.
 - Empty `[object[]]` must not unwrap to `$null` (that became a phantom `""`
   argv). `.cmd`/`.bat` Applications go through `cmd.exe /d /s /c` because
   `CreateProcess` cannot launch them with `UseShellExecute = $false`. The

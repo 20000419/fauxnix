@@ -1,5 +1,14 @@
 import { spawn, ChildProcess } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  mkdirSync,
+  openSync,
+  readSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+  writeSync,
+} from 'node:fs';
 import { hostBootstrapScript } from './translator.js';
 import {
   POWERSHELL_ARGS,
@@ -7,6 +16,25 @@ import {
   powerShellMissingMessage,
   resolvePowerShell,
 } from './powershell.js';
+
+type NativeSpoolWriter = (fd: number, buffer: Buffer, offset: number, length: number) => number;
+
+class NativeStderrSpoolError extends Error {
+  constructor(operation: 'open' | 'write', spoolPath: string | undefined, cause: unknown) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    const code = (cause as NodeJS.ErrnoException | undefined)?.code;
+    super(
+      'fauxnix: native stderr spool ' +
+        operation +
+        ' failed' +
+        (code ? ' (' + code + ')' : '') +
+        (spoolPath ? ' for ' + spoolPath : '') +
+        ': ' +
+        detail,
+    );
+    this.name = 'NativeStderrSpoolError';
+  }
+}
 
 const READY_TIMEOUT_MS = 30_000;
 
@@ -23,8 +51,27 @@ export interface HostInvokeResult {
   timedOut: boolean;
   cancelled: boolean;
   truncated: boolean;
+  /** The framed stdout source crossed its capture limit. */
+  stdoutTruncated?: boolean;
+  /** Framed or native stderr crossed the shared stderr capture limit. */
+  stderrTruncated?: boolean;
   spawnError?: 'ENOENT' | 'START';
   spawnMessage?: string;
+  stdoutSpool?: string;
+  stderrSpool?: string;
+  nativeStderrSpool?: string;
+}
+
+export type HostStreamMode = 'capture' | 'spool' | 'discard';
+
+export interface HostOutputLimits {
+  stdoutLimit?: number;
+  stderrLimit?: number;
+  stdoutMode?: HostStreamMode;
+  stderrMode?: HostStreamMode;
+  stdoutSpoolPath?: string;
+  stderrSpoolPath?: string;
+  nativeStderrSpoolPath?: string;
 }
 
 export interface HostRequestEnv {
@@ -35,7 +82,7 @@ export function encodeHostRequest(
   id: string,
   script: string,
   env: HostRequestEnv,
-  opts?: { v?: number; stdoutLimit?: number; stderrLimit?: number },
+  opts?: { v?: number } & HostOutputLimits,
 ): string {
   const body: Record<string, unknown> = {
     id,
@@ -47,6 +94,10 @@ export function encodeHostRequest(
     body.type = 'run';
     body.stdoutLimit = opts.stdoutLimit ?? DEFAULT_STDOUT_LIMIT;
     body.stderrLimit = opts.stderrLimit ?? DEFAULT_STDERR_LIMIT;
+    body.stdoutMode = opts.stdoutMode ?? 'capture';
+    body.stderrMode = opts.stderrMode ?? 'capture';
+    if (opts.stdoutSpoolPath) body.stdoutSpoolPath = opts.stdoutSpoolPath;
+    if (opts.stderrSpoolPath) body.stderrSpoolPath = opts.stderrSpoolPath;
   }
   return JSON.stringify(body);
 }
@@ -62,6 +113,8 @@ export type HostV2Frame =
       timedOut?: boolean;
       cancelled?: boolean;
       truncated?: boolean;
+      stdoutTruncated?: boolean;
+      stderrTruncated?: boolean;
     };
 
 export function parseHostLine(line: string): {
@@ -113,6 +166,21 @@ export class PowerShellHost {
     reject: (err: Error) => void;
   }> = [];
   private stderrChunks: Buffer[] = [];
+  private nativeCapture: {
+    id: string;
+    needle: Buffer;
+    mode: HostStreamMode;
+    limit: number;
+    tail: Buffer;
+    spoolPath?: string;
+    spoolFd?: number;
+    bytesWritten: number;
+    bytesSeen: number;
+    ioError?: NativeStderrSpoolError;
+    resolve: (value: { bytesSeen: number }) => void;
+    reject: (reason: Error) => void;
+    timer: NodeJS.Timeout;
+  } | null = null;
   private closeCode: number | null | undefined;
   private closeErr: Error | null = null;
   private closed = false;
@@ -124,6 +192,8 @@ export class PowerShellHost {
     private readonly hostFile: string,
     private readonly envFn: () => NodeJS.ProcessEnv,
     private readonly powerShell: PowerShellSelection = resolvePowerShell(),
+    private readonly nativeSpoolWrite: NativeSpoolWriter = (fd, buffer, offset, length) =>
+      writeSync(fd, buffer, offset, length),
   ) {}
 
   /** Start the resident process and wait for the ready handshake (B1 prewarm). */
@@ -136,7 +206,7 @@ export class PowerShellHost {
     env: HostRequestEnv,
     timeoutMs: number,
     signal?: AbortSignal,
-    limits?: { stdoutLimit?: number; stderrLimit?: number },
+    limits?: HostOutputLimits,
   ): Promise<HostInvokeResult> {
     const run = this.invokeLock.then(() =>
       this.invokeSerial(script, env, timeoutMs, signal, limits),
@@ -156,6 +226,7 @@ export class PowerShellHost {
   }
 
   async stop(): Promise<void> {
+    this.cancelNativeCapture();
     const proc = this.proc;
     this.proc = null;
     this.closed = true;
@@ -196,7 +267,7 @@ export class PowerShellHost {
     env: HostRequestEnv,
     timeoutMs: number,
     signal?: AbortSignal,
-    limits?: { stdoutLimit?: number; stderrLimit?: number },
+    limits?: HostOutputLimits,
   ): Promise<HostInvokeResult> {
     if (signal?.aborted) {
       await this.stop();
@@ -207,18 +278,35 @@ export class PowerShellHost {
     if (started) return { ...started, cancelled: false, truncated: false };
 
     const id = 'f' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    const resolvedLimits: HostOutputLimits = { ...limits };
+    if (resolvedLimits.stdoutMode === 'spool') {
+      resolvedLimits.stdoutSpoolPath = this.hostFile + '.' + id + '.stdout';
+    }
+    if (resolvedLimits.stderrMode === 'spool') {
+      resolvedLimits.stderrSpoolPath = this.hostFile + '.' + id + '.stderr';
+    }
+    if (resolvedLimits.stderrMode !== 'discard') {
+      resolvedLimits.nativeStderrSpoolPath = this.hostFile + '.' + id + '.native-stderr';
+    }
+    const nativeSpoolDir = this.hostFile + '.' + id + '.native';
+    mkdirSync(nativeSpoolDir);
+    const requestEnv = { ...env, FAUXNIX_NATIVE_SPOOL_DIR: nativeSpoolDir };
     const line = encodeHostRequest(
       id,
       script,
-      env,
+      requestEnv,
       this.protocol === 2
-        ? { v: 2, stdoutLimit: limits?.stdoutLimit, stderrLimit: limits?.stderrLimit }
+        ? {
+            v: 2,
+            ...resolvedLimits,
+          }
         : undefined,
     );
     try {
       this.proc!.stdin!.write(line + '\n');
     } catch (e) {
       await this.deadRestart();
+      rmSync(nativeSpoolDir, { recursive: true, force: true });
       return {
         stdout: Buffer.alloc(0),
         stderr: Buffer.from('fauxnix: powershell host exited unexpectedly\n', 'utf8'),
@@ -238,7 +326,7 @@ export class PowerShellHost {
     signal?.addEventListener('abort', onAbort, { once: true });
     try {
       if (this.protocol === 2) {
-        return await this.collectV2(id, timeoutMs);
+        return await this.collectV2(id, timeoutMs, resolvedLimits);
       }
       const raw = await this.nextJsonLine(timeoutMs, id);
       const msg = decodeHostResponse(raw);
@@ -254,15 +342,28 @@ export class PowerShellHost {
       };
     } catch (e) {
       const timedOut = (e as { timedOut?: boolean }).timedOut === true;
+      const wasCancelled = cancelled || signal?.aborted === true;
+      const nativeSpoolError = e instanceof NativeStderrSpoolError ? e : null;
       await this.stop();
       this.drainNativeStderr();
-      if (cancelled || signal?.aborted) return this.cancelledResult();
+      this.removeRequestSpools(resolvedLimits);
+      if (wasCancelled) return this.cancelledResult();
       if (timedOut) {
         return {
           stdout: Buffer.alloc(0),
           stderr: Buffer.alloc(0),
           exitCode: 124,
           timedOut: true,
+          cancelled: false,
+          truncated: false,
+        };
+      }
+      if (nativeSpoolError) {
+        return {
+          stdout: Buffer.alloc(0),
+          stderr: Buffer.from(nativeSpoolError.message + '\n', 'utf8'),
+          exitCode: 1,
+          timedOut: false,
           cancelled: false,
           truncated: false,
         };
@@ -294,6 +395,11 @@ export class PowerShellHost {
       };
     } finally {
       signal?.removeEventListener('abort', onAbort);
+      try {
+        rmSync(nativeSpoolDir, { recursive: true, force: true });
+      } catch {
+        /* best effort; never mask the request result */
+      }
     }
   }
 
@@ -372,7 +478,7 @@ export class PowerShellHost {
     });
     child.stderr!.on('data', (d: Buffer) => {
       if (this.proc !== child) return;
-      this.stderrChunks.push(d);
+      this.onNativeStderr(d);
     });
     child.on('error', (e) => {
       if (this.proc !== child) return;
@@ -479,13 +585,28 @@ export class PowerShellHost {
     throw err;
   }
 
-  private async collectV2(id: string, timeoutMs: number): Promise<HostInvokeResult> {
+  private async collectV2(
+    id: string,
+    timeoutMs: number,
+    limits?: HostOutputLimits,
+  ): Promise<HostInvokeResult> {
     const deadline = Date.now() + timeoutMs;
     const out: Buffer[] = [];
     const err: Buffer[] = [];
     let outSeq = 0;
     let errSeq = 0;
     let end: Extract<HostV2Frame, { type: 'end' }> | null = null;
+    const nativePromise = this.beginNativeCapture(
+      id,
+      limits?.stderrMode ?? 'capture',
+      limits?.stderrLimit ?? DEFAULT_STDERR_LIMIT,
+      limits?.nativeStderrSpoolPath,
+      timeoutMs + 2000,
+    );
+    // collectV2 can leave through a frame timeout before it reaches the await
+    // below. Attach a handler immediately so teardown never reports a stray
+    // promise rejection; the awaited path still receives the same failure.
+    void nativePromise.catch(() => undefined);
     while (!end) {
       const line = await this.nextLine(Math.max(1, deadline - Date.now()));
       if (!line.trim()) continue;
@@ -509,13 +630,42 @@ export class PowerShellHost {
         end = f;
       }
     }
-    let native = Buffer.alloc(0);
+    let nativeBytes = 0;
+    let markerTimer: NodeJS.Timeout | undefined;
     try {
-      native = Buffer.from(await this.waitNativeMarker(id, 2000));
-    } catch {
-      native = Buffer.from(this.drainNativeStderr());
+      const captured = await Promise.race([
+        nativePromise,
+        new Promise<never>((_, reject) => {
+          markerTimer = setTimeout(
+            () => reject(new Error('fauxnix: native stderr marker missing')),
+            2000,
+          );
+        }),
+      ]);
+      nativeBytes = captured.bytesSeen;
+    } catch (e) {
+      this.cancelNativeCapture();
+      if (e instanceof NativeStderrSpoolError) throw e;
+    } finally {
+      if (markerTimer) clearTimeout(markerTimer);
     }
     const capturedErr = Buffer.from(Buffer.concat(err));
+    let native = Buffer.alloc(0);
+    let nativeTruncated = false;
+    const nativeSpool = limits?.nativeStderrSpoolPath;
+    if ((limits?.stderrMode ?? 'capture') === 'capture' && nativeSpool) {
+      const remaining = Math.max(
+        0,
+        (limits?.stderrLimit ?? DEFAULT_STDERR_LIMIT) - capturedErr.length,
+      );
+      const clipped = this.readUtf8Prefix(nativeSpool, remaining, nativeBytes);
+      native = Buffer.from(clipped.data);
+      nativeTruncated = clipped.truncated;
+      rmSync(nativeSpool, { force: true });
+    }
+    if (limits?.stderrMode === 'spool' && nativeSpool && nativeBytes === 0) {
+      rmSync(nativeSpool, { force: true });
+    }
     const n = Number(end.exitCode);
     return {
       stdout: Buffer.from(Buffer.concat(out)),
@@ -524,25 +674,186 @@ export class PowerShellHost {
       exitCode: Number.isFinite(n) ? n : 0,
       timedOut: end.timedOut === true,
       cancelled: end.cancelled === true,
-      truncated: end.truncated === true,
+      truncated: end.truncated === true || nativeTruncated,
+      stdoutTruncated: end.stdoutTruncated === true,
+      stderrTruncated: end.stderrTruncated === true || nativeTruncated,
+      stdoutSpool: limits?.stdoutSpoolPath,
+      stderrSpool: limits?.stderrSpoolPath,
+      nativeStderrSpool:
+        limits?.stderrMode === 'spool' && nativeBytes > 0 ? nativeSpool : undefined,
     };
   }
 
-  private async waitNativeMarker(id: string, timeoutMs: number): Promise<Buffer> {
-    const needle = Buffer.from('FAUXNIX_ERR_END:' + id + '\n', 'utf8');
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      const buf = Buffer.concat(this.stderrChunks);
-      const idx = buf.indexOf(needle);
-      if (idx >= 0) {
-        const before = buf.subarray(0, idx);
-        const after = buf.subarray(idx + needle.length);
-        this.stderrChunks = after.length ? [Buffer.from(after)] : [];
-        return Buffer.from(before) as Buffer;
+  private beginNativeCapture(
+    id: string,
+    mode: HostStreamMode,
+    limit: number,
+    spoolPath: string | undefined,
+    timeoutMs: number,
+  ): Promise<{ bytesSeen: number }> {
+    this.cancelNativeCapture();
+    return new Promise<{ bytesSeen: number }>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (this.nativeCapture?.id !== id) return;
+        const state = this.nativeCapture;
+        const failure = state.ioError ?? new Error('fauxnix: native stderr marker missing');
+        this.closeNativeSpool(state);
+        this.nativeCapture = null;
+        reject(failure);
+      }, timeoutMs);
+      let spoolFd: number | undefined;
+      let ioError: NativeStderrSpoolError | undefined;
+      if (mode !== 'discard' && spoolPath) {
+        try {
+          spoolFd = openSync(spoolPath, 'w');
+        } catch (e) {
+          ioError = new NativeStderrSpoolError('open', spoolPath, e);
+        }
       }
-      await new Promise((r) => setTimeout(r, 15));
+      this.nativeCapture = {
+        id,
+        needle: Buffer.from('FAUXNIX_ERR_END:' + id + '\n', 'utf8'),
+        mode,
+        limit: Math.max(0, limit),
+        tail: Buffer.alloc(0),
+        spoolPath,
+        spoolFd,
+        bytesWritten: 0,
+        bytesSeen: 0,
+        ioError,
+        resolve,
+        reject,
+        timer,
+      };
+      if (this.stderrChunks.length) {
+        const pending = Buffer.concat(this.stderrChunks);
+        this.stderrChunks = [];
+        this.onNativeStderr(pending);
+      }
+    });
+  }
+
+  private appendNativePayload(
+    state: NonNullable<PowerShellHost['nativeCapture']>,
+    data: Buffer,
+  ): void {
+    if (!data.length) return;
+    state.bytesSeen += data.length;
+    if (state.ioError || state.mode === 'discard' || state.spoolFd === undefined) return;
+    let retained = data;
+    if (state.mode === 'capture') {
+      const remaining = Math.max(0, state.limit + 3 - state.bytesWritten);
+      retained = data.subarray(0, remaining);
     }
-    throw new Error('fauxnix: native stderr marker missing');
+    try {
+      let offset = 0;
+      while (offset < retained.length) {
+        const remaining = retained.length - offset;
+        const written = this.nativeSpoolWrite(state.spoolFd, retained, offset, remaining);
+        if (!Number.isInteger(written) || written <= 0 || written > remaining) {
+          throw new Error('short write to native stderr spool');
+        }
+        offset += written;
+        state.bytesWritten += written;
+      }
+    } catch (e) {
+      state.ioError = new NativeStderrSpoolError('write', state.spoolPath, e);
+      this.closeNativeSpool(state);
+    }
+  }
+
+  private onNativeStderr(chunk: Buffer): void {
+    const state = this.nativeCapture;
+    if (!state) {
+      // Startup/teardown noise is diagnostic only. Keep a bounded tail so a
+      // noisy host cannot grow the resident Node process indefinitely.
+      const max = DEFAULT_STDERR_LIMIT;
+      const combined = Buffer.concat([...this.stderrChunks, chunk]);
+      this.stderrChunks = [Buffer.from(combined.subarray(Math.max(0, combined.length - max)))];
+      return;
+    }
+    const combined = state.tail.length ? Buffer.concat([state.tail, chunk]) : chunk;
+    const idx = combined.indexOf(state.needle);
+    if (idx >= 0) {
+      this.appendNativePayload(state, combined.subarray(0, idx));
+      const after = combined.subarray(idx + state.needle.length);
+      const ioError = state.ioError;
+      clearTimeout(state.timer);
+      this.closeNativeSpool(state);
+      this.nativeCapture = null;
+      if (after.length) this.onNativeStderr(after);
+      if (ioError) state.reject(ioError);
+      else state.resolve({ bytesSeen: state.bytesSeen });
+      return;
+    }
+    const keep = Math.min(state.needle.length - 1, combined.length);
+    const emit = combined.length - keep;
+    if (emit > 0) this.appendNativePayload(state, combined.subarray(0, emit));
+    state.tail = Buffer.from(combined.subarray(emit));
+  }
+
+  private cancelNativeCapture(): void {
+    const state = this.nativeCapture;
+    if (!state) return;
+    clearTimeout(state.timer);
+    this.appendNativePayload(state, state.tail);
+    const ioError = state.ioError;
+    this.closeNativeSpool(state);
+    this.nativeCapture = null;
+    state.reject(ioError ?? new Error('fauxnix: native stderr capture cancelled'));
+  }
+
+  private closeNativeSpool(state: NonNullable<PowerShellHost['nativeCapture']>): void {
+    if (state.spoolFd === undefined) return;
+    try {
+      closeSync(state.spoolFd);
+    } catch {
+      /* already closed */
+    }
+    state.spoolFd = undefined;
+  }
+
+  private readUtf8Prefix(
+    file: string,
+    limit: number,
+    totalBytes = statSync(file).size,
+  ): { data: Buffer; truncated: boolean } {
+    const size = statSync(file).size;
+    const wanted = Math.min(size, Math.max(0, limit) + 3);
+    const buf = Buffer.alloc(wanted);
+    if (wanted > 0) {
+      const fd = openSync(file, 'r');
+      try {
+        let offset = 0;
+        while (offset < wanted) {
+          const n = readSync(fd, buf, offset, wanted - offset, offset);
+          if (n <= 0) break;
+          offset += n;
+        }
+      } finally {
+        closeSync(fd);
+      }
+    }
+    let use = Math.min(limit, buf.length);
+    if (use < buf.length && use > 0 && (buf[use] & 0xc0) === 0x80) {
+      while (use > 0 && (buf[use] & 0xc0) === 0x80) use--;
+    }
+    return { data: Buffer.from(buf.subarray(0, use)), truncated: totalBytes > use };
+  }
+
+  private removeRequestSpools(limits: HostOutputLimits): void {
+    for (const file of [
+      limits.stdoutSpoolPath,
+      limits.stderrSpoolPath,
+      limits.nativeStderrSpoolPath,
+    ]) {
+      if (!file) continue;
+      try {
+        rmSync(file, { force: true });
+      } catch {
+        /* best effort; preserve the original transport error */
+      }
+    }
   }
 
   private failWaiters(err: Error): void {

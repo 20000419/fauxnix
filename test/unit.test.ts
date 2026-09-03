@@ -768,6 +768,9 @@ describe('translator', () => {
     expect(boot).toContain('"type":"ready"');
     expect(boot).toContain('FAUXNIX_ERR_END:');
     expect(boot).toContain('maxChunkBytes');
+    expect(boot).toContain('FauxnixBoundedStream');
+    expect(boot).toContain("$fx_outMode = 'capture'");
+    expect(boot).toContain("if ([string]$mode -eq 'discard')");
     expect(boot).toContain('ConvertFrom-Json');
     expect(boot).toContain('MaxJsonLength');
     expect(boot).not.toContain('exit $script:fx_exit');
@@ -853,7 +856,10 @@ describe('translator', () => {
     expect(body).toContain('fx-native');
     expect(body).not.toContain('@fx_na');
     const script = translateCommandList(parse('node --version'))[0].script;
-    expect(script).toContain('ReadToEndAsync');
+    expect(script).toContain('FauxnixTextPump');
+    expect(script).toContain('CopyAsync');
+    expect(script).toContain('GetTempFileName');
+    expect(script).not.toContain('ReadToEndAsync');
     expect(script).not.toContain('StartNew');
     expect(script).toContain("'.cmd'");
     expect(script).toContain("if ($null -eq $argv) { $argv = @() }");
@@ -1171,11 +1177,25 @@ describe('persistent PowerShell host protocol', () => {
   });
 
   it('encodes v2 run frames and parses v2 ready / v1 ready', () => {
-    const line = encodeHostRequest('r1', 'echo', { FAUXNIX_CWD: 'D:\\tmp' }, { v: 2, stdoutLimit: 10, stderrLimit: 4 });
-    const parsed = JSON.parse(line) as { v: number; type: string; stdoutLimit: number };
+    const line = encodeHostRequest('r1', 'echo', { FAUXNIX_CWD: 'D:\\tmp' }, {
+      v: 2,
+      stdoutLimit: 10,
+      stderrLimit: 4,
+      stdoutMode: 'capture',
+      stderrMode: 'discard',
+    });
+    const parsed = JSON.parse(line) as {
+      v: number;
+      type: string;
+      stdoutLimit: number;
+      stdoutMode: string;
+      stderrMode: string;
+    };
     expect(parsed.v).toBe(2);
     expect(parsed.type).toBe('run');
     expect(parsed.stdoutLimit).toBe(10);
+    expect(parsed.stdoutMode).toBe('capture');
+    expect(parsed.stderrMode).toBe('discard');
     expect(parseHostLine('{"v":2,"type":"ready","capabilities":{"cancel":false}}').v2?.type).toBe(
       'ready',
     );
