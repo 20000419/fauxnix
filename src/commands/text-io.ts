@@ -592,6 +592,18 @@ const head: Handler = (args, ctx) => {
 /* tail                                                                */
 /* ------------------------------------------------------------------ */
 
+/** A count embedded in generated PS must be a canonical Int32 literal. */
+function tailCountLiteral(raw: string): string | null {
+  if (!/^[+-]?\d+$/.test(raw)) return null;
+  try {
+    const n = BigInt(raw.replace(/^[+-]/, ''));
+    if (n > 2147483647n) return null;
+    return n.toString();
+  } catch {
+    return null;
+  }
+}
+
 const tail: Handler = (args, ctx) => {
   const pre = parseWords(args);
   if (pre.flags.has('f') || pre.flags.has('F')) {
@@ -602,9 +614,33 @@ const tail: Handler = (args, ctx) => {
   let nLines: string | null = null;
   let fromLine: string | null = null;
   let nBytes: string | null = null;
+  let fromByte = false;
   const operandWords: Word[] = [];
   let quiet = false;
   let verbose = false;
+  const setCount = (kind: 'lines' | 'bytes', raw: string): string | null => {
+    const literal = tailCountLiteral(raw);
+    if (literal === null) {
+      return psErrExpr(psStr("tail: invalid number of " + kind + ": '" + raw + "'"));
+    }
+    if (kind === 'bytes') {
+      nBytes = literal;
+      fromByte = raw.startsWith('+');
+      nLines = null;
+      fromLine = null;
+    } else {
+      nBytes = null;
+      fromByte = false;
+      if (raw.startsWith('+')) {
+        fromLine = literal;
+        nLines = null;
+      } else {
+        nLines = literal;
+        fromLine = null;
+      }
+    }
+    return null;
+  };
   {
     let i = 0;
     let onlyOps = false;
@@ -635,9 +671,8 @@ const tail: Handler = (args, ctx) => {
           } else {
             i++;
           }
-          if (name === '--bytes') nBytes = val;
-          else if (val.startsWith('+')) fromLine = val.slice(1);
-          else nLines = val.replace(/^-/, '');
+          const err = setCount(name === '--bytes' ? 'bytes' : 'lines', val);
+          if (err !== null) return err;
           continue;
         }
         if (name === '--quiet' || name === '--silent') {
@@ -654,41 +689,40 @@ const tail: Handler = (args, ctx) => {
         continue;
       }
       let m: RegExpMatchArray | null;
-      if (t === '-n' || t === '-c') {
-        const val = i + 1 < args.length ? wordToString(args[i + 1]) : null;
-        if (val === null) {
-          return psErrExpr(psStr('tail: option requires an argument -- ' + t.slice(1)));
-        }
-        if (t === '-c') nBytes = val;
-        else if (val.startsWith('+')) fromLine = val.slice(1);
-        else nLines = val.replace(/^-/, ''); // -n -N ≡ -n N (last N)
-        i += 2;
-        continue;
-      }
-      if ((m = t.match(/^-[nc](.*)$/)) !== null) {
-        const val = m[1];
-        if (t[1] === 'c') nBytes = val;
-        else if (val.startsWith('+')) fromLine = val.slice(1);
-        else nLines = val.replace(/^-/, '');
-        i++;
-        continue;
-      }
       if ((m = t.match(/^-(\d+)$/)) !== null) {
-        nLines = m[1];
+        const err = setCount('lines', t);
+        if (err !== null) return err;
         i++;
         continue;
       }
       if ((m = t.match(/^\+(\d+)$/)) !== null) {
-        fromLine = m[1];
+        const err = setCount('lines', t);
+        if (err !== null) return err;
         i++;
         continue;
       }
       if (t.startsWith('-') && t.length > 1) {
-        for (const ch of t.slice(1)) {
+        const body = t.slice(1);
+        let usedNext = false;
+        for (let c = 0; c < body.length; c++) {
+          const ch = body[c];
           if (ch === 'q') quiet = true;
           else if (ch === 'v') verbose = true;
+          else if (ch === 'n' || ch === 'c') {
+            let val = body.slice(c + 1);
+            if (val === '') {
+              if (i + 1 >= args.length) {
+                return psErrExpr(psStr('tail: option requires an argument -- ' + ch));
+              }
+              val = wordToString(args[i + 1]);
+              usedNext = true;
+            }
+            const err = setCount(ch === 'c' ? 'bytes' : 'lines', val);
+            if (err !== null) return err;
+            break;
+          }
         }
-        i++;
+        i += usedNext ? 2 : 1;
         continue;
       }
       operandWords.push(args[i]);
@@ -696,13 +730,7 @@ const tail: Handler = (args, ctx) => {
     }
   }
   const bytesMode = nBytes !== null;
-  const countLit = bytesMode
-    ? nBytes!
-    : fromLine !== null
-      ? fromLine
-      : nLines !== null
-        ? nLines
-        : '10';
+  const countLit = bytesMode ? nBytes! : fromLine ?? nLines ?? '10';
 
   const lines: string[] = [
     PS_GLOB_FN,
@@ -736,7 +764,9 @@ const tail: Handler = (args, ctx) => {
       "    [void]$fx_out.Append('==> ' + $fx_disp + ' <==' + [string][char]10)",
       '  }',
       '  $fx_first = $false',
-      '  $fx_st = $fx_txt.Length - $fx_count',
+      fromByte
+        ? '  $fx_st = $fx_count - 1'
+        : '  $fx_st = $fx_txt.Length - $fx_count',
       '  if ($fx_st -lt 0) { $fx_st = 0 }',
       '  if ($fx_st -lt $fx_txt.Length) { [void]$fx_out.Append($fx_txt.Substring($fx_st)) }',
       '}',

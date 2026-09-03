@@ -210,6 +210,14 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
   it('awk field printing and sum', async () => {
     expect((await run("awk '{print $1}' fruits.txt")).stdout).toContain('apple');
     expect((await run("awk '{sum += $1} END {print sum}' nums.txt")).stdout.trim()).toBe('9');
+    expect((await run("awk -v answer=42 'BEGIN { print answer }'")).stdout.trim()).toBe('42');
+    expect((await run("awk -F -- -v answer=42 'BEGIN { print answer }'")).stdout.trim()).toBe(
+      '42',
+    );
+    expect((await run("awk -F '-vbad-name=1' 'BEGIN { print 1 }'")).stdout.trim()).toBe('1');
+    await expect(
+      run("awk -v 'x; Write-Output UNEXPECTED_AWK; $z=1' 'BEGIN { print 1 }'"),
+    ).rejects.toThrow(/awk invalid variable name/);
   });
 
   it('sort -n and uniq -c', async () => {
@@ -246,6 +254,23 @@ describe.skipIf(!hasPs)('integration (real PowerShell)', { timeout: 30000 }, () 
     expect((await run('tail --lines=1 fruits.txt')).stdout.trim()).toBe('cherry');
     expect((await run('wc -l fruits.txt')).stdout.trim()).toMatch(/4/);
     expect((await run('wc -l < fruits.txt')).stdout.trim()).toBe('4');
+  });
+
+  it('tail count data cannot become generated PowerShell', async () => {
+    const injected = await run(
+      "tail --lines='1); Write-Output UNEXPECTED_TAIL; [int](1' fruits.txt",
+    );
+    expect(injected.exitCode).toBe(1);
+    expect(injected.stderr).toContain('tail: invalid number of lines');
+    expect(injected.stdout).not.toContain('UNEXPECTED_TAIL');
+
+    const overflow = await run('tail --bytes=2147483648 fruits.txt');
+    expect(overflow.exitCode).toBe(1);
+    expect(overflow.stderr).toContain('tail: invalid number of bytes');
+    expect(overflow.stdout).toBe('');
+
+    expect((await run('printf abc | tail -c -1')).stdout).toBe('c');
+    expect((await run('printf abcde | tail -c +2')).stdout).toBe('bcde');
   });
 
   it('head --lines=-N / --bytes=-N print all but last N (GNU)', async () => {
