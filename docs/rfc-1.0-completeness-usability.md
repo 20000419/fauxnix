@@ -46,6 +46,14 @@ C-7 is the single highest-leverage item in this RFC: it converts every past
 and future "verified vs real bash" claim from a one-off maintainer action
 into a repeatable gate.
 
+**C-7 implementation status (v0.11.0 follow-up):** the repository now carries
+253 sourced, non-duplicate cases and enforces both the ≥200 size gate and the
+≥95% opted-in oracle gate. A reviewed mismatch-ID baseline also rejects new
+differences that the aggregate percentage alone could hide. Each engine runs against an isolated copy of the
+fixtures so mutations cannot contaminate its peer. The time-based release
+evidence remains open: two consecutive green **scheduled** runs must still be
+observed after merge; local or manually dispatched runs do not satisfy it.
+
 ## Pillar U — usability (five minutes to value)
 
 | ID | Item | Definition of done | Size |

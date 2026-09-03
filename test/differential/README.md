@@ -1,9 +1,9 @@
-# Differential corpus (RFC C-7 growth)
+# Differential corpus (RFC C-7 hard gate)
 
 Institutional home for fauxnix vs Git Bash identity checks. Tracking:
 [RFC 1.0 C-7](../../docs/rfc-1.0-completeness-usability.md) / [#118](https://github.com/20000419/fauxnix/issues/118).
 
-## This is growth from the scaffold, not the 1.0 gate
+## Gate status
 
 The **1.0.0 hard gate** is:
 
@@ -11,12 +11,21 @@ The **1.0.0 hard gate** is:
 - ≥ **95%** byte-identical (stdout / stderr / exit, newlines normalized)
 - two consecutive green **scheduled** oracle runs
 
-`corpus.json` is a **high-value subset** grown from the 40-case scaffold
-(target ~80–100 here) sourced from already-shipped audit repros and
-integration tests (`if`/`for`, arith, grep/sed/sort/head, redirects, cmdsub,
-`${name:-}` / `${name:+}` / `${#name}`, pipes, `[[ -f ]]`, echo/printf).
-It does **not** claim the 200-case gate. Keep growing it from benchmark
-transcripts, audit repros, and each merged completeness PR.
+`corpus.json` now contains **253 sourced, unique cases** grown from the
+40-case scaffold and the shipped integration/audit regressions. The corpus
+size gate is enforced in the default test suite, and an opted-in oracle run
+must remain at or above 95% identity.
+
+The four currently reviewed differences are listed by case ID in
+`gate.knownMismatchIds`. The oracle rejects every new mismatch even while the
+aggregate stays above 95%; removing an entry after its behavior is fixed is
+allowed. This prevents the percentage threshold from hiding regressions.
+
+This change satisfies the corpus-size half of C-7. It does **not** satisfy the
+release-evidence half: two consecutive green **scheduled** oracle runs are
+still required after the change reaches the default branch. Local runs and
+`workflow_dispatch` are useful verification, but do not count as those two
+scheduled runs.
 
 A skip-safe weekly GitHub Actions cron (`.github/workflows/differential.yml`)
 runs Mondays at 06:00 UTC plus `workflow_dispatch`. It is **not** hooked to
@@ -52,7 +61,8 @@ Unset, empty, `0`, `false`, `no`, or `off` → skip. `bash.exe` missing → skip
    its own `files` overlay.
 4. Keep the command self-contained; one fauxnix session runs the whole corpus.
 5. Prefer cases that already have integration coverage so identity is plausible.
-6. Stay under the 1.0 gate until you are deliberately growing toward 200.
+6. Keep every command unique; prefer a new semantic branch over value-only
+   variants of an existing case.
 
 ```json
 {
@@ -67,8 +77,10 @@ letters). The comparison is newline-normalized stdout + stderr + exit.
 
 ## Runner contract
 
-[`../differential.test.ts`](../differential.test.ts) always sanity-checks this
-corpus (so CI imports the file). The oracle `describe` is `skipIf` when the env
-is unset or git-bash `bash.exe` is missing. When the oracle runs, each case goes
-through a fauxnix session **and** `bash.exe`; a summary is printed; the test
-fails if identity is below 95% of **this** corpus.
+[`../differential.test.ts`](../differential.test.ts) always checks the 200-case
+minimum, unique IDs/commands, and non-empty provenance (so CI imports the
+file). The oracle `describe` is `skipIf` when the env is unset or git-bash
+`bash.exe` is missing. When the oracle runs, each engine receives a separate,
+fresh copy of the same fixtures for every case; a summary is printed and the
+test fails below 95% identity or when a mismatch appears outside the reviewed
+baseline IDs.

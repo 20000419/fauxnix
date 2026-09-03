@@ -2,7 +2,13 @@
   "gate": {
     "targetCases": 200,
     "identity": 0.95,
-    "note": "RFC 1.0 C-7 / #118. The 1.0 hard gate is ≥200 curated cases at ≥95% byte-identical on scheduled oracle runs. This file is deliberate growth from the 40-case scaffold, sourced from already-shipped audit repros and integration tests — not that gate."
+    "knownMismatchIds": [
+      "or-fallback",
+      "sort-ignore-case",
+      "awk-printf-fields",
+      "bracket-leading-empty-alt"
+    ],
+    "note": "RFC 1.0 C-7 / #118. This corpus enforces ≥200 sourced, unique cases at ≥95% byte-identical. Release evidence still requires two consecutive green scheduled oracle runs after merge."
   },
   "files": {
     "fruits.txt": "apple\nBanana\napple pie\ncherry\n",
@@ -669,6 +675,692 @@
       "id": "subst-glob-star",
       "cmd": "X=hello; echo ${X//l*/X}",
       "source": "#118 C-2"
+    },
+    {
+      "id": "grep-fixed-phrase",
+      "cmd": "grep -F 'apple pie' fruits.txt",
+      "source": "integration: grep fixed-string matching"
+    },
+    {
+      "id": "grep-count",
+      "cmd": "grep -c apple fruits.txt",
+      "source": "integration: grep implemented option matrix"
+    },
+    {
+      "id": "grep-list-files",
+      "cmd": "grep -l apple fruits.txt letters.txt",
+      "source": "integration: grep implemented option matrix"
+    },
+    {
+      "id": "grep-word",
+      "cmd": "grep -w apple fruits.txt",
+      "source": "integration: grep implemented option matrix"
+    },
+    {
+      "id": "grep-quiet-hit",
+      "cmd": "grep -q apple fruits.txt; echo $?",
+      "source": "integration: grep exit codes"
+    },
+    {
+      "id": "grep-quiet-miss",
+      "cmd": "grep -q zz fruits.txt; echo $?",
+      "source": "integration: grep exit codes"
+    },
+    {
+      "id": "grep-extended-or",
+      "cmd": "grep -E 'apple|cherry' fruits.txt",
+      "source": "integration: grep implemented option matrix"
+    },
+    {
+      "id": "grep-only-regex",
+      "cmd": "grep -o 'a[a-z]*' fruits.txt",
+      "source": "integration: grep implemented option matrix"
+    },
+    {
+      "id": "grep-after-context",
+      "cmd": "grep -A1 Banana fruits.txt",
+      "source": "integration: grep context options"
+    },
+    {
+      "id": "grep-before-context",
+      "cmd": "grep -B1 Banana fruits.txt",
+      "source": "integration: grep context options"
+    },
+    {
+      "id": "grep-both-context",
+      "cmd": "grep -C1 Banana fruits.txt",
+      "source": "integration: grep context options"
+    },
+    {
+      "id": "grep-force-filename",
+      "cmd": "grep -H apple fruits.txt",
+      "source": "integration: grep implemented option matrix"
+    },
+    {
+      "id": "sort-reverse",
+      "cmd": "sort -r letters.txt",
+      "source": "#177 / integration: implemented sort options"
+    },
+    {
+      "id": "sort-unique",
+      "cmd": "sort -u dups.txt",
+      "source": "#177 / integration: implemented sort options"
+    },
+    {
+      "id": "sort-ignore-case",
+      "cmd": "sort -f mixed-case.txt",
+      "source": "#177 / integration: implemented sort options",
+      "files": {
+        "mixed-case.txt": "banana\nApple\napple\nBanana\n"
+      }
+    },
+    {
+      "id": "sort-ignore-leading",
+      "cmd": "sort -b leading.txt",
+      "source": "#177 / integration: implemented sort options",
+      "files": {
+        "leading.txt": "  beta\n alpha\ngamma\n"
+      }
+    },
+    {
+      "id": "sort-key2-numeric",
+      "cmd": "sort -n -k 2 nums.txt",
+      "source": "#177 / integration: sort key parser"
+    },
+    {
+      "id": "sort-delimited-key",
+      "cmd": "sort -t, -k 2 csv.txt",
+      "source": "#177 / integration: sort key parser",
+      "files": {
+        "csv.txt": "z,2\na,10\nm,1\n"
+      }
+    },
+    {
+      "id": "sort-numeric-reverse",
+      "cmd": "printf '2\n10\n1\n' | sort -nr",
+      "source": "#177 / integration: bundled sort options"
+    },
+    {
+      "id": "uniq-duplicates",
+      "cmd": "uniq -d dups.txt",
+      "source": "#177 / integration: implemented uniq options"
+    },
+    {
+      "id": "uniq-unique",
+      "cmd": "uniq -u dups.txt",
+      "source": "#177 / integration: implemented uniq options"
+    },
+    {
+      "id": "uniq-ignore-case",
+      "cmd": "uniq -i uniq-case.txt",
+      "source": "#177 / integration: implemented uniq options",
+      "files": {
+        "uniq-case.txt": "A\na\nb\nB\nc\n"
+      }
+    },
+    {
+      "id": "cut-char-range",
+      "cmd": "printf 'abcd\n' | cut -c 1-3",
+      "source": "#177 / integration: cut character ranges"
+    },
+    {
+      "id": "cut-byte-second",
+      "cmd": "printf 'abcd\n' | cut -b 2",
+      "source": "#177 / integration: cut byte ranges"
+    },
+    {
+      "id": "cut-complement-field",
+      "cmd": "cut -d ' ' --complement -f 1 nums.txt",
+      "source": "#177 / integration: cut complement"
+    },
+    {
+      "id": "cut-suppress-undelimited",
+      "cmd": "cut -s -d, -f 2 cut-mixed.txt",
+      "source": "#177 / integration: cut suppress",
+      "files": {
+        "cut-mixed.txt": "plain\na,b\nc,d\n"
+      }
+    },
+    {
+      "id": "tr-squeeze",
+      "cmd": "printf 'aaabbbccc\n' | tr -s abc",
+      "source": "#177 / integration: tr squeeze"
+    },
+    {
+      "id": "tr-range-map",
+      "cmd": "printf 'abcxyz\n' | tr 'a-c' 'A-C'",
+      "source": "#177 / integration: tr range mapping"
+    },
+    {
+      "id": "sed-replace-first",
+      "cmd": "sed 's/apple/MANGO/' fruits.txt",
+      "source": "integration: sed substitution subset"
+    },
+    {
+      "id": "sed-delete-second",
+      "cmd": "sed '2d' fruits.txt",
+      "source": "integration: sed addressed delete"
+    },
+    {
+      "id": "sed-print-second",
+      "cmd": "sed -n '2p' fruits.txt",
+      "source": "integration: sed addressed print"
+    },
+    {
+      "id": "sed-print-range",
+      "cmd": "sed -n '2,3p' fruits.txt",
+      "source": "integration: sed address ranges"
+    },
+    {
+      "id": "sed-delete-pattern",
+      "cmd": "sed '/apple/d' fruits.txt",
+      "source": "integration: sed regex addresses"
+    },
+    {
+      "id": "sed-character-class",
+      "cmd": "sed 's/[a-z]/X/g' abc.txt",
+      "source": "integration: sed regex substitution",
+      "files": {
+        "abc.txt": "abc\n"
+      }
+    },
+    {
+      "id": "awk-print-record",
+      "cmd": "awk '{print}' fruits.txt",
+      "source": "integration: awk common subset"
+    },
+    {
+      "id": "awk-record-number",
+      "cmd": "awk '{print NR, $1}' fruits.txt",
+      "source": "integration: awk NR and fields"
+    },
+    {
+      "id": "awk-field-count",
+      "cmd": "awk '{print NF}' nums.txt",
+      "source": "integration: awk NF"
+    },
+    {
+      "id": "awk-begin",
+      "cmd": "awk 'BEGIN {print \"start\"}'",
+      "source": "integration: awk BEGIN action"
+    },
+    {
+      "id": "awk-end-count",
+      "cmd": "awk 'END {print NR}' fruits.txt",
+      "source": "integration: awk END action"
+    },
+    {
+      "id": "awk-regex-filter",
+      "cmd": "awk '/apple/ {print $1}' fruits.txt",
+      "source": "integration: awk regex pattern"
+    },
+    {
+      "id": "awk-v-field",
+      "cmd": "awk -v p=2 '{print p}' nums.txt",
+      "source": "#131 audit regression: validated awk -v data assignment"
+    },
+    {
+      "id": "awk-printf-fields",
+      "cmd": "awk '{printf \"%s:%s\\n\", $1, $2}' nums.txt",
+      "source": "integration: awk printf subset"
+    },
+    {
+      "id": "bracket-regex-miss",
+      "cmd": "[[ abc =~ ^z ]] || echo nomatch",
+      "source": "#80 / integration: [[ regex miss"
+    },
+    {
+      "id": "bracket-and-file-dir",
+      "cmd": "[[ -f fruits.txt && -d sub ]] && echo both",
+      "source": "#80 / integration: [[ inner &&",
+      "files": {
+        "sub/.keep": ""
+      }
+    },
+    {
+      "id": "bracket-or-files",
+      "cmd": "[[ -f nope || -f fruits.txt ]] && echo either",
+      "source": "#80 / integration: [[ inner ||"
+    },
+    {
+      "id": "bracket-glob",
+      "cmd": "[[ foo == f* ]]; echo $?",
+      "source": "#80 / integration: [[ glob pattern"
+    },
+    {
+      "id": "bracket-variable-glob",
+      "cmd": "export pat='f*'; [[ foo == $pat ]]; echo $?; unset pat",
+      "source": "#80 / integration: variable-supplied [[ pattern"
+    },
+    {
+      "id": "bracket-posix-class",
+      "cmd": "[[ 1 == [[:digit:]] ]]; echo $?",
+      "source": "#80 / integration: POSIX class in [[ glob"
+    },
+    {
+      "id": "bracket-negated-class",
+      "cmd": "[[ a == [!b] ]]; echo $?",
+      "source": "#80 / integration: negated [[ class"
+    },
+    {
+      "id": "bracket-quoted-glob",
+      "cmd": "[[ foo == \"f*\" ]]; echo $?",
+      "source": "#80 / integration: quoted [[ glob is literal"
+    },
+    {
+      "id": "bracket-quoted-regex",
+      "cmd": "[[ abc =~ \"^a\" ]]; echo $?",
+      "source": "#80 / integration: quoted [[ regex is literal"
+    },
+    {
+      "id": "bracket-lexicographic",
+      "cmd": "[[ z > a ]]; echo $?",
+      "source": "#80 / integration: [[ lexical comparison"
+    },
+    {
+      "id": "bracket-regex-alternation",
+      "cmd": "[[ abc =~ ^a|z$ ]]; echo $?",
+      "source": "#80 / integration: [[ regex alternation"
+    },
+    {
+      "id": "bracket-mixed-glob",
+      "cmd": "[[ foo == f\"o\"* ]]; echo $?",
+      "source": "#80 / integration: mixed quoted/unquoted [[ pattern"
+    },
+    {
+      "id": "bracket-regex-posix",
+      "cmd": "[[ 1 =~ [[:digit:]] ]]; echo $?",
+      "source": "#80 / integration: POSIX class in [[ regex"
+    },
+    {
+      "id": "bracket-grouped-logic",
+      "cmd": "[[ ( -f fruits.txt || -f nope ) && -d sub ]] && echo grp",
+      "source": "#80 / integration: grouped [[ logic",
+      "files": {
+        "sub/.keep": ""
+      }
+    },
+    {
+      "id": "bracket-leading-empty-alt",
+      "cmd": "[[ x =~ |x ]]; echo $?",
+      "source": "#80 / integration: regex empty alternative"
+    },
+    {
+      "id": "bracket-negated-unary",
+      "cmd": "[[ ! -f nope ]] && echo yes",
+      "source": "#80 / integration: negated [[ unary"
+    },
+    {
+      "id": "bracket-string-not-equal",
+      "cmd": "[[ a != b ]] && echo yes",
+      "source": "#80 / integration: [[ string inequality"
+    },
+    {
+      "id": "bracket-numeric-less",
+      "cmd": "[[ 1 -lt 2 ]] && echo yes",
+      "source": "#80 / integration: [[ numeric comparison"
+    },
+    {
+      "id": "bracket-string-lengths",
+      "cmd": "[[ -n hello && -z \"\" ]] && echo yes",
+      "source": "#80 / integration: [[ -n/-z predicates"
+    },
+    {
+      "id": "for-body-and-final-var",
+      "cmd": "for x in 1 2; do echo n$x; done; echo z$x",
+      "source": "#112 / integration: for loop session state"
+    },
+    {
+      "id": "while-last-body-false",
+      "cmd": "i=0; while [ $i -lt 1 ]; do i=$((i+1)); false; done; echo $?",
+      "source": "#182 / integration: while compound status"
+    },
+    {
+      "id": "while-last-body-true",
+      "cmd": "i=0; while [ $i -lt 2 ]; do i=$((i+1)); true; done; echo $?",
+      "source": "#182 / integration: while compound status"
+    },
+    {
+      "id": "until-never-entered-status",
+      "cmd": "until true; do echo x; done; echo $?",
+      "source": "#182 / integration: until zero-iteration status"
+    },
+    {
+      "id": "if-nested-case",
+      "cmd": "if true; then case x in x) echo Y;; esac; fi",
+      "source": "#190 / integration: case nested in if"
+    },
+    {
+      "id": "case-variable-glob",
+      "cmd": "v=beta; case $v in a*) echo A;; b*) echo B;; *) echo X;; esac",
+      "source": "#190 / integration: case expanded word and glob arms"
+    },
+    {
+      "id": "case-question-pattern",
+      "cmd": "case abc in a?c) echo HIT;; *) echo MISS;; esac",
+      "source": "#190 / integration: case question-mark pattern"
+    },
+    {
+      "id": "case-first-match",
+      "cmd": "case abc in a*) echo FIRST;; *) echo SECOND;; esac",
+      "source": "#190 / integration: case stops at first match"
+    },
+    {
+      "id": "array-at-quoted",
+      "cmd": "A=(a b); printf '<%s>\\n' \"${A[@]}\"",
+      "source": "#191 / integration: quoted array splat"
+    },
+    {
+      "id": "array-at-spaced",
+      "cmd": "A=(a \"x y\"); printf '<%s>\\n' \"${A[@]}\"",
+      "source": "#191 / integration: quoted array element boundaries"
+    },
+    {
+      "id": "array-star-quoted",
+      "cmd": "A=(a b); echo \"${A[*]}\"",
+      "source": "#191 / integration: quoted array star"
+    },
+    {
+      "id": "array-first-last",
+      "cmd": "A=(a b c); echo ${A[0]} ${A[2]}",
+      "source": "#191 / integration: array indexing"
+    },
+    {
+      "id": "rematch-capture-groups",
+      "cmd": "[[ abc123 =~ ^([a-z]+)([0-9]+)$ ]]; echo ${BASH_REMATCH[1]} ${BASH_REMATCH[2]}",
+      "source": "#90 / integration: BASH_REMATCH capture groups"
+    },
+    {
+      "id": "rematch-cleared-on-miss",
+      "cmd": "[[ nope =~ ^([0-9]+)$ ]]; echo ${#BASH_REMATCH[@]}",
+      "source": "#90 / integration: BASH_REMATCH clear on miss"
+    },
+    {
+      "id": "pos-star-quoted",
+      "cmd": "set -- a b c; echo \"$*\"",
+      "source": "#185 / positional-parameter RFC"
+    },
+    {
+      "id": "pos-shift-two",
+      "cmd": "set -- a b c; shift 2; echo $1 $#",
+      "source": "#185 / positional-parameter RFC"
+    },
+    {
+      "id": "pos-preserve-spaces",
+      "cmd": "set -- \"a b\" c; printf '<%s>\\n' \"$@\"",
+      "source": "#185 / positional-parameter RFC"
+    },
+    {
+      "id": "pos-format-two",
+      "cmd": "set -- a b; printf '%s-%s\\n' \"$1\" \"$2\"",
+      "source": "#185 / positional-parameter RFC"
+    },
+    {
+      "id": "slice-middle-length",
+      "cmd": "X=abcdef; echo ${X:1:3}",
+      "source": "#191 / integration: parameter slice length"
+    },
+    {
+      "id": "subst-question-global",
+      "cmd": "X=hello; echo ${X//?/_}",
+      "source": "#191 / integration: parameter glob replacement"
+    },
+    {
+      "id": "subst-multi-token",
+      "cmd": "X=banana; echo ${X//na/X}",
+      "source": "#191 / integration: repeated parameter replacement"
+    },
+    {
+      "id": "cmdsub-strip-trailing-newlines",
+      "cmd": "printf '<%s>\\n' \"$(printf 'a\\n\\n')\"",
+      "source": "#91 / integration: quoted command-substitution newline contract"
+    },
+    {
+      "id": "cmdsub-assignment",
+      "cmd": "X=$(echo value); echo $X",
+      "source": "#91 / integration: command substitution in assignment"
+    },
+    {
+      "id": "prefix-assignment-scope",
+      "cmd": "X=outer; X=inner printenv X; echo $X; unset X",
+      "source": "#66 / integration: command-scoped assignment prefix"
+    },
+    {
+      "id": "arith-precedence",
+      "cmd": "echo $((2+3*4))",
+      "source": "#119 / integration: arithmetic precedence"
+    },
+    {
+      "id": "arith-parentheses",
+      "cmd": "echo $(((2+3)*4))",
+      "source": "#119 / integration: arithmetic parentheses"
+    },
+    {
+      "id": "arith-variable-expression",
+      "cmd": "x=4; echo $((x*2+1))",
+      "source": "#119 / integration: arithmetic variable expression"
+    },
+    {
+      "id": "wc-bytes-stdin",
+      "cmd": "wc -c < abc.txt",
+      "source": "integration: head/tail/wc option matrix"
+    },
+    {
+      "id": "wc-words-stdin",
+      "cmd": "wc -w < fruits.txt",
+      "source": "integration: head/tail/wc option matrix"
+    },
+    {
+      "id": "wc-lines-file",
+      "cmd": "wc -l fruits.txt",
+      "source": "integration: head/tail/wc option matrix"
+    },
+    {
+      "id": "cat-multiple-files",
+      "cmd": "cat letters.txt three.txt",
+      "source": "integration: cat multiple operands"
+    },
+    {
+      "id": "base64-encode",
+      "cmd": "printf 'hello' | base64",
+      "source": "integration: base64 encoder"
+    },
+    {
+      "id": "base64-roundtrip",
+      "cmd": "printf 'hello' | base64 | base64 -d",
+      "source": "integration: base64 decode pipeline"
+    },
+    {
+      "id": "md5sum-file",
+      "cmd": "md5sum abc.txt | cut -d ' ' -f 1",
+      "source": "integration: checksum commands"
+    },
+    {
+      "id": "sha1sum-file",
+      "cmd": "sha1sum abc.txt | cut -d ' ' -f 1",
+      "source": "integration: checksum commands"
+    },
+    {
+      "id": "sha256sum-file",
+      "cmd": "sha256sum abc.txt | cut -d ' ' -f 1",
+      "source": "integration: checksum commands"
+    },
+    {
+      "id": "seq-one-to-three",
+      "cmd": "seq 3",
+      "source": "integration: seq common form"
+    },
+    {
+      "id": "seq-range",
+      "cmd": "seq 2 4",
+      "source": "integration: seq start/end form"
+    },
+    {
+      "id": "tac-lines",
+      "cmd": "tac three.txt",
+      "source": "integration: reverse line output"
+    },
+    {
+      "id": "nl-lines",
+      "cmd": "nl letters.txt",
+      "source": "integration: numbered line output"
+    },
+    {
+      "id": "yes-head-termination",
+      "cmd": "yes | head -3",
+      "source": "integration: yes pipeline termination"
+    },
+    {
+      "id": "echo-escapes",
+      "cmd": "echo -e 'a\\tb'",
+      "source": "integration: echo escape semantics"
+    },
+    {
+      "id": "printf-zero-pad",
+      "cmd": "printf '%04d\\n' 7",
+      "source": "integration: printf numeric formatting"
+    },
+    {
+      "id": "mkdir-parents-test",
+      "cmd": "mkdir -p a/b; test -d a/b && echo yes",
+      "source": "integration: mkdir parents and test"
+    },
+    {
+      "id": "cp-no-clobber",
+      "cmd": "cp -n cp-src.txt cp-dst.txt; cat cp-dst.txt",
+      "source": "#136 / integration: cp -n",
+      "files": {
+        "cp-src.txt": "new\n",
+        "cp-dst.txt": "old\n"
+      }
+    },
+    {
+      "id": "cp-overwrite",
+      "cmd": "cp cp-src.txt cp-dst.txt; cat cp-dst.txt",
+      "source": "#136 / integration: cp overwrite",
+      "files": {
+        "cp-src.txt": "new\n",
+        "cp-dst.txt": "old\n"
+      }
+    },
+    {
+      "id": "mv-no-clobber",
+      "cmd": "mv -n mv-src.txt mv-dst.txt; cat mv-src.txt mv-dst.txt",
+      "source": "#136 / integration: mv -n",
+      "files": {
+        "mv-src.txt": "new\n",
+        "mv-dst.txt": "old\n"
+      }
+    },
+    {
+      "id": "touch-no-create",
+      "cmd": "touch -c absent.txt; test -e absent.txt; echo $?",
+      "source": "#136 / integration: touch -c"
+    },
+    {
+      "id": "tee-append",
+      "cmd": "printf 'B\\n' | tee -a tee.txt; cat tee.txt",
+      "source": "#136 / integration: tee append",
+      "files": {
+        "tee.txt": "A\n"
+      }
+    },
+    {
+      "id": "diff-identical",
+      "cmd": "diff same-a.txt same-b.txt; echo $?",
+      "source": "integration: diff exit status",
+      "files": {
+        "same-a.txt": "same\n",
+        "same-b.txt": "same\n"
+      }
+    },
+    {
+      "id": "diff-changed",
+      "cmd": "diff diff-a.txt diff-b.txt; echo $?",
+      "source": "integration: diff changed output",
+      "files": {
+        "diff-a.txt": "one\n",
+        "diff-b.txt": "two\n"
+      }
+    },
+    {
+      "id": "find-maxdepth",
+      "cmd": "find tree -maxdepth 1 -type f | sort",
+      "source": "#125 / integration: find depth semantics",
+      "files": {
+        "tree/top.txt": "top\n",
+        "tree/sub/deep.txt": "deep\n"
+      }
+    },
+    {
+      "id": "find-mindepth",
+      "cmd": "find tree -mindepth 2 -type f | sort",
+      "source": "#125 / integration: find depth semantics",
+      "files": {
+        "tree/top.txt": "top\n",
+        "tree/sub/deep.txt": "deep\n"
+      }
+    },
+    {
+      "id": "find-negated-name",
+      "cmd": "find tree -type f ! -name 'skip*' | sort",
+      "source": "#137 / integration: find boolean negation",
+      "files": {
+        "tree/keep.txt": "k\n",
+        "tree/skip.txt": "s\n"
+      }
+    },
+    {
+      "id": "find-or-names",
+      "cmd": "find tree -type f \\( -name 'a.txt' -o -name 'b.txt' \\) | sort",
+      "source": "#137 / integration: find boolean OR",
+      "files": {
+        "tree/a.txt": "a\n",
+        "tree/b.txt": "b\n",
+        "tree/c.txt": "c\n"
+      }
+    },
+    {
+      "id": "gzip-destructive-roundtrip",
+      "cmd": "gzip gz.txt; gunzip gz.txt.gz; cat gz.txt",
+      "source": "#188 / integration: gzip file roundtrip",
+      "files": {
+        "gz.txt": "hello\n"
+      }
+    },
+    {
+      "id": "gzip-file-roundtrip",
+      "cmd": "gzip -k gz.txt; gunzip -c gz.txt.gz",
+      "source": "#188 / integration: gzip keep + gunzip stdout",
+      "files": {
+        "gz.txt": "hello\n"
+      }
+    },
+    {
+      "id": "gzip-test-stream",
+      "cmd": "gzip -k gz.txt; gzip -t gz.txt.gz; echo $?",
+      "source": "#188 / integration: gzip test mode",
+      "files": {
+        "gz.txt": "hello\n"
+      }
+    },
+    {
+      "id": "zcat-file",
+      "cmd": "gzip -k gz.txt; zcat gz.txt.gz",
+      "source": "#188 / integration: zcat file",
+      "files": {
+        "gz.txt": "hello\n"
+      }
+    },
+    {
+      "id": "date-year",
+      "cmd": "date +%Y",
+      "source": "integration: date format tokens"
+    },
+    {
+      "id": "utf8-grep",
+      "cmd": "printf '你好，世界\\n' | grep '世界'",
+      "source": "integration: UTF-8 roundtrip"
     }
   ]
 }
