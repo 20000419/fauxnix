@@ -1151,7 +1151,7 @@ export function translatePipelineBody(p: {
 
 export interface SegmentPlan {
   op: ';' | '&&' | '||';
-  /** Spawn-mode wrapScript (CLI/MCP `translate`, one-shot powershell.exe). */
+  /** Spawn-mode wrapScript (`translate` output for a one-shot PowerShell process). */
   script: string;
   /** Pipeline body before wrapScript — executor host mode re-wraps this. */
   body: string;
@@ -1822,7 +1822,7 @@ function wrapHelperCatalog(): Record<WrapHelper, string[]> {
 
 /**
  * Resident-host bootstrap: encoding + full fx-* catalog + JSON-line RPC loop.
- * Loaded once via `powershell.exe -File`. Must never `exit` a successful frame.
+ * Loaded once via the selected PowerShell's `-File`. Must never `exit` a successful frame.
  */
 export function hostBootstrapScript(): string {
   const helpers = wrapHelperCatalog();

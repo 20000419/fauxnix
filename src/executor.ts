@@ -10,8 +10,8 @@ import {
   DEFAULT_STDERR_LIMIT,
   DEFAULT_STDOUT_LIMIT,
   PowerShellHost,
-  PS_MISSING_MESSAGE,
 } from './ps-host.js';
+import { PowerShellSelection, resolvePowerShell } from './powershell.js';
 
 export interface ExecResult {
   stdout: string;
@@ -245,9 +245,11 @@ export class FauxnixSession {
   private lifecycleLock: Promise<unknown> = Promise.resolve();
   /** True once `env` was loaded from the host's complete environment snapshot. */
   private hasEnvSnapshot = false;
+  private readonly powerShell: PowerShellSelection;
 
   constructor() {
     this.id = randomUUID().slice(0, 8);
+    this.powerShell = resolvePowerShell();
     this.bindFiles(this.id);
   }
 
@@ -292,12 +294,12 @@ export class FauxnixSession {
 
   private ensureHost(): PowerShellHost {
     if (!this.host) {
-      this.host = new PowerShellHost(this.hostFile, () => this.childEnv());
+      this.host = new PowerShellHost(this.hostFile, () => this.childEnv(), this.powerShell);
     }
     return this.host;
   }
 
-  /** Boot powershell.exe now so the first run() is not the 1.1s cold start. */
+  /** Boot the selected PowerShell now so the first run() is not a cold start. */
   prewarm(): Promise<void> {
     return this.withLock(async () => {
       await this.ensureHost().ready();
@@ -536,7 +538,7 @@ async function runPlans(
     );
 
     if (inv.spawnError === 'ENOENT' || inv.spawnError === 'START') {
-      stderr += inv.stderr.toString('utf8') || PS_MISSING_MESSAGE;
+      stderr += inv.stderr.toString('utf8') || 'fauxnix: failed to start the selected PowerShell host\n';
       exitCode = 127;
       spawnError = inv.spawnError;
       session.prevExit = exitCode;

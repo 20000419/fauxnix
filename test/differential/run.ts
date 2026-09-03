@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { parseCommand } from '../../src/parser.js';
 import { translateCommandList } from '../../src/translator.js';
 import { FauxnixSession } from '../../src/executor.js';
+import { resolvePowerShell } from '../../src/powershell.js';
 import '../../src/commands/install-all.js';
 
 export interface CorpusCase {
@@ -90,14 +91,18 @@ export function resolveGitBash(env: NodeJS.ProcessEnv = process.env): string | n
   return null;
 }
 
-export function hasPowerShell(): boolean {
+export function hasPowerShell(env: NodeJS.ProcessEnv = process.env): boolean {
   if (process.platform !== 'win32') return false;
-  return spawnSync('powershell.exe', ['-NoProfile', '-Command', 'exit 0'], { shell: false }).status === 0;
+  const selection = resolvePowerShell(env);
+  if (selection.error) return false;
+  return (
+    spawnSync(selection.executable, ['-NoProfile', '-Command', 'exit 0'], { shell: false }).status === 0
+  );
 }
 
 /** Oracle runs only when requested *and* git-bash bash.exe is present (and we can execute). */
 export function canRunOracle(env: NodeJS.ProcessEnv = process.env): boolean {
-  return isOracleRequested(env) && resolveGitBash(env) !== null && hasPowerShell();
+  return isOracleRequested(env) && resolveGitBash(env) !== null && hasPowerShell(env);
 }
 
 export function oracleSkipReason(env: NodeJS.ProcessEnv = process.env): string | null {
@@ -107,8 +112,10 @@ export function oracleSkipReason(env: NodeJS.ProcessEnv = process.env): string |
   if (resolveGitBash(env) === null) {
     return 'FAUXNIX_DIFF_ORACLE is set but git-bash bash.exe was not found';
   }
-  if (!hasPowerShell()) {
-    return 'PowerShell is unavailable; fauxnix execution is Windows-only';
+  const selection = resolvePowerShell(env);
+  if (selection.error) return selection.error;
+  if (!hasPowerShell(env)) {
+    return `${selection.executable} is unavailable; check FAUXNIX_PS or install the selected host`;
   }
   return null;
 }

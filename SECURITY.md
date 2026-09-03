@@ -11,7 +11,11 @@ lists sandboxing policy as a non-goal.
 ## Trust model
 
 - **Same user, same privileges.** `fauxnix` and `fauxnix mcp` spawn
-  `powershell.exe` as the logged-in user. Translated commands (`rm`,
+  the selected PowerShell host as the logged-in user. The default is
+  `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`;
+  process-level `FAUXNIX_PS=pwsh` selects an absolute `pwsh.exe` resolved from
+  eligible `PATH` entries.
+  Translated commands (`rm`,
   `chmod`, `kill`, …) and native passthrough (`git`, `node`, `npm`,
   `python`, `cargo`, … via `fx-native`) inherit that identity.
 - **No isolation.** There is no container, AppContainer, filesystem jail,
@@ -26,14 +30,24 @@ lists sandboxing policy as a non-goal.
 
 ## Host-protocol surface
 
-One `FauxnixSession` owns one resident `powershell.exe` 5.1 process
+One `FauxnixSession` owns one resident PowerShell process
 (`src/ps-host.ts`; RFC
 [`docs/rfc-persistent-powershell-host.md`](docs/rfc-persistent-powershell-host.md)).
+The selection is fixed when the session is constructed. Only the documented
+`powershell[.exe]` and `pwsh[.exe]` values are accepted; the variable is not a
+free-form command line or executable path. The 5.1 host uses its fixed
+`SystemRoot` path. PowerShell 7 resolution ignores empty and relative `PATH`
+entries and an entry equal to the process current directory, then fixes the
+first matching absolute path for the lifetime of the session. `PATH` remains
+process-startup configuration and its other absolute entries are honored in
+order. Host restarts do not search again. This prevents a checkout-local
+`powershell.exe` or `pwsh.exe` from winning normal Windows current-directory
+executable search.
 
 The host is started as:
 
 ```
-powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <temp>/fauxnix-<id>-host.ps1
+<fixed/absolute-selected powershell.exe|pwsh.exe> -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <temp>/fauxnix-<id>-host.ps1
 ```
 
 Frames are UTF-8 JSON lines on the process stdin/stdout pipes (raw
@@ -67,12 +81,12 @@ a host. Session sidecars live under `%TEMP%`
 ## Kill semantics
 
 Cancel and timeout **kill the host process**. The next `run()`
-cold-starts a new `powershell.exe`. This is the RFC #129 leftover:
+cold-starts a new process of the same selected edition. This is the RFC #129 leftover:
 per-frame runspace `Stop()` (roadmap B3) is not implemented.
 
 | Event | What happens |
 |---|---|
-| MCP `extra.signal` abort | `ChildProcess.kill()` on `powershell.exe`. Result: `cancelled: true`, exit **130**. Later list segments do not run. |
+| MCP `extra.signal` abort | `ChildProcess.kill()` on the selected PowerShell host. Result: `cancelled: true`, exit **130**. Later list segments do not run. |
 | `timeout_ms` / `ExecOptions.timeoutMs` (default 120s) | Same kill. Result: `timedOut: true`, exit **124**. |
 | `fauxnix_session reset` / `dispose()` | Kill host, unlink temp files. Reset re-prewarms the same session object. |
 | Stdio EOF / SIGINT / SIGTERM | Idempotent dispose. |

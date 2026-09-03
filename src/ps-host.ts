@@ -1,14 +1,14 @@
 import { spawn, ChildProcess } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { hostBootstrapScript } from './translator.js';
+import {
+  POWERSHELL_ARGS,
+  PowerShellSelection,
+  powerShellMissingMessage,
+  resolvePowerShell,
+} from './powershell.js';
 
-const PS_ARGS = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass'];
 const READY_TIMEOUT_MS = 30_000;
-
-export const PS_MISSING_MESSAGE =
-  'fauxnix: powershell.exe not found — fauxnix executes bash via native Windows PowerShell 5.1+.\n' +
-  'This host has no PowerShell on PATH (typical for Linux containers/sandboxes).\n' +
-  'Run fauxnix on Windows, or install PowerShell and make powershell.exe reachable on PATH.\n';
 
 export const DEFAULT_STDOUT_LIMIT = 8_388_608;
 export const DEFAULT_STDERR_LIMIT = 1_048_576;
@@ -100,9 +100,9 @@ export function decodeHostResponse(line: string): {
 }
 
 /**
- * One resident powershell.exe 5.1 process. Frames are UTF-8 JSON lines;
- * command stdout/stderr come back as base64 so PS 5.1's UTF-16LE pipe
- * encoding cannot scramble the payload.
+ * One resident selected PowerShell process. Frames are UTF-8 JSON lines;
+ * command stdout/stderr come back as base64 so Windows PowerShell 5.1's
+ * UTF-16LE pipe encoding cannot scramble the payload.
  */
 export class PowerShellHost {
   private proc: ChildProcess | null = null;
@@ -123,6 +123,7 @@ export class PowerShellHost {
   constructor(
     private readonly hostFile: string,
     private readonly envFn: () => NodeJS.ProcessEnv,
+    private readonly powerShell: PowerShellSelection = resolvePowerShell(),
   ) {}
 
   /** Start the resident process and wait for the ready handshake (B1 prewarm). */
@@ -158,7 +159,7 @@ export class PowerShellHost {
     const proc = this.proc;
     this.proc = null;
     this.closed = true;
-    this.failWaiters(new Error('fauxnix: powershell host stopped'));
+    this.failWaiters(new Error('fauxnix: PowerShell host stopped'));
     if (!proc) return;
     try {
       proc.stdin?.end();
@@ -269,7 +270,7 @@ export class PowerShellHost {
       if (this.closeErr && (this.closeErr as NodeJS.ErrnoException).code === 'ENOENT') {
         return {
           stdout: Buffer.alloc(0),
-          stderr: Buffer.from(PS_MISSING_MESSAGE, 'utf8'),
+          stderr: Buffer.from(powerShellMissingMessage(this.powerShell), 'utf8'),
           exitCode: 127,
           timedOut: false,
           cancelled: false,
@@ -297,6 +298,18 @@ export class PowerShellHost {
   }
 
   private async ensureStarted(): Promise<HostInvokeResult | null> {
+    if (this.powerShell.error) {
+      return {
+        stdout: Buffer.alloc(0),
+        stderr: Buffer.from(this.powerShell.error + '\n', 'utf8'),
+        exitCode: 127,
+        timedOut: false,
+        cancelled: false,
+        truncated: false,
+        spawnError: 'START',
+        spawnMessage: this.powerShell.error,
+      };
+    }
     if (this.proc && !this.closed) return null;
     if (!this.startLock) this.startLock = this.start();
     try {
@@ -307,7 +320,7 @@ export class PowerShellHost {
       if (err.code === 'ENOENT') {
         return {
           stdout: Buffer.alloc(0),
-          stderr: Buffer.from(PS_MISSING_MESSAGE, 'utf8'),
+          stderr: Buffer.from(powerShellMissingMessage(this.powerShell), 'utf8'),
           exitCode: 127,
           timedOut: false,
           cancelled: false,
@@ -318,7 +331,7 @@ export class PowerShellHost {
       return {
         stdout: Buffer.alloc(0),
         stderr: Buffer.from(
-          'fauxnix: failed to start powershell.exe: ' + err.message + '\n',
+          'fauxnix: failed to start ' + this.powerShell.executable + ': ' + err.message + '\n',
           'utf8',
         ),
         exitCode: 127,
@@ -347,7 +360,7 @@ export class PowerShellHost {
     await this.deadRestart();
     this.closed = false;
     writeFileSync(this.hostFile, '\ufeff' + hostBootstrapScript(), 'utf8');
-    const child = spawn('powershell.exe', [...PS_ARGS, '-File', this.hostFile], {
+    const child = spawn(this.powerShell.executable, [...POWERSHELL_ARGS, '-File', this.hostFile], {
       env: this.envFn(),
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,

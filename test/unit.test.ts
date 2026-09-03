@@ -35,7 +35,17 @@ import {
   PYTHON3_WINDOWS_HINT,
   SH_SCRIPT_WINDOWS_HINT,
 } from '../src/errors.js';
-import { decodeHostResponse, encodeHostRequest, parseHostLine } from '../src/ps-host.js';
+import {
+  decodeHostResponse,
+  encodeHostRequest,
+  parseHostLine,
+  PowerShellHost,
+} from '../src/ps-host.js';
+import {
+  powerShellDisplay,
+  powerShellMissingMessage,
+  resolvePowerShell,
+} from '../src/powershell.js';
 import { packageVersion } from '../src/version.js';
 import {
   bashToolResult,
@@ -2050,13 +2060,108 @@ describe('MCP structured results (#129)', () => {
   });
 });
 
-describe('cli check spawn error', () => {
-  it('runCheck attaches an error listener so missing powershell.exe prints FAILED', () => {
+describe('PowerShell host selection', () => {
+  const desktopPath = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+  const corePath = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe';
+  const found = (candidate: string) => candidate === desktopPath || candidate === corePath;
+
+  it('defaults empty and unset FAUXNIX_PS to Windows PowerShell 5.1', () => {
+    const env = { SystemRoot: 'C:\\Windows' };
+    expect(resolvePowerShell(env, { exists: found })).toEqual({
+      executable: desktopPath,
+      expectedEdition: 'Desktop',
+      configured: false,
+    });
+    expect(resolvePowerShell({ ...env, FAUXNIX_PS: '  ' }, { exists: found }).executable).toBe(
+      desktopPath,
+    );
+    expect(powerShellDisplay(resolvePowerShell(env, { exists: found }))).toContain(
+      'default, trusted system path',
+    );
+  });
+
+  it('accepts only the documented powershell and pwsh aliases', () => {
+    const desktop = resolvePowerShell(
+      { SystemRoot: 'C:\\Windows', FAUXNIX_PS: ' PowerShell ' },
+      { exists: found },
+    );
+    expect(desktop).toMatchObject({
+      executable: desktopPath,
+      expectedEdition: 'Desktop',
+    });
+    expect(desktop.error).toBeUndefined();
+    const core = resolvePowerShell(
+      { FAUXNIX_PS: ' PwSh.ExE ', PATH: 'C:\\Program Files\\PowerShell\\7' },
+      { cwd: 'D:\\repo', exists: found },
+    );
+    expect(core).toMatchObject({
+      executable: corePath,
+      expectedEdition: 'Core',
+    });
+    expect(core.error).toBeUndefined();
+    const bad = resolvePowerShell({ FAUXNIX_PS: 'pwsh -NoLogo' });
+    expect(bad.error).toMatch(/invalid FAUXNIX_PS/);
+    expect(bad.error).toMatch(/expected "powershell" or "pwsh"/);
+    expect(resolvePowerShell({ FAUXNIX_PS: corePath }).error).toMatch(/invalid FAUXNIX_PS/);
+  });
+
+  it('never resolves pwsh from empty, relative, or current-directory PATH entries', () => {
+    const malicious = 'D:\\repo\\pwsh.exe';
+    const rooted = '\\repo-bin\\pwsh.exe';
+    const existing = new Set([malicious, rooted, corePath].map((candidate) => candidate.toLowerCase()));
+    const core = resolvePowerShell(
+      {
+        FAUXNIX_PS: 'pwsh',
+        Path: ';.;relative-bin;\\repo-bin;D:\\repo\\.;"C:\\Program Files\\PowerShell\\7"',
+      },
+      {
+        cwd: 'D:\\repo',
+        exists: (candidate) => existing.has(candidate.toLowerCase()),
+      },
+    );
+    expect(core.error).toBeUndefined();
+    expect(core.executable).toBe(corePath);
+    expect(core.executable).not.toBe(malicious);
+  });
+
+  it('fails loudly when trusted resolution cannot find the requested host', () => {
+    const desktop = resolvePowerShell(
+      { SystemRoot: 'relative-windows' },
+      { exists: () => false },
+    );
+    expect(desktop.error).toMatch(/SystemRoot is missing or not drive-absolute/);
+    const core = resolvePowerShell(
+      { FAUXNIX_PS: 'pwsh', PATH: ';.;D:\\repo' },
+      { cwd: 'D:\\repo', exists: () => true },
+    );
+    expect(core.executable).toBe('');
+    expect(core.error).toMatch(/pwsh\.exe not found in eligible PATH entries/);
+  });
+
+  it('gives selected-host recovery guidance without silent fallback', () => {
+    const pwsh = resolvePowerShell(
+      { FAUXNIX_PS: 'pwsh', PATH: '' },
+      { cwd: 'D:\\repo', exists: () => false },
+    );
+    expect(powerShellMissingMessage(pwsh)).toContain('pwsh.exe not found');
+    expect(powerShellMissingMessage(pwsh)).toContain('unset FAUXNIX_PS');
+  });
+
+  it('returns a loud host failure for an invalid FAUXNIX_PS without spawning', async () => {
+    const selection = resolvePowerShell({ FAUXNIX_PS: 'pwsh -NoLogo' });
+    const host = new PowerShellHost(join(tmpdir(), 'fauxnix-invalid-ps-host.ps1'), () => ({}), selection);
+    const result = await host.ready();
+    expect(result?.spawnError).toBe('START');
+    expect(result?.exitCode).toBe(127);
+    expect(result?.stderr.toString('utf8')).toMatch(/invalid FAUXNIX_PS/);
+  });
+
+  it('runCheck attaches an error listener so a missing selected host fails cleanly', () => {
     const src = readFileSync('src/cli.ts', 'utf8');
     const check = src.slice(src.indexOf('async function runCheck'));
-    expect(check).toContain("probe.on('error'");
-    expect(check).toMatch(/FAILED to run powershell\.exe:.*e\.message/);
-    expect(check).toContain('process.exit(1)');
+    expect(check).toContain("probe.once('error'");
+    expect(check).toContain('powerShellMissingMessage(selection)');
+    expect(check).toContain('process.exitCode = 1');
   });
 });
 
@@ -2767,6 +2872,8 @@ describe.skipIf(process.platform !== 'win32')('cli doctor spawn', () => {
     });
     expect(r.error).toBeUndefined();
     expect(r.stdout).toContain('powershell');
+    expect(r.stdout).toContain('edition');
+    expect(r.stdout).toContain(resolvePowerShell(process.env).expectedEdition);
     expect(r.stdout).toContain('encoding');
     expect(r.stdout).toContain('FAUXNIX_NATIVE_ENCODING');
     expect(r.stdout).toContain('start with: fauxnix mcp');

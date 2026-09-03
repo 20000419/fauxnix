@@ -15,14 +15,25 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: windows-x64
+          - name: windows-x64-desktop
             runner: windows-2025
             node_arch: x64
-          - name: windows-arm64
+            fauxnix_ps: ''
+            edition: Desktop
+          - name: windows-x64-core
+            runner: windows-2025
+            node_arch: x64
+            fauxnix_ps: pwsh
+            edition: Core
+          - name: windows-arm64-desktop
             runner: windows-11-arm
             node_arch: arm64
+            fauxnix_ps: ''
+            edition: Desktop
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
+    env:
+      FAUXNIX_PS: ${{ matrix.fauxnix_ps }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -38,6 +49,15 @@ jobs:
           }
       - run: npm ci
       - run: npm run release:check
+      - name: Verify fauxnix selected the matrix host
+        shell: pwsh
+        run: |
+          $check = npm run dev -- check 2>&1 | Out-String
+          $check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($check -notmatch 'edition\s+:\s+${{ matrix.edition }}') {
+            throw 'fauxnix check did not report the expected ${{ matrix.edition }} edition'
+          }
       - run: npm run typecheck
       - run: npm run build
       - run: npm test

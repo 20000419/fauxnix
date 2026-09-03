@@ -85,6 +85,20 @@ npm install -g .
 
 Requires: Windows with PowerShell 5.1+ (built-in) and Node.js ≥ 18.
 
+PowerShell 7 is an opt-in, CI-tested tier:
+
+```powershell
+$env:FAUXNIX_PS = 'pwsh'
+fauxnix check                 # edition: Core
+```
+
+Set the variable before starting `fauxnix` or its MCP harness; restart the
+harness after changing it. Windows PowerShell 5.1 remains the default. Invalid
+values and a missing selected executable fail loudly rather than falling back.
+The default is pinned below `SystemRoot`; `pwsh.exe` is resolved once from
+absolute `PATH` directories, excluding the current working directory.
+See [PowerShell 7 support](docs/powershell-7.md).
+
 ## Quick start
 
 ```bash
@@ -209,7 +223,7 @@ Exit codes follow bash conventions: 0 ok, 1 fail, 2 usage/serious, 127 command n
 ## How it works
 
 ```
-bash command ──parser──▶ AST ──translator──▶ PowerShell script ──executor──▶ powershell.exe
+bash command ──parser──▶ AST ──translator──▶ PowerShell script ──executor──▶ selected PowerShell
                                                                               │
 agent ◀── GNU-style output, bash-style errors ◀── UTF-8 framed host protocol ◀┘
 ```
@@ -269,9 +283,10 @@ fauxnix optimizes for the commands agents actually run. Documented deviations:
 
 ## Development
 
-```bash
+```powershell
 npm install
 npm test          # unit + real-PowerShell integration suite (Windows only, auto-skipped elsewhere)
+$env:FAUXNIX_PS = 'pwsh'; npm test   # same suite through PowerShell 7
 npm run build
 npx tsx scratch/run.mjs "any bash command"   # quick live check
 ```
