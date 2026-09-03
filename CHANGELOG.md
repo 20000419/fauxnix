@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.12.0 — 2026-09-03
+
+Roadmap v2 complete — all 19 items shipped (#172-#192, by r3wretrhy and vulragrag-star):
+
+- C-1: while/until/case (fallthrough loud-rejects)
+- C-2: arrays + ${name//pat/str} + ${name:off:len}
+- C-3: positional parameters (set -- / $1 / "$@" / shift / $0)
+- C-4: multi-segment $(cmd1; cmd2)
+- C-5: agent-daily-60 CommandSpec
+- C-6: per-stage fd ownership (non-last-stage redirects now execute)
+- C-7: differential corpus at 253+ cases (target was 200)
+- U-1: fauxnix install --harness
+- U-2: fauxnix doctor
+- U-3: error alternatives (CI-enforced)
+- U-4: quickstarts x5
+- U-5: PS7 tier (FAUXNIX_PS=pwsh)
+- U-6: ARM64 CI
+- U-7: locale matrix (zh-CN + en-US error wording pinned)
+- U-8: perf guard (warm p50 <50ms in CI)
+- T-1: SECURITY.md
+- T-2: RFC rule in CONTRIBUTING
+- T-3: release checklist gate (this changelog entry satisfies it)
+
+389+ tests. 253-case Git Bash differential corpus. npm: `npm i -g fauxnix-cli`
 ## v0.11.0 — 2026-09-02
 
 Roadmap v2 waves 2+3 in one night (all by r3wretrhy, #181-#191):
