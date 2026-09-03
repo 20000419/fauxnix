@@ -1129,6 +1129,66 @@ describe.skipIf(!hasPs)(`integration (real ${selectedPowerShell.executable})`, {
     expect(replacedList).not.toContain('fruits.txt');
   });
 
+  it('gzip -d streams a high-ratio file and preserves cleanup semantics', async () => {
+    const contents = 'compressible payload\n'.repeat(100_000);
+    writeFileSync(join(dir, 'ratio.txt'), contents, 'utf8');
+    expect((await run('gzip -k ratio.txt')).exitCode).toBe(0);
+    rmSync(join(dir, 'ratio.txt'));
+    writeFileSync(join(dir, 'ratio.txt'), 'stale destination\n', 'utf8');
+
+    const unpack = await run('gzip -d ratio.txt.gz');
+    expect(unpack.exitCode, JSON.stringify(unpack)).toBe(0);
+    expect(readFileSync(join(dir, 'ratio.txt'), 'utf8')).toBe(contents);
+    expect(existsSync(join(dir, 'ratio.txt.gz'))).toBe(false);
+  });
+
+  it('gzip -dt, gunzip -c, and zcat validate or stream without creating files', async () => {
+    writeFileSync(join(dir, 'aliases.txt'), 'alpha\nbeta\n', 'utf8');
+    expect((await run('gzip -k aliases.txt')).exitCode).toBe(0);
+    rmSync(join(dir, 'aliases.txt'));
+
+    const keep = await run('gzip -dk aliases.txt.gz');
+    expect(keep.exitCode).toBe(0);
+    expect(readFileSync(join(dir, 'aliases.txt'), 'utf8')).toBe('alpha\nbeta\n');
+    expect(existsSync(join(dir, 'aliases.txt.gz'))).toBe(true);
+
+    const testOnly = await run('gzip -dt aliases.txt.gz');
+    expect(testOnly.exitCode).toBe(0);
+    expect(testOnly.stdout).toBe('');
+    expect(existsSync(join(dir, 'aliases.txt.gz'))).toBe(true);
+
+    const gunzipStdout = await run('gunzip -c aliases.txt.gz');
+    expect(gunzipStdout.exitCode).toBe(0);
+    expect(gunzipStdout.stdout.replace(/\r/g, '')).toBe('alpha\nbeta\n');
+
+    const zcatStdout = await run('zcat aliases.txt.gz');
+    expect(zcatStdout.exitCode).toBe(0);
+    expect(zcatStdout.stdout.replace(/\r/g, '')).toBe('alpha\nbeta\n');
+    expect(existsSync(join(dir, 'aliases.txt.gz'))).toBe(true);
+  });
+
+  it('gunzip leaves the destination and no temporary file when input is invalid', async () => {
+    writeFileSync(join(dir, 'broken.gz'), 'not a gzip stream', 'utf8');
+    writeFileSync(join(dir, 'broken'), 'existing destination\n', 'utf8');
+
+    const r = await run('gunzip broken.gz');
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain('not in gzip format');
+    expect(readFileSync(join(dir, 'broken'), 'utf8')).toBe('existing destination\n');
+    expect(existsSync(join(dir, 'broken.gz'))).toBe(true);
+    expect(
+      spawnSync('powershell.exe', [
+        '-NoProfile',
+        '-Command',
+        `(Get-ChildItem -LiteralPath '${dir.replaceAll("'", "''")}' -Filter '.fauxnix-gzip-*.tmp').Count`,
+      ], { encoding: 'utf8' }).stdout.trim(),
+    ).toBe('0');
+
+    const stdout = await run('zcat broken.gz');
+    expect(stdout.exitCode).toBe(1);
+    expect(stdout.stdout).toBe('');
+  });
+
   it('printf CRLF without a trailing LF is preserved on redirect', async () => {
     const r = await run("printf 'a\\r\\nb' > cr.txt; wc -c cr.txt");
     expect(r.exitCode).toBe(0);
