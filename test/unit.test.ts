@@ -48,7 +48,11 @@ import {
 } from '../src/powershell.js';
 import { packageVersion } from '../src/version.js';
 import {
+  BatchCompileError,
+  batchCompileErrorResult,
+  batchToolResult,
   bashToolResult,
+  compileBatchSteps,
   formatBashText,
   formatSessionStatus,
   positionalCountFromEnv,
@@ -2095,6 +2099,89 @@ describe('MCP structured results (#129)', () => {
         id: 'abcd1234',
       });
     expect(withPos).toMatch(/positionals: 3/);
+  });
+
+  it('compiles every batch step before execution and identifies a bad step', () => {
+    const steps = [
+      { id: 'prepare', command: "printf 'would-run' > batch-marker.txt" },
+      { id: 'invalid', command: 'echo "unterminated' },
+    ];
+    let error: BatchCompileError | undefined;
+    try {
+      compileBatchSteps(steps);
+    } catch (e) {
+      error = e as BatchCompileError;
+    }
+    expect(error).toBeInstanceOf(BatchCompileError);
+    expect(error?.stepIndex).toBe(1);
+    expect(error?.stepId).toBe('invalid');
+    expect(error?.message).toMatch(/step 2 \(invalid\)/);
+    expect(existsSync('batch-marker.txt')).toBe(false);
+    const result = batchCompileErrorResult(steps, error!, 'batch123');
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent.preflightOk).toBe(false);
+    expect(result.structuredContent.stepsCompleted).toBe(0);
+    expect(result.structuredContent.steps.map((step) => step.status)).toEqual([
+      'skipped',
+      'compile_error',
+    ]);
+  });
+
+  it('formats per-step batch results without treating a shell failure as MCP failure', () => {
+    const result = batchToolResult(
+      [
+        { id: 'one', command: 'echo one' },
+        { id: 'stop', command: 'false' },
+        { id: 'later', command: 'echo later' },
+      ],
+      {
+        stopReason: 'command_failed',
+        results: [
+          {
+            stdout: 'one\n',
+            stderr: '',
+            exitCode: 0,
+            timedOut: false,
+            cancelled: false,
+            truncated: false,
+          },
+          {
+            stdout: '',
+            stderr: '',
+            exitCode: 1,
+            timedOut: false,
+            cancelled: false,
+            truncated: false,
+          },
+        ],
+      },
+      'batch123',
+    );
+    expect(result.structuredContent.stepsCompleted).toBe(2);
+    expect(result.structuredContent.preflightOk).toBe(true);
+    expect(result.structuredContent.steps.map((step) => step.status)).toEqual([
+      'completed',
+      'failed',
+      'skipped',
+    ]);
+    expect(result.content[0].text).toContain('[3/3 later] skipped');
+    expect('isError' in result && result.isError).toBeFalsy();
+  });
+
+  it('rejects file-reading translation during batch preflight', () => {
+    expect(() => compileBatchSteps([{ command: 'sed -f rules.sed input.txt' }]))
+      .toThrow(BatchCompileError);
+    expect(() => compileBatchSteps([{ command: 'if true; then sed -f rules.sed input.txt; fi' }]))
+      .toThrow(BatchCompileError);
+  });
+
+  it('keeps a worst-case escaped batch response below the SDK buffer', () => {
+    const result = batchToolResult([{ command: 'fixture' }], {
+      stopReason: 'completed',
+      results: [{ stdout: '\u0000'.repeat(262144), stderr: '\u0000'.repeat(65536),
+        exitCode: 0, timedOut: false, cancelled: false, truncated: false }],
+    }, 'session');
+    expect(Buffer.byteLength(JSON.stringify(result), 'utf8')).toBeLessThan(10 * 1024 * 1024);
   });
 });
 

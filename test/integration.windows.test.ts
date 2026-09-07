@@ -2628,6 +2628,179 @@ describe.skipIf(!hasPs)(`integration (real ${selectedPowerShell.executable})`, {
       await extra.dispose();
     }
   }, 30000);
+
+  it('runs a compiled batch atomically before a concurrent session call', async () => {
+    const extra = new FauxnixSession();
+    const target = join(dir, 'batch-order.txt');
+    try {
+      await extra.prewarm();
+      const batch = extra.runBatch([
+        translateCommandList(
+          parseCommand(`printf A > ${JSON.stringify(target)}; sleep 1`),
+        ),
+        translateCommandList(parseCommand(`printf B >> ${JSON.stringify(target)}`)),
+      ]);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const outside = extra.run(
+        translateCommandList(parseCommand(`printf X >> ${JSON.stringify(target)}`)),
+      );
+      const [batched, ordinary] = await Promise.all([batch, outside]);
+      expect(batched.stopReason).toBe('completed');
+      expect(batched.results).toHaveLength(2);
+      expect(ordinary.exitCode).toBe(0);
+      expect(readFileSync(target, 'utf8')).toBe('ABX');
+    } finally {
+      await extra.dispose();
+    }
+  }, 30000);
+
+  it('applies stop policy and output budgets across compiled batch steps', async () => {
+    const extra = new FauxnixSession();
+    try {
+      await extra.prewarm();
+      const output = await extra.runBatch(
+        ["printf 'AAA'", "printf 'BBB'", "printf 'CCC'"].map((command) =>
+          translateCommandList(parseCommand(command)),
+        ),
+        { stdoutLimit: 5, stopOnError: false },
+      );
+      expect(output.stopReason).toBe('completed');
+      expect(output.results.map((result) => result.stdout)).toEqual(['AAA', 'BB', '']);
+      expect(output.results.map((result) => result.truncated)).toEqual([false, true, true]);
+
+      const stderr = await extra.runBatch(
+        ["printf 'EEE' 1>&2", "printf 'EEE' 1>&2", "printf 'EEE' 1>&2"].map((command) =>
+          translateCommandList(parseCommand(command)),
+        ),
+        { stderrLimit: 5, stopOnError: false },
+      );
+      expect(stderr.results.map((result) => result.stderr)).toEqual(['EEE', 'EE', '']);
+      expect(stderr.results.map((result) => result.truncated)).toEqual([false, true, true]);
+
+      const utf8 = await extra.runBatch(
+        ["printf '你'", "printf 'X'"].map((command) =>
+          translateCommandList(parseCommand(command)),
+        ),
+        { stdoutLimit: 2, stopOnError: false },
+      );
+      expect(utf8.results.map((result) => result.stdout)).toEqual(['', '']);
+      expect(utf8.results.map((result) => result.truncated)).toEqual([true, true]);
+
+      const redirected = join(dir, 'batch-budget-file.txt');
+      const file = await extra.runBatch(
+        [
+          `printf 'AAAAAAAAAA' > ${JSON.stringify(redirected)}`,
+          `wc -c ${JSON.stringify(redirected)} > /dev/null`,
+        ].map((command) => translateCommandList(parseCommand(command))),
+        { stdoutLimit: 0 },
+      );
+      expect(readFileSync(redirected, 'utf8')).toBe('AAAAAAAAAA');
+      expect(file.results.map((result) => result.truncated)).toEqual([false, false]);
+
+      const stopped = await extra.runBatch(
+        ['false', "printf 'SHOULD_NOT_RUN'"].map((command) =>
+          translateCommandList(parseCommand(command)),
+        ),
+      );
+      expect(stopped.stopReason).toBe('command_failed');
+      expect(stopped.results).toHaveLength(1);
+      expect(stopped.results[0].exitCode).toBe(1);
+
+      const continued = await extra.runBatch(
+        ['false', "printf 'continued'"].map((command) =>
+          translateCommandList(parseCommand(command)),
+        ),
+        { stopOnError: false },
+      );
+      expect(continued.stopReason).toBe('completed');
+      expect(continued.results).toHaveLength(2);
+      expect(continued.results[1].stdout).toBe('continued');
+    } finally {
+      await extra.dispose();
+    }
+  }, 30000);
+
+  it('keeps cwd and environment changes visible across batch steps', async () => {
+    const extra = new FauxnixSession();
+    const target = join(dir, 'sub', 'batch-state.txt');
+    try {
+      await extra.prewarm();
+      const batch = await extra.runBatch(
+        [
+          `cd ${JSON.stringify(dir)}; export FX_BATCH_STATE=ready`,
+          'cd sub',
+          `printf "$FX_BATCH_STATE" > ${JSON.stringify(target)}`,
+          `wc -c ${JSON.stringify(target)}`,
+        ].map((command) => translateCommandList(parseCommand(command))),
+      );
+      expect(batch.stopReason).toBe('completed');
+      expect(batch.results).toHaveLength(4);
+      expect(readFileSync(target, 'utf8')).toBe('ready');
+      expect(batch.results[3].stdout).toMatch(/^5\s+/);
+    } finally {
+      await extra.dispose();
+    }
+  }, 30000);
+
+  it('shares one batch deadline and cancellation boundary, then restarts cleanly', async () => {
+    const extra = new FauxnixSession();
+    try {
+      await extra.prewarm();
+      const timed = await extra.runBatch(
+        ['sleep 1', 'sleep 2', "printf 'late'"].map((command) =>
+          translateCommandList(parseCommand(command)),
+        ),
+        { timeoutMs: 2500 },
+      );
+      expect(timed.stopReason).toBe('timed_out');
+      expect(timed.results).toHaveLength(2);
+      expect(timed.results[0].exitCode).toBe(0);
+      expect(timed.results[1].timedOut).toBe(true);
+
+      const afterTimeout = await extra.run(translateCommandList(parseCommand('echo after-timeout')));
+      expect(afterTimeout.stdout.trim()).toBe('after-timeout');
+
+      const controller = new AbortController();
+      const pending = extra.runBatch(
+        ['sleep 5', "printf 'late'"].map((command) =>
+          translateCommandList(parseCommand(command)),
+        ),
+        { timeoutMs: 30_000, signal: controller.signal },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      controller.abort();
+      const cancelled = await pending;
+      expect(cancelled.stopReason).toBe('cancelled');
+      expect(cancelled.results).toHaveLength(1);
+      expect(cancelled.results[0].cancelled).toBe(true);
+
+      const afterCancel = await extra.run(translateCommandList(parseCommand('echo after-cancel')));
+      expect(afterCancel.stdout.trim()).toBe('after-cancel');
+    } finally {
+      await extra.dispose();
+    }
+  }, 60_000);
+
+  it('preserves completed batch results after host failure even with continue enabled', async () => {
+    const extra = new FauxnixSession();
+    try {
+      const stoppedHost = translateCommandList(parseCommand(':'));
+      stoppedHost[0].body = 'exit 0';
+      const batch = await extra.runBatch([
+        translateCommandList(parseCommand('printf first')),
+        stoppedHost,
+        translateCommandList(parseCommand('printf later')),
+      ], { stopOnError: false });
+      expect(batch.stopReason).toBe('infrastructure');
+      expect(batch.results).toHaveLength(2);
+      expect(batch.results[0].stdout).toBe('first');
+      expect(batch.results[1].infrastructureError).toBe(true);
+      const recovered = await extra.run(translateCommandList(parseCommand('printf recovered')));
+      expect(recovered.stdout).toBe('recovered');
+    } finally {
+      await extra.dispose();
+    }
+  }, 30000);
 });
 
 // RFC 1.0 U-8 (#118): CI budgets so the 15× warm-host win cannot regress

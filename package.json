@@ -18,6 +18,7 @@
     "release:check": "node scripts/release-check.mjs",
     "test": "vitest run",
     "test:package": "node scripts/package-smoke.mjs",
+    "benchmark:mcp-batch": "npm run build && node scripts/benchmark-mcp-batch.mjs",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "dev": "tsx src/index.ts"
