@@ -1,7 +1,6 @@
 import { spawn, ChildProcess } from 'node:child_process';
 import {
   closeSync,
-  mkdirSync,
   openSync,
   readSync,
   rmSync,
@@ -290,7 +289,6 @@ export class PowerShellHost {
       resolvedLimits.nativeStderrSpoolPath = this.hostFile + '.' + id + '.native-stderr';
     }
     const nativeSpoolDir = this.hostFile + '.' + id + '.native';
-    mkdirSync(nativeSpoolDir);
     const requestEnv = { ...env, FAUXNIX_NATIVE_SPOOL_DIR: nativeSpoolDir };
     const line = encodeHostRequest(
       id,
@@ -657,7 +655,7 @@ export class PowerShellHost {
     let native = Buffer.alloc(0);
     let nativeTruncated = false;
     const nativeSpool = limits?.nativeStderrSpoolPath;
-    if ((limits?.stderrMode ?? 'capture') === 'capture' && nativeSpool) {
+    if ((limits?.stderrMode ?? 'capture') === 'capture' && nativeSpool && nativeBytes > 0) {
       const remaining = Math.max(
         0,
         (limits?.stderrLimit ?? DEFAULT_STDERR_LIMIT) - capturedErr.length,
@@ -665,9 +663,6 @@ export class PowerShellHost {
       const clipped = this.readUtf8Prefix(nativeSpool, remaining, nativeBytes);
       native = Buffer.from(clipped.data);
       nativeTruncated = clipped.truncated;
-      rmSync(nativeSpool, { force: true });
-    }
-    if (limits?.stderrMode === 'spool' && nativeSpool && nativeBytes === 0) {
       rmSync(nativeSpool, { force: true });
     }
     const n = Number(end.exitCode);
@@ -705,15 +700,6 @@ export class PowerShellHost {
         this.nativeCapture = null;
         reject(failure);
       }, timeoutMs);
-      let spoolFd: number | undefined;
-      let ioError: NativeStderrSpoolError | undefined;
-      if (mode !== 'discard' && spoolPath) {
-        try {
-          spoolFd = openSync(spoolPath, 'w');
-        } catch (e) {
-          ioError = new NativeStderrSpoolError('open', spoolPath, e);
-        }
-      }
       this.nativeCapture = {
         id,
         needle: Buffer.from('FAUXNIX_ERR_END:' + id + '\n', 'utf8'),
@@ -721,10 +707,8 @@ export class PowerShellHost {
         limit: Math.max(0, limit),
         tail: Buffer.alloc(0),
         spoolPath,
-        spoolFd,
         bytesWritten: 0,
         bytesSeen: 0,
-        ioError,
         resolve,
         reject,
         timer,
@@ -743,11 +727,21 @@ export class PowerShellHost {
   ): void {
     if (!data.length) return;
     state.bytesSeen += data.length;
-    if (state.ioError || state.mode === 'discard' || state.spoolFd === undefined) return;
+    if (state.ioError || state.mode === 'discard') return;
     let retained = data;
     if (state.mode === 'capture') {
       const remaining = Math.max(0, state.limit + 3 - state.bytesWritten);
       retained = data.subarray(0, remaining);
+    }
+    if (!retained.length) return;
+    if (state.spoolFd === undefined) {
+      if (!state.spoolPath) return;
+      try {
+        state.spoolFd = openSync(state.spoolPath, 'w');
+      } catch (e) {
+        state.ioError = new NativeStderrSpoolError('open', state.spoolPath, e);
+        return;
+      }
     }
     try {
       let offset = 0;

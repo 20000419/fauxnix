@@ -133,6 +133,68 @@ describe.skipIf(!hasPs)(`integration (real ${selectedPowerShell.executable})`, {
     expect(mixed.stdout).toBe('layout/a.ts\n\nlayout/lib/:\nc.ts\n');
   });
 
+  it('avoids unchanged checkpoint writes while preserving changed and unset state', async () => {
+    const extra = new FauxnixSession();
+    const checkpoint = join(tmpdir(), 'fauxnix-' + extra.id + '-env.json');
+    const cwdCheckpoint = join(tmpdir(), 'fauxnix-' + extra.id + '-cwd.txt');
+    try {
+      await extra.run(translateCommandList(parseCommand('printf first')), { cwd: dir });
+      const firstEnvTime = statSync(checkpoint).mtimeMs;
+      const firstCwdTime = statSync(cwdCheckpoint).mtimeMs;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      await extra.run(translateCommandList(parseCommand('printf second')));
+      expect(statSync(checkpoint).mtimeMs).toBe(firstEnvTime);
+      expect(statSync(cwdCheckpoint).mtimeMs).toBe(firstCwdTime);
+
+      await extra.run(translateCommandList(parseCommand("export FX_CHECKPOINT_VALUE='changed'")));
+      expect(JSON.parse(readFileSync(checkpoint, 'utf8')).FX_CHECKPOINT_VALUE).toBe('changed');
+      await extra.run(translateCommandList(parseCommand('unset FX_CHECKPOINT_VALUE')));
+      expect(JSON.parse(readFileSync(checkpoint, 'utf8')).FX_CHECKPOINT_VALUE).toBeUndefined();
+      await extra.run(translateCommandList(parseCommand('sleep 5')), { timeoutMs: 200 });
+      const resumed = await extra.run(translateCommandList(parseCommand("printf '%s' \"${FX_CHECKPOINT_VALUE:-absent}\"")));
+      expect(resumed.stdout).toBe('absent');
+    } finally {
+      await extra.dispose();
+    }
+  }, 30000);
+
+  it('serializes environment strings exactly in compiled checkpoints', async () => {
+    const hostFile = join(dir, 'checkpoint-encoding-host.ps1');
+    const envPath = join(dir, 'checkpoint-encoding.json');
+    const key = 'FX_JSON_KEY';
+    const value = 'quotes " \\ tabs\tlines\n中文😀';
+    // Match the other direct-host fixtures. In Vitest workers process.env is
+    // case-sensitive, so SDK uppercase allow-list lookups can omit SystemRoot
+    // from the mixed-case environment provided by Windows CI.
+    const host = new PowerShellHost(hostFile, () => ({ ...process.env, [key]: value }));
+    try {
+      expect(await host.ready()).toBeNull();
+      const result = await host.invoke('[FauxnixSessionState]::SaveEnvironment($env:FX_DEST)', { FX_DEST: envPath }, 30000);
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(readFileSync(envPath, 'utf8'))[key]).toBe(value);
+    } finally {
+      await host.stop();
+      rmSync(hostFile, { force: true });
+    }
+  }, 30000);
+
+  it('does not allocate native spool files for ordinary translated output', async () => {
+    const hostFile = join(dir, 'lazy-spool-host.ps1');
+    const host = new PowerShellHost(hostFile, () => ({ ...process.env }));
+    try {
+      const result = await host.invoke([
+        "[Console]::Out.Write([IO.Directory]::Exists($env:FAUXNIX_NATIVE_SPOOL_DIR))",
+        "[Console]::Out.Write([IO.File]::Exists($env:FX_HOST_PREFIX + '.' + $fx_id + '.native-stderr'))",
+      ].join('\n'), { FX_HOST_PREFIX: hostFile }, 30000);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout.toString('utf8')).toBe('FalseFalse');
+      expect(result.nativeStderr?.length ?? 0).toBe(0);
+    } finally {
+      await host.stop();
+      rmSync(hostFile, { force: true });
+    }
+  }, 30000);
+
   it('cat reads files', async () => {
     const r = await run('cat fruits.txt');
     expect(r.stdout.split(/\r?\n/).filter(Boolean)).toEqual([
