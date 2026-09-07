@@ -57,6 +57,7 @@ export interface HostInvokeResult {
   stderrTruncated?: boolean;
   spawnError?: 'ENOENT' | 'START';
   spawnMessage?: string;
+  infrastructureError?: boolean;
   stdoutSpool?: string;
   stderrSpool?: string;
   nativeStderrSpool?: string;
@@ -315,6 +316,7 @@ export class PowerShellHost {
         cancelled: false,
         truncated: false,
         spawnMessage: (e as Error).message,
+        infrastructureError: true,
       };
     }
 
@@ -362,6 +364,7 @@ export class PowerShellHost {
         return {
           stdout: Buffer.alloc(0),
           stderr: Buffer.from(nativeSpoolError.message + '\n', 'utf8'),
+          infrastructureError: true,
           exitCode: 1,
           timedOut: false,
           cancelled: false,
@@ -389,6 +392,7 @@ export class PowerShellHost {
           'utf8',
         ),
         exitCode: code === 0 ? 1 : code,
+        infrastructureError: true,
         timedOut: false,
         cancelled: false,
         truncated: false,

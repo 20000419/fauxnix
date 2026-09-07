@@ -30,6 +30,11 @@ export interface ExecResult {
   timedOut: boolean;
   cancelled: boolean;
   truncated: boolean;
+  /** True when caller-visible stdout crossed its byte budget. */
+  stdoutTruncated?: boolean;
+  /** True when caller-visible stderr crossed its byte budget. */
+  stderrTruncated?: boolean;
+  infrastructureError?: boolean;
   spawnError?: 'ENOENT' | 'START';
 }
 
@@ -40,6 +45,22 @@ export interface ExecOptions {
   signal?: AbortSignal;
   stdoutLimit?: number;
   stderrLimit?: number;
+}
+
+export type BatchStopReason =
+  | 'completed'
+  | 'command_failed'
+  | 'timed_out'
+  | 'cancelled'
+  | 'infrastructure';
+
+export interface BatchExecOptions extends ExecOptions {
+  stopOnError?: boolean;
+}
+
+export interface BatchExecResult {
+  results: ExecResult[];
+  stopReason: BatchStopReason;
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -410,6 +431,85 @@ export class FauxnixSession {
       runPlans(plans, this, opts, () => this.syncFromDisk(), () => this.ensureHost()),
     );
   }
+
+  /**
+   * Execute precompiled steps atomically in one session turn. Each step keeps
+   * its own result, while timeout and caller-output budgets cover the complete
+   * batch. No run/reset/dispose request can interleave between steps.
+   */
+  runBatch(planGroups: SegmentPlan[][], opts: BatchExecOptions = {}): Promise<BatchExecResult> {
+    return this.withLock(async () => {
+      const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+      const deadline = Date.now() + timeoutMs;
+      let stdoutRemaining = validateOutputLimit(
+        'stdoutLimit',
+        opts.stdoutLimit ?? DEFAULT_STDOUT_LIMIT,
+      );
+      let stderrRemaining = validateOutputLimit(
+        'stderrLimit',
+        opts.stderrLimit ?? DEFAULT_STDERR_LIMIT,
+      );
+      const results: ExecResult[] = [];
+      let stopReason: BatchStopReason = 'completed';
+
+      for (const plans of planGroups) {
+        let result: ExecResult;
+        try {
+          result = await runPlans(
+            plans,
+            this,
+            {
+              ...opts,
+              timeoutMs: Math.max(0, deadline - Date.now()),
+              stdoutLimit: stdoutRemaining,
+              stderrLimit: stderrRemaining,
+            },
+            () => this.syncFromDisk(),
+            () => this.ensureHost(),
+          );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const clipped = clipUtf8(message, stderrRemaining);
+          result = {
+            stdout: '', stderr: clipped.text, exitCode: 1,
+            timedOut: false, cancelled: false, truncated: clipped.truncated,
+            infrastructureError: true,
+          };
+        }
+        results.push(result);
+
+        stdoutRemaining = Math.max(
+          0,
+          stdoutRemaining - Buffer.byteLength(result.stdout, 'utf8'),
+        );
+        stderrRemaining = Math.max(
+          0,
+          stderrRemaining - Buffer.byteLength(result.stderr, 'utf8'),
+        );
+        if (result.stdoutTruncated) stdoutRemaining = 0;
+        if (result.stderrTruncated) stderrRemaining = 0;
+
+        if (result.cancelled) {
+          stopReason = 'cancelled';
+          break;
+        }
+        if (result.timedOut) {
+          stopReason = 'timed_out';
+          break;
+        }
+        if (result.spawnError || result.infrastructureError) {
+          stopReason = 'infrastructure';
+          break;
+        }
+        if ((opts.stopOnError ?? true) && result.exitCode !== 0) {
+          stopReason = 'command_failed';
+          break;
+        }
+      }
+
+      return { results, stopReason };
+    });
+  }
 }
 
 async function runPlans(
@@ -442,6 +542,7 @@ async function runPlans(
   let cancelled = false;
   let truncated = false;
   let spawnError: ExecResult['spawnError'];
+  let infrastructureError = false;
   const appendCaller = (fd: 1 | 2, data: string): void => {
     if (!data) return;
     if (fd === 1 ? stdoutClosed : stderrClosed) return;
@@ -622,6 +723,14 @@ async function runPlans(
       },
     );
 
+    if (inv.infrastructureError) {
+      appendCaller(2, inv.stderr.toString('utf8'));
+      exitCode = inv.exitCode;
+      session.prevExit = exitCode;
+      infrastructureError = true;
+      break;
+    }
+
     if (inv.spawnError === 'ENOENT' || inv.spawnError === 'START') {
       appendCaller(
         2,
@@ -738,6 +847,9 @@ async function runPlans(
     timedOut,
     cancelled,
     truncated,
+    stdoutTruncated: stdoutClosed,
+    stderrTruncated: stderrClosed,
+    infrastructureError,
     spawnError,
   };
 }

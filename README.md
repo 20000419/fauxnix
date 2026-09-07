@@ -191,6 +191,26 @@ positional parameters (`set --` / `$1` / `"$@"`) across tool calls — it behave
 shell, not a stateless `exec`. `$0` is the MCP tool name (`bash` / `FAUXNIX_TOOL_NAME`), not a
 Windows path.
 
+For a workflow whose commands are already known, the MCP server also exposes
+`bash_batch`. It compiles every step before execution, runs the plan atomically
+in the same session, and returns one structured result per step in a single MCP
+round trip. It stops on the first nonzero exit by default; use separate `bash`
+calls only when the model must inspect one result before deciding the next
+command. Byte-exact workflows should include `wc -c FILE` or `stat -c %s FILE`
+as a verification step instead of inferring CRLF byte counts.
+
+```json
+{
+  "steps": [
+    { "id": "write", "command": "printf 'a\\r\\nb' > data.txt" },
+    { "id": "measure", "command": "wc -c data.txt" }
+  ]
+}
+```
+
+See [compiled MCP batch plans](docs/rfc-mcp-batch-plans.md) for timeout,
+budget, cancellation, and preflight semantics.
+
 ## What's translated
 
 ~105 commands, all output-matched against real GNU coreutils on Windows (Git Bash) during
