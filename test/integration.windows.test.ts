@@ -156,6 +156,19 @@ describe.skipIf(!hasPs)(`integration (real ${selectedPowerShell.executable})`, {
     expect(r.stdout).toMatch(/drwxr-xr-x.*sub/);
   });
 
+  it('rebuilds awk records after field assignment', async () => {
+    const normalized = await run("printf '   1    LA\\n   2    NYC\\n' | awk '{$1=$1; print}'");
+    expect(normalized.exitCode).toBe(0);
+    expect(normalized.stdout).toBe('1 LA\n2 NYC\n');
+    const reordered = await run("printf '   1    LA\\n   2    NYC\\n' | awk '{$1=$1; print $2, $1}'");
+    expect(reordered.stdout).toBe('LA 1\nNYC 2\n');
+    const extended = await run("printf 'a b\\n' | awk 'BEGIN {OFS=\":\"} {$4=\"x\"; print NF, $0}'");
+    expect(extended.exitCode).toBe(0);
+    expect(extended.stdout).toBe('4:a:b::x\n');
+    const original = await run("printf '  a   b\\n' | awk '{print}'");
+    expect(original.stdout).toBe('  a   b\n');
+  });
+
   it('grep + exit codes', async () => {
     expect((await run('grep -n apple fruits.txt')).stdout).toContain('1:apple');
     expect((await run('grep apple fruits.txt')).exitCode).toBe(0);

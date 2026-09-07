@@ -1369,6 +1369,7 @@ type AStmt =
   | { k: 'print'; args: AExpr[] }
   | { k: 'printf'; fmt: string; args: AExpr[] }
   | { k: 'assign'; name: string; op: string; e: AExpr }
+  | { k: 'fieldassign'; index: number; e: AExpr }
   | { k: 'exit'; code: AExpr | null };
 
 interface AwkItem {
@@ -1474,6 +1475,14 @@ class AwkParser {
     if (c === undefined) throw new FauxnixParseError('fauxnix: awk unexpected end of program');
     if (c === '{') {
       throw new FauxnixParseError('fauxnix: awk nested blocks are not supported yet');
+    }
+    if (c === '$') {
+      const assignment = this.s.slice(this.i).match(/^\$([1-9]\d*)\s*=(?!=)/);
+      if (!assignment || Number(assignment[1]) > 65535) {
+        throw new FauxnixParseError('fauxnix: awk field assignment requires $1..$65535 = expression; use print to construct other records');
+      }
+      this.i += assignment[0].length;
+      return { k: 'fieldassign', index: Number(assignment[1]), e: this.parseExpr() };
     }
     if (this.atWord('print')) {
       this.i += 5;
@@ -2090,7 +2099,7 @@ const awk: Handler = (args) => {
         if (st.args.length === 0) {
           out.push('$fx_line');
         } else {
-          out.push('(' + st.args.map((a) => '(fx-str ' + gen(a).ps + ')').join(" + ' ' + ") + ')');
+          out.push('(' + st.args.map((a) => '(fx-str ' + gen(a).ps + ')').join(' + (fx-str $fxv_OFS) + ') + ')');
         }
       } else if (st.k === 'printf') {
         const f = awkFmtToPs(st.fmt);
@@ -2108,6 +2117,12 @@ const awk: Handler = (args) => {
         });
         const argList = argExprs.length ? ' ' + argExprs.join(', ') : '';
         out.push('(' + f.ps + ' -f' + argList + ')');
+      } else if (st.k === 'fieldassign') {
+        out.push('$fx_fieldValue = (fx-str ' + gen(st.e).ps + ')');
+        out.push('if ($fx_flds.Count -lt ' + st.index + ") { $fx_flds += @('') * (" + st.index + ' - $fx_flds.Count) }');
+        out.push('$fx_flds[' + (st.index - 1) + '] = $fx_fieldValue');
+        out.push('$fx_nf = $fx_flds.Count');
+        out.push('$fx_line = ($fx_flds -join (fx-str $fxv_OFS))');
       } else if (st.k === 'assign') {
         const rhs = gen(st.e).ps;
         if (st.op === '=') {
@@ -2198,6 +2213,7 @@ const awk: Handler = (args) => {
   lines.push(...hoistedRegex);
 
   for (const v of prog.vars) lines.push('$fxv_' + v + ' = $null');
+  lines.push("$fxv_OFS = ' '", "$fx_line = ''", '$fx_flds = @()', '$fx_nf = 0');
   for (const [n, v] of vvars) {
     lines.push(
       '$fxv_' + n + ' = ' + (/^-?(\d+\.?\d*|\.\d+)$/.test(v) ? '[double]' + v : psStr(v)),

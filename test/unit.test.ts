@@ -61,6 +61,15 @@ import '../src/commands/install-all.js';
 
 /* ---------------------------- parser ---------------------------- */
 
+describe('awk field assignment compilation', () => {
+  it('accepts a literal field rebuild and rejects unsupported lvalues', () => {
+    expect(() => translateCommandList(parse("awk '{$1=$1; print}'"))).not.toThrow();
+    for (const command of ["awk '{$0=\"x\"}'", "awk '{$NF=1}'", "awk '{$65536=1}'", "awk '{$1+=1}'"]) {
+      expect(() => translateCommandList(parse(command))).toThrow(/field assignment/);
+    }
+  });
+});
+
 describe('parser', () => {
   it('parses a simple command with args', () => {
     const list = parse('ls -la /tmp');
