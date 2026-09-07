@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1146" height="717" viewBox="0 0 1146 717" font-family="'Microsoft YaHei','Microsoft YaHei UI',sans-serif">
+  <style>
+    .t { font-family: 'Microsoft YaHei','Microsoft YaHei UI',sans-serif; }
+    .m { font-family: 'Cascadia Code','JetBrains Mono',Consolas,'Microsoft YaHei',monospace; }
+  </style>
+
+  <!-- backdrop -->
+  <rect x="0" y="0" width="1146" height="717" fill="#121212"/>
+
+  <!-- terminal window -->
+  <rect x="28" y="24" width="1090" height="669" rx="18" fill="#1e1e1e" stroke="#2d2d2d" stroke-width="1.5"/>
+  <circle cx="66" cy="53" r="8" fill="#ff5f57"/>
+  <circle cx="94" cy="53" r="8" fill="#febc2e"/>
+  <circle cx="122" cy="53" r="8" fill="#28c840"/>
+  <text class="m" x="573" y="59" text-anchor="middle" font-family="'Cascadia Code','JetBrains Mono',Consolas,'Microsoft YaHei',monospace" font-size="18" fill="#808080">fauxnix - AI agent shell on Windows</text>
+  <line x1="28" y1="81" x2="1118" y2="81" stroke="#2d2d2d" stroke-width="1"/>
+
+  <!-- eyebrow: honesty qualifier -->
+  <text class="t" x="573" y="122" text-anchor="middle" font-family="'Microsoft YaHei','Microsoft YaHei UI',sans-serif" font-size="20" letter-spacing="4" fill="#808080">同一模型 同一任务 | 单机实测 n=1 | 方向性证据</text>
+
+  <!-- headline line 1 -->
+  <text class="t" x="573" y="196" text-anchor="middle" font-family="'Microsoft YaHei','Microsoft YaHei UI',sans-serif" font-size="62" font-weight="700" fill="#f0f0f0">PowerShell 正在让你的 AI</text>
+
+  <!-- giant punch word -->
+  <text class="t" x="573" y="424" text-anchor="middle" font-family="'Microsoft YaHei','Microsoft YaHei UI',sans-serif" font-size="220" font-weight="700" letter-spacing="30" fill="#f48771">变笨</text>
+
+  <!-- supporting numbers -->
+  <text class="t" x="573" y="500" text-anchor="middle" font-family="'Microsoft YaHei','Microsoft YaHei UI',sans-serif" font-weight="700"><tspan font-size="32" fill="#808080">kimi-k2-thinking 实测：</tspan><tspan font-size="46" fill="#f48771"> 慢 3.1 倍</tspan><tspan font-size="40" fill="#d4d4d4">，</tspan><tspan font-size="46" fill="#f48771">24 次报错</tspan></text>
+
+  <!-- mini terminal card: real output, bash syntax x native Windows command -->
+  <rect x="223" y="526" width="700" height="90" rx="10" fill="#141414" stroke="#2d2d2d" stroke-width="1"/>
+  <text class="m" x="253" y="563" font-family="'Cascadia Code','JetBrains Mono',Consolas,'Microsoft YaHei',monospace" font-size="17"><tspan fill="#6a9955">$ </tspan><tspan fill="#d4d4d4">X=$(ipconfig | grep -c IPv4); [[ $X -gt 0 ]] &amp;&amp; echo "online"</tspan></text>
+  <text class="m" x="253" y="593" font-family="'Cascadia Code','JetBrains Mono',Consolas,'Microsoft YaHei',monospace" font-size="17" fill="#6a9955">online</text>
+
+  <!-- subtitle -->
+  <text class="t" x="573" y="656" text-anchor="middle" font-family="'Microsoft YaHei','Microsoft YaHei UI',sans-serif" font-size="32" font-weight="700" fill="#d4d4d4">一个翻译层，让 Windows 成为 AI 的一等公民</text>
+
+  <!-- tagline -->
+  <text class="m" x="573" y="684" text-anchor="middle" font-family="'Cascadia Code','JetBrains Mono',Consolas,'Microsoft YaHei',monospace" font-size="17" fill="#569cd6">no VM | no WSL | no bash toolchain - npm install -g fauxnix-cli</text>
+</svg>

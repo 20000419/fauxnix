@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>fauxnix · B 站演示播放器</title>
+<style>
+  /* ===== 舞台:固定 1920×1080,等比缩放适配窗口 ===== */
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#101012; }
+  body {
+    background:radial-gradient(1200px 700px at 50% 38%, #18181c 0%, #101012 62%, #0c0c0e 100%);
+    font-family:"Cascadia Code","JetBrains Mono",Consolas,"Microsoft YaHei",monospace;
+    -webkit-font-smoothing:antialiased;
+  }
+  #viewport { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; }
+  #stage { width:1920px; height:1080px; position:relative; flex:none; transform-origin:center center; }
+
+  .scene {
+    position:absolute; inset:0; padding:64px 90px 96px;
+    opacity:0; transition:opacity .3s ease;
+    display:flex; flex-direction:column; align-items:center;
+  }
+  .scene.show { opacity:1; }
+
+  /* ===== 终端窗口(digest §6 视觉语言) ===== */
+  .term {
+    width:1440px; margin-top:118px;
+    background:#1e1e1e; border-radius:12px; overflow:hidden;
+    box-shadow:0 34px 90px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.06) inset;
+  }
+  .term.ps { background:#0a2a54; }              /* PowerShell 5.1 控制台蓝 */
+  .tbar { height:44px; position:relative; display:flex; align-items:center; padding:0 18px; background:rgba(255,255,255,.04); }
+  .dot { width:14px; height:14px; border-radius:50%; margin-right:9px; flex:none; }
+  .dot.r { background:#ff5f57; } .dot.y { background:#febc2e; } .dot.g { background:#28c840; }
+  .ttitle {
+    position:absolute; left:0; right:0; text-align:center; pointer-events:none;
+    color:#8a8a8a; font-size:18px; letter-spacing:.04em;
+  }
+  .tbody { padding:30px 36px 38px; min-height:430px; font-size:25px; line-height:1.62; }
+  .term.ps .tbody { font-size:22px; min-height:470px; }
+
+  .tline { white-space:pre-wrap; word-break:break-all; min-height:1.62em; }
+  .prompt { color:#6a9955; font-weight:600; }
+  .term.ps .prompt { color:#e8e8e8; font-weight:400; }
+  .cmd { color:#d4d4d4; }
+  .term.ps .cmd { color:#f5f5f5; }
+  .out { color:#c9c9c9; }
+  .err { color:#f48771; }
+  .comment { color:#808080; }
+  .term.ps .comment { color:#9db3cc; }
+
+  .cursor {
+    display:inline-block; width:.62em; height:1.18em; margin-left:2px;
+    background:#d4d4d4; vertical-align:text-bottom;
+    animation:blink 1.06s steps(1) infinite;
+  }
+  @keyframes blink { 50% { opacity:0; } }
+
+  /* 场景下方的说明字幕 */
+  .caption {
+    margin-top:34px; text-align:center; font-size:26px; line-height:1.5;
+    color:#569cd6; opacity:0; transform:translateY(8px);
+    transition:opacity .45s ease, transform .45s ease;
+  }
+  .caption.on { opacity:1; transform:none; }
+  .caption .sub { display:block; margin-top:6px; font-size:19px; color:#808080; }
+
+  /* 左下场景标签 */
+  .stag {
+    position:absolute; left:90px; bottom:52px;
+    font-size:18px; color:#5c5c60; letter-spacing:.08em;
+  }
+
+  /* ===== 标题卡 / 结尾卡 ===== */
+  .card-center { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; }
+  .rise { opacity:0; transform:translateY(22px); animation:rise .8s cubic-bezier(.2,.7,.2,1) forwards; }
+  @keyframes rise { to { opacity:1; transform:none; } }
+  .d1{animation-delay:.15s} .d2{animation-delay:.55s} .d3{animation-delay:1.0s}
+  .d4{animation-delay:1.5s} .d5{animation-delay:2.0s} .d6{animation-delay:2.5s}
+
+  .logo { font-size:148px; font-weight:700; letter-spacing:-.02em; color:#d4d4d4; }
+  .logo .prompt { font-weight:600; margin-right:.18em; }
+  .tagline { margin-top:30px; font-size:44px; color:#d4d4d4; font-family:"Microsoft YaHei","Cascadia Code",sans-serif; font-weight:600; letter-spacing:.02em; }
+  .tagline small { display:block; margin-top:16px; font-size:25px; font-weight:400; color:#808080; }
+  .pill {
+    margin-top:52px; padding:20px 42px; border-radius:999px;
+    border:1px solid rgba(86,156,214,.45); background:rgba(86,156,214,.08);
+    color:#d4d4d4; font-size:31px;
+  }
+  .pill .prompt { margin-right:.4em; }
+  .footline { position:absolute; bottom:52px; left:0; right:0; text-align:center; font-size:20px; color:#5c5c60; letter-spacing:.05em; }
+
+  /* ===== S4 benchmark 卡 ===== */
+  .bench { width:1560px; margin-top:88px; }
+  .bench h2 { font-family:"Microsoft YaHei","Cascadia Code",sans-serif; font-size:42px; font-weight:600; color:#d4d4d4; text-align:center; }
+  .bench .bhead-sub { margin-top:12px; text-align:center; font-size:21px; color:#808080; letter-spacing:.03em; }
+  .bgrid {
+    margin-top:46px; display:grid;
+    grid-template-columns:300px 1fr 1fr 1fr; column-gap:44px; row-gap:44px;
+    align-items:end;
+  }
+  .bcol-head { font-family:"Microsoft YaHei","Cascadia Code",sans-serif; font-size:26px; color:#a9a9a9; text-align:center; padding-bottom:14px; border-bottom:1px solid #333; }
+  .bcol-head.hero { color:#569cd6; font-weight:700; border-bottom-color:#569cd6; }
+  .bcol-head small { display:block; margin-top:6px; font-size:17px; color:#6e6e72; font-weight:400; }
+  .blabel { font-family:"Microsoft YaHei","Cascadia Code",sans-serif; font-size:25px; color:#a9a9a9; padding-bottom:10px; }
+  .blabel small { display:block; font-size:17px; color:#6e6e72; margin-top:4px; }
+  .bcell { text-align:center; }
+  .bnum { font-size:58px; font-weight:700; letter-spacing:-.01em; }
+  .bnum small { font-size:26px; font-weight:400; margin-left:4px; }
+  .c-ps  .bnum { color:#f48771; } .c-fx  .bnum { color:#569cd6; } .c-gb  .bnum { color:#9a9a9e; }
+  .btrack { margin-top:12px; height:14px; border-radius:7px; background:rgba(255,255,255,.06); overflow:hidden; }
+  .bbar { height:100%; width:0; border-radius:7px; transition:width 1.05s cubic-bezier(.25,.8,.25,1); }
+  .c-ps .bbar { background:#f48771; } .c-fx .bbar { background:#569cd6; box-shadow:0 0 14px rgba(86,156,214,.5); } .c-gb .bbar { background:#7d7d82; }
+  .bverdict { margin-top:44px; text-align:center; font-size:25px; color:#569cd6; opacity:0; transition:opacity .6s ease; }
+  .bverdict.on { opacity:1; }
+  .bhonest { margin-top:14px; text-align:center; font-size:18px; color:#6e6e72; opacity:0; transition:opacity .6s ease .25s; }
+  .bhonest.on { opacity:1; }
+
+  /* ===== S9 信誉卡 ===== */
+  .creds { display:flex; gap:56px; margin-top:150px; }
+  .cred {
+    width:470px; padding:52px 40px 46px; text-align:center;
+    background:rgba(255,255,255,.035); border:1px solid rgba(255,255,255,.08); border-radius:16px;
+    opacity:0; transform:translateY(24px); animation:rise .8s cubic-bezier(.2,.7,.2,1) forwards;
+  }
+  .cred .n { font-size:96px; font-weight:700; color:#569cd6; letter-spacing:-.02em; }
+  .cred:nth-child(2) .n { color:#6a9955; }
+  .cred .t { margin-top:10px; font-size:27px; color:#d4d4d4; font-family:"Microsoft YaHei","Cascadia Code",sans-serif; font-weight:600; }
+  .cred .s { margin-top:16px; font-size:19px; line-height:1.65; color:#808080; }
+  .cred-title { margin-top:120px; font-family:"Microsoft YaHei","Cascadia Code",sans-serif; font-size:40px; font-weight:600; color:#d4d4d4; }
+  .cred-sub { margin-top:14px; font-size:20px; color:#808080; }
+
+  /* ===== 播放器铬件(冻结/截图时隐藏) ===== */
+  #chrome { position:absolute; left:0; right:0; bottom:0; height:44px; pointer-events:none; }
+  #dots { position:absolute; left:50%; bottom:18px; transform:translateX(-50%); display:flex; gap:10px; pointer-events:auto; }
+  #dots i { width:9px; height:9px; border-radius:50%; background:#3a3a3e; cursor:pointer; transition:background .2s; }
+  #dots i.on { background:#569cd6; }
+  #hint { position:absolute; right:26px; bottom:16px; font-size:15px; color:#4c4c50; letter-spacing:.04em; }
+  #pauseBadge {
+    position:absolute; top:26px; right:30px; padding:10px 22px; border-radius:999px;
+    background:rgba(0,0,0,.6); border:1px solid rgba(255,255,255,.18);
+    color:#d4d4d4; font-size:18px; letter-spacing:.1em; display:none;
+  }
+  body.paused #pauseBadge { display:block; }
+  body.freeze #chrome, body.freeze #pauseBadge { display:none !important; }
+  body.freeze .scene { transition:none !important; opacity:1 !important; }
+  body.freeze .cursor { animation:none !important; }
+  body.freeze .rise, body.freeze .cred { animation:none !important; opacity:1 !important; transform:none !important; }
+  body.freeze .bbar { transition:none !important; }
+  body.freeze .caption, body.freeze .bverdict, body.freeze .bhonest { transition:none !important; }
+</style>
+</head>
+<body>
+<div id="viewport">
+  <div id="stage">
+    <div id="scenes"></div>
+    <div id="chrome">
+      <div id="dots"></div>
+      <div id="hint">空格 暂停 · ← → 场景 · R 重播</div>
+    </div>
+    <div id="pauseBadge">❚❚ 已暂停</div>
+  </div>
+</div>
+
+<script>
+'use strict';
+/* ============================================================
+ * fauxnix 演示播放器 —— 单文件"终端电影"
+ * 所有终端输出均为真实抓取(node dist/index.js / powershell 实跑),
+ * 禁止手写臆造。抓取环境:zh-CN Windows,仓库 merge 中间态。
+ * ============================================================ */
+
+/* ---------- 真实抓取数据 ---------- */
+const PS_PROMPT = 'PS D:\\github_project\\fauxnix> ';
+// powershell -NoProfile -Command "cat nope.txt" 真实输出(zh-CN 本地化红屏)
+const PS_ERROR = [
+  'cat : 找不到路径“D:\\github_project\\fauxnix\\nope.txt”，因为该路径不存在。',
+  '所在位置 行:1 字符: 1',
+  '+ cat nope.txt',
+  '+ ~~~~~~~~~~~~',
+  '    + CategoryInfo          : ObjectNotFound: (D:\\github_project\\fauxnix\\nope.txt:String) [Get-Content], ItemNotFoundException',
+  '    + FullyQualifiedErrorId : PathNotFound,Microsoft.PowerShell.Commands.GetContentCommand',
+];
+// node dist/index.js "cat nope.txt" → exit 1
+const FX_CAT_ERR = 'cat: nope.txt: No such file or directory';
+// node dist/index.js "ls -la src | head -2"
+const FX_LS = [
+  '-rw-r--r-- 1 lzy00 lzy00          5799 Sep  2 15:15 ast.ts',
+  '-rw-r--r-- 1 lzy00 lzy00          4771 Sep  2 15:01 cli.ts',
+];
+// node dist/index.js "grep -n 连接 gbk-demo.txt"(gbk-demo.txt 为真实 GBK 编码,临时文件已删)
+const FX_GBK = '2:数据库连接成功';
+// benchmark:docs/benchmark-deepseek-v4-pro.md(单机 n=1,方向性证据)
+const BENCH = [
+  { label:'工具调用', sub:'T1–T4',            unit:'',  ps:14,  fx:7,  gb:4  },
+  { label:'意外错误', sub:'error events',      unit:'',  ps:9,   fx:0,  gb:0  },
+  { label:'耗时',     sub:'T1–T4 总计',        unit:'s', ps:163, fx:66, gb:57 },
+];
+
+/* ---------- 全局状态 / URL 参数 ---------- */
+const params = new URLSearchParams(location.search);
+const state = {
+  token: 0,
+  paused: false,
+  freeze: params.get('freeze') === '1',
+  speed:  (() => { const s = parseFloat(params.get('speed') || '1'); return isFinite(s) && s > 0 ? s : 1; })(),
+};
+if (state.freeze) document.body.classList.add('freeze');
+
+class Cancel extends Error {}
+const cancelled = (my) => state.token !== my;
+
+/* 可被暂停/加速/取消的等待 */
+function wait(ms) {
+  if (state.freeze) return Promise.resolve();
+  const my = state.token;
+  return new Promise((resolve, reject) => {
+    let rem = ms / state.speed, last = performance.now();
+    requestAnimationFrame(function tick() {
+      if (cancelled(my)) return reject(new Cancel());
+      const now = performance.now();
+      if (!state.paused) rem -= now - last;
+      last = now;
+      if (rem <= 0) return resolve();
+      requestAnimationFrame(tick);
+    });
+  });
+}
+
+/* ---------- DOM 小工具 ---------- */
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;
+  return n;
+}
+function termWindow(title, isPS) {
+  const w = el('div', 'term' + (isPS ? ' ps' : ''));
+  const bar = el('div', 'tbar');
+  bar.append(el('span', 'dot r'), el('span', 'dot y'), el('span', 'dot g'), el('span', 'ttitle', title));
+  const body = el('div', 'tbody');
+  w.append(bar, body);
+  return { w, body };
+}
+/* 一行:提示符 + 命令区 + 光标 */
+function promptLine(body, promptText) {
+  const line = el('div', 'tline');
+  const p = el('span', 'prompt', promptText);
+  const cmd = el('span', 'cmd');
+  const cur = el('span', 'cursor');
+  line.append(p, cmd, cur);
+  body.appendChild(line);
+  return { line, cmd, cur };
+}
+function outLine(body, text, cls) {
+  body.appendChild(el('div', 'tline ' + (cls || 'out'), text));
+}
+
+/* 打字机:拟真击键节奏,逗号/管道/分号处微停顿 */
+async function typeInto(cmdEl, text, base) {
+  const my = state.token;
+  const b = base || 58;
+  if (state.freeze) { cmdEl.textContent = text; return; }
+  for (const ch of text) {
+    if (cancelled(my)) throw new Cancel();
+    cmdEl.textContent += ch;
+    let d = b * (0.55 + Math.random() * 0.9);
+    if (ch === ',') d += 230;
+    else if (ch === '|') d += 300;
+    else if (ch === ';') d += 190;
+    else if (ch === '&') d += 130;
+    else if (ch === '=' || ch === '(') d += 110;
+    await wait(d);
+  }
+}
+/* 逐行倾倒(红屏墙用) */
+async function dumpLines(body, lines, cls, per) {
+  const my = state.token;
+  for (const l of lines) {
+    if (cancelled(my)) throw new Cancel();
+    outLine(body, l, cls);
+    await wait(per == null ? 105 : per);
+  }
+}
+/* 数字滚动 + 条形生长(冻结时直达终态) */
+function animateStat(numEl, barEl, target, maxInRow, unit, dur) {
+  const my = state.token;
+  const setFinal = () => {
+    numEl.innerHTML = '';
+    numEl.append(document.createTextNode(String(target)));
+    if (unit) { const s = el('small'); s.textContent = unit; numEl.appendChild(s); }
+    barEl.style.width = (target === 0 ? 2.5 : (target / maxInRow) * 100) + '%';
+  };
+  if (state.freeze) { setFinal(); return; }
+  const t0 = performance.now(), D = (dur || 1000) / state.speed;
+  requestAnimationFrame(function tick() {
+    if (cancelled(my)) return;
+    const k = Math.min(1, (performance.now() - t0) / D);
+    const e = 1 - Math.pow(1 - k, 3);
+    numEl.firstChild.textContent = String(Math.round(target * e));
+    barEl.style.width = ((target === 0 ? 2.5 : (target / maxInRow) * 100) * e) + '%';
+    if (k < 1) requestAnimationFrame(tick); else setFinal();
+  });
+}
+
+/* ============================================================
+ * 场景定义
+ * ============================================================ */
+const SCENES = [
+  /* ---- S1 标题卡 ---- */
+  {
+    tag: 'S1 / 标题', hold: 4200,
+    async play(root) {
+      const c = el('div', 'card-center');
+      const logo = el('div', 'logo rise d1');
+      logo.append(el('span', 'prompt', '$'), document.createTextNode('fauxnix'));
+      const tg = el('div', 'tagline rise d2');
+      tg.append(document.createTextNode('bash → PowerShell 确定性翻译层'));
+      const small = el('small', null, '让 AI agent 在 Windows 上原生跑 Linux 风格命令');
+      tg.appendChild(small);
+      const pill = el('div', 'pill rise d3');
+      pill.append(el('span', 'prompt', '$'), document.createTextNode('npm install -g fauxnix-cli'));
+      const foot = el('div', 'footline rise d4', 'v0.10.0 · MIT · github.com/20000419/fauxnix');
+      c.append(logo, tg, pill);
+      root.append(c, foot);
+      await wait(2600);
+    },
+  },
+
+  /* ---- S2 PowerShell 现场:真实红屏墙 ---- */
+  {
+    tag: 'S2 / PowerShell 现场', hold: 5200,
+    async play(root) {
+      const { w, body } = termWindow('Windows PowerShell', true);
+      const cap = el('div', 'caption');
+      cap.append(document.createTextNode('错误很响，恢复很贵。'));
+      const sub = el('span', 'sub', 'benchmark T4 实录：字节数反复对不上，9 次调用、114 秒才爬出来');
+      cap.appendChild(sub);
+      root.append(w, cap);
+      const { cmd, cur } = promptLine(body, PS_PROMPT);
+      await wait(700);
+      await typeInto(cmd, 'cat nope.txt', 46);
+      cur.remove();
+      await wait(380);
+      await dumpLines(body, PS_ERROR, 'err', 115);
+      await wait(250);
+      cap.classList.add('on');
+    },
+  },
+
+  /* ---- S3 同一个命令,经 fauxnix ---- */
+  {
+    tag: 'S3 / 经 fauxnix', hold: 4200,
+    async play(root) {
+      const { w, body } = termWindow('fauxnix · 常驻 PowerShell 5.1 会话');
+      const cap = el('div', 'caption');
+      cap.append(document.createTextNode('同一个命令。一行，就是全部。'));
+      const sub = el('span', 'sub', '连中文版 Windows 的本地化报错，也归一化成标准英文 · exit 1');
+      cap.appendChild(sub);
+      root.append(w, cap);
+      const { cmd, cur } = promptLine(body, '$ ');
+      await wait(550);
+      await typeInto(cmd, 'cat nope.txt', 64);
+      cur.remove();
+      await wait(420);
+      outLine(body, FX_CAT_ERR, 'err');
+      await wait(300);
+      cap.classList.add('on');
+      const p2 = promptLine(body, '$ ');
+      p2.line.style.marginTop = '6px';
+    },
+  },
+
+  /* ---- S4 benchmark 数据卡 ---- */
+  {
+    tag: 'S4 / benchmark', hold: 7200,
+    async play(root) {
+      const b = el('div', 'bench');
+      const h2 = el('h2', null, '同一模型，同一 5 个任务，三种执行方式');
+      const hs = el('div', 'bhead-sub', 'DeepSeek-V4-Pro · 单机实测 n=1 · 方向性证据，非统计学结论');
+      const grid = el('div', 'bgrid');
+      grid.append(el('div'));
+      const heads = [
+        ['PowerShell 直写', 'Codex 在 Windows 的出厂配置', ''],
+        ['fauxnix', 'bash → PowerShell 翻译层', 'hero'],
+        ['Git Bash', '真 bash 上限', ''],
+      ];
+      for (const [t, s, cls] of heads) {
+        const hd = el('div', 'bcol-head ' + cls, t);
+        hd.appendChild(el('small', null, s));
+        grid.appendChild(hd);
+      }
+      const cells = [];
+      for (const row of BENCH) {
+        const lb = el('div', 'blabel', row.label);
+        lb.appendChild(el('small', null, row.sub));
+        grid.appendChild(lb);
+        const max = Math.max(row.ps, row.fx, row.gb);
+        for (const [val, cls] of [[row.ps, 'c-ps'], [row.fx, 'c-fx'], [row.gb, 'c-gb']]) {
+          const cell = el('div', 'bcell ' + cls);
+          const num = el('div', 'bnum', '0');
+          if (row.unit) { const s = el('small'); s.textContent = row.unit; num.appendChild(s); }
+          const track = el('div', 'btrack'); const bar = el('div', 'bbar');
+          track.appendChild(bar); cell.append(num, track); grid.appendChild(cell);
+          cells.push({ num, bar, val, max, unit: row.unit });
+        }
+      }
+      const verdict = el('div', 'bverdict', 'PowerShell 直写：2.5× 更慢、2× 调用、9 次意外错误 —— fauxnix 落在真 Git Bash 上限的 ~15% 以内');
+      const honest = el('div', 'bhonest', '且不需要任何 bash 工具链 · 来源 docs/benchmark-deepseek-v4-pro.md');
+      b.append(h2, hs, grid, verdict, honest);
+      root.appendChild(b);
+      // 三行依次滚动生长
+      for (let r = 0; r < BENCH.length; r++) {
+        const rowCells = cells.slice(r * 3, r * 3 + 3);
+        rowCells.forEach((c, i) => animateStat(c.num, c.bar, c.val, c.max, c.unit, 950 + i * 90));
+        await wait(620);
+      }
+      verdict.classList.add('on');
+      honest.classList.add('on');
+    },
+  },
+];
+
+/* ---- S5–S8 终端连播的通用工厂 ---- */
+function demoScene(tag, title, comment, command, outputLines, caption, capSub, opts) {
+  return {
+    tag, hold: (opts && opts.hold) || 3800,
+    async play(root) {
+      const { w, body } = termWindow(title);
+      const cap = el('div', 'caption');
+      cap.append(document.createTextNode(caption));
+      if (capSub) cap.appendChild(el('span', 'sub', capSub));
+      root.append(w, cap);
+      if (comment) outLine(body, comment, 'comment');
+      const { cmd, cur } = promptLine(body, '$ ');
+      await wait(500);
+      await typeInto(cmd, command, (opts && opts.base) || 60);
+      cur.remove();
+      await wait(400);
+      for (const l of outputLines) { outLine(body, l); await wait(140); }
+      await wait(280);
+      cap.classList.add('on');
+      const p2 = promptLine(body, '$ ');
+      p2.line.style.marginTop = '6px';
+    },
+  };
+}
+SCENES.push(
+  demoScene('S5 / GNU 长格式', 'fauxnix · 常驻 PowerShell 5.1 会话',
+    null, 'ls -la src | head -2', FX_LS,
+    'GNU 长格式列表，跑在 Windows 原生语义上', '违和感，正是卖点'),
+  demoScene('S6 / 管道', 'fauxnix · 常驻 PowerShell 5.1 会话',
+    null, 'grep -rn TODO src | wc -l', ['0'],
+    '递归搜索接管道计数 —— 0 个 TODO 欠债', '管道就是管道，不是语法糖'),
+  demoScene('S7 / 混用', 'fauxnix · 常驻 PowerShell 5.1 会话',
+    null, 'X=$(ipconfig | grep -c IPv4); [[ $X -gt 0 ]] && echo online', ['online'],
+    'Windows 原生命令，直接混进 bash 语法', '命令替换 · [[ 测试 · && 短路', { base: 54, hold: 4200 }),
+  demoScene('S8 / GBK 编码', 'fauxnix · 常驻 PowerShell 5.1 会话',
+    '# gbk-demo.txt：GBK 编码的日志（中文 Windows 的日常）', 'grep -n 连接 gbk-demo.txt', [FX_GBK],
+    '逐文件编码嗅探，GBK 照样命中', '同一文件，Git Bash 系 grep 0 命中（实测） · docs/comparison-built-in-shells.md'),
+);
+
+/* ---- S9 工程信誉卡 ---- */
+SCENES.push({
+  tag: 'S9 / 工程信誉', hold: 6400,
+  async play(root) {
+    const c = el('div', 'card-center');
+    c.style.justifyContent = 'flex-start';
+    c.append(el('div', 'cred-title', '宣传语会过时，工程证据不会'));
+    c.append(el('div', 'cred-sub', '每一项都能从仓库里独立验证'));
+    const row = el('div', 'creds');
+    const data = [
+      { n: '271',   t: '项测试',       s: '16 天 · 从 60 涨到 271\nCHANGELOG v0.10.0 官方口径' },
+      { n: '≥95%',  t: '字节级一致',   s: '每条语料与真 Git Bash 对拍\nstdout / stderr / exit code 三路比对' },
+      { n: '17',    t: '天 17 个版本', s: 'v0.1.0 → v0.10.0\n约每天一个 release' },
+    ];
+    const nums = [];
+    data.forEach((d, i) => {
+      const card = el('div', 'cred');
+      card.style.animationDelay = (0.2 + i * 0.35) + 's';
+      const n = el('div', 'n', state.freeze ? d.n : (i === 1 ? '≥0%' : '0'));
+      const t = el('div', 't', d.t);
+      const s = el('div', 's');
+      d.s.split('\n').forEach((line, j) => { if (j) s.appendChild(el('br')); s.append(document.createTextNode(line)); });
+      card.append(n, t, s); row.appendChild(card);
+      nums.push({ n, target: d.n, idx: i });
+    });
+    c.appendChild(row);
+    const foot = el('div', 'footline', '对拍语料每周一 06:00 UTC 定时 CI · 没有 Git Bash 的机器自动 skip，永不红');
+    root.append(c, foot);
+    // 数字滚动(≥95% 只做淡入,不做滚动)
+    for (const { n, target, idx } of nums) {
+      if (idx === 1) { if (!state.freeze) { await wait(400); n.textContent = target; } continue; }
+      const v = parseInt(target, 10), t0 = performance.now(), D = 1100 / state.speed, my = state.token;
+      if (state.freeze) { n.textContent = target; continue; }
+      await wait(400 + idx * 200);
+      requestAnimationFrame(function tick() {
+        if (cancelled(my)) return;
+        const k = Math.min(1, (performance.now() - t0) / D);
+        n.textContent = String(Math.round(v * (1 - Math.pow(1 - k, 3))));
+        if (k < 1) requestAnimationFrame(tick);
+      });
+    }
+    await wait(1500);
+  },
+});
+
+/* ---- S10 结尾卡 ---- */
+SCENES.push({
+  tag: 'S10 / 结尾', hold: 0, // 末场定格
+  async play(root) {
+    const c = el('div', 'card-center');
+    const pill = el('div', 'pill rise d1');
+    pill.style.fontSize = '40px';
+    pill.append(el('span', 'prompt', '$'), document.createTextNode('npm install -g fauxnix-cli'));
+    const slogan = el('div', 'tagline rise d2', 'no VM · no WSL · no bash toolchain');
+    slogan.style.color = '#569cd6';
+    slogan.style.fontFamily = '"Cascadia Code","JetBrains Mono",Consolas,monospace';
+    const link = el('div', 'rise d3', 'github.com/20000419/fauxnix');
+    link.style.cssText = 'margin-top:46px;font-size:30px;color:#808080;';
+    const honest = el('div', 'rise d4', '需要完整的真 bash 工具链？请用 WSL —— 这是官方口径');
+    honest.style.cssText = 'margin-top:18px;font-size:19px;color:#5c5c60;';
+    const replay = el('div', 'footline rise d5', 'MIT · v0.10.0 · 按 R 重播');
+    c.append(pill, slogan, link, honest);
+    root.append(c, replay);
+    await wait(2000);
+  },
+});
+
+/* ============================================================
+ * 播放器引擎
+ * ============================================================ */
+const stageEl = document.getElementById('scenes');
+const dotsEl = document.getElementById('dots');
+SCENES.forEach((_, i) => {
+  const d = el('i');
+  d.addEventListener('click', () => goto(i));
+  dotsEl.appendChild(d);
+});
+let current = 0;
+
+function updateChrome(i) {
+  [...dotsEl.children].forEach((d, j) => d.classList.toggle('on', j === i));
+}
+
+async function goto(i) {
+  state.token++;
+  const my = state.token;
+  current = (i + SCENES.length) % SCENES.length;
+  const old = stageEl.firstElementChild;
+  if (old && !state.freeze) {
+    old.classList.remove('show');
+    await wait(300).catch(() => {});
+  }
+  if (cancelled(my)) return;
+  stageEl.innerHTML = '';
+  const root = el('div', 'scene');
+  root.appendChild(el('div', 'stag', SCENES[current].tag));
+  stageEl.appendChild(root);
+  updateChrome(current);
+  requestAnimationFrame(() => root.classList.add('show'));
+  try {
+    await SCENES[current].play(root);
+    if (cancelled(my) || state.freeze) return;
+    if (current === SCENES.length - 1) return; // 末场定格
+    await wait(SCENES[current].hold);
+    if (cancelled(my)) return;
+    goto(current + 1);
+  } catch (e) {
+    if (!(e instanceof Cancel)) throw e;
+  }
+}
+
+/* ---------- 键盘交互 ---------- */
+document.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') {
+    e.preventDefault();
+    state.paused = !state.paused;
+    document.body.classList.toggle('paused', state.paused);
+  } else if (e.key === 'r' || e.key === 'R') {
+    goto(0);
+  } else if (e.key === 'ArrowRight') {
+    goto(current + 1);
+  } else if (e.key === 'ArrowLeft') {
+    goto(current - 1);
+  }
+});
+
+/* ---------- 舞台等比缩放 ---------- */
+function fit() {
+  const s = Math.min(innerWidth / 1920, innerHeight / 1080);
+  document.getElementById('stage').style.transform = 'scale(' + s + ')';
+}
+addEventListener('resize', fit);
+fit();
+
+/* ---------- 启动:?scene=N 从第 N 场开始(1 起) ---------- */
+let start = parseInt(params.get('scene') || '1', 10);
+if (!isFinite(start)) start = 1;
+goto(start - 1);
+</script>
+</body>
+</html>
