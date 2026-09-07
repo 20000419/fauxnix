@@ -111,6 +111,28 @@ describe.skipIf(!hasPs)(`integration (real ${selectedPowerShell.executable})`, {
     return r;
   }
 
+  it('keeps directory provenance when listing a parent and child together', async () => {
+    mkdirSync(join(dir, 'layout', 'lib'), { recursive: true });
+    writeFileSync(join(dir, 'layout', 'a.ts'), 'a');
+    writeFileSync(join(dir, 'layout', 'b.ts'), 'b');
+    writeFileSync(join(dir, 'layout', 'lib', 'c.ts'), 'c');
+    const grouped = await run('ls layout/ layout/lib/');
+    expect(grouped.exitCode).toBe(0);
+    expect(grouped.stdout).toBe('layout/:\na.ts\nb.ts\nlib\n\nlayout/lib/:\nc.ts\n');
+    const detailed = await run('ls -la layout/ layout/lib/');
+    expect(detailed.exitCode).toBe(0);
+    const sections = detailed.stdout.split('layout/lib/:\n');
+    expect(sections).toHaveLength(2);
+    expect(sections[0]).not.toMatch(/ c\.ts\n/);
+    expect(sections[1]).toMatch(/ c\.ts\n/);
+    const single = await run('ls layout/lib/');
+    expect(single.stdout).toBe('c.ts\n');
+    const directory = await run('ls -d layout/ layout/lib/');
+    expect(directory.stdout).toBe('layout/\nlayout/lib/\n');
+    const mixed = await run('ls layout/a.ts layout/lib/');
+    expect(mixed.stdout).toBe('layout/a.ts\n\nlayout/lib/:\nc.ts\n');
+  });
+
   it('cat reads files', async () => {
     const r = await run('cat fruits.txt');
     expect(r.stdout.split(/\r?\n/).filter(Boolean)).toEqual([
