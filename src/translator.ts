@@ -1499,13 +1499,13 @@ function wrapCwdPreamble(): string[] {
     '$script:fx_exit = 0',
     '$fx_prev = 0',
     'if ($env:FAUXNIX_PREV_EXIT) { try { $fx_prev = [int]$env:FAUXNIX_PREV_EXIT } catch { $fx_prev = 0 } }',
-    'if ($env:FAUXNIX_CWD) { try { Set-Location -LiteralPath $env:FAUXNIX_CWD } catch {} }',
+    'if ($env:FAUXNIX_CWD -and (Get-Location).ProviderPath -cne $env:FAUXNIX_CWD) { try { Set-Location -LiteralPath $env:FAUXNIX_CWD } catch {} }',
     // capture AFTER the session cwd is applied — OLDPWD must refer to the
     // shell's previous directory, not the host process' startup directory
     '$fx_oldcwd = (Get-Location).ProviderPath',
     // .NET APIs (ReadAllBytes & friends) resolve relative paths against the
     // process working directory, NOT the PS location — keep them in sync.
-    'try { [Environment]::CurrentDirectory = (Get-Location).ProviderPath } catch {}',
+    'try { if ([Environment]::CurrentDirectory -cne $fx_oldcwd) { [Environment]::CurrentDirectory = $fx_oldcwd } } catch {}',
   ];
 }
 
@@ -1521,12 +1521,20 @@ function wrapBodyAndPersist(body: string, exitProcess: boolean): string[] {
     '  $script:fx_exit = 1',
     '}',
     '# persist session cwd and environment for the next segment',
-    'try { [IO.File]::WriteAllText($env:FAUXNIX_CWD_FILE, (Get-Location).Path) } catch {}',
+    ...(exitProcess ? [
+      'try { [IO.File]::WriteAllText($env:FAUXNIX_CWD_FILE, (Get-Location).Path) } catch {}',
+    ] : [
+      'try { [FauxnixSessionState]::SaveCwd($env:FAUXNIX_CWD_FILE, (Get-Location).Path) } catch {}',
+    ]),
     'if ((Get-Location).Path -ne $fx_oldcwd) { $env:FAUXNIX_OLDPWD = $fx_oldcwd }',
     'try {',
-    '  $envObj = @{}',
-    '  Get-ChildItem Env: | ForEach-Object { $envObj[$_.Name] = $_.Value }',
-    '  [IO.File]::WriteAllText($env:FAUXNIX_ENV_FILE, (ConvertTo-Json $envObj -Compress))',
+    ...(exitProcess ? [
+      '  $envObj = @{}',
+      '  Get-ChildItem Env: | ForEach-Object { $envObj[$_.Name] = $_.Value }',
+      '  [IO.File]::WriteAllText($env:FAUXNIX_ENV_FILE, (ConvertTo-Json $envObj -Compress))',
+    ] : [
+      '  [FauxnixSessionState]::SaveEnvironment($env:FAUXNIX_ENV_FILE)',
+    ]),
     '} catch {}',
   ];
   if (exitProcess) lines.push('exit $script:fx_exit');
@@ -1998,7 +2006,7 @@ export function wrapScript(body: string, opts: WrapScriptOptions = {}): string {
       '  $fx_spoolUtf8 = New-Object System.Text.UTF8Encoding $false',
       '  try {',
       '    if (-not $term) {',
-      "      if ($env:FAUXNIX_NATIVE_SPOOL_DIR) { $fx_no = Join-Path $env:FAUXNIX_NATIVE_SPOOL_DIR (([guid]::NewGuid().ToString('N')) + '.out') }",
+      "      if ($env:FAUXNIX_NATIVE_SPOOL_DIR) { [void][IO.Directory]::CreateDirectory($env:FAUXNIX_NATIVE_SPOOL_DIR); $fx_no = Join-Path $env:FAUXNIX_NATIVE_SPOOL_DIR (([guid]::NewGuid().ToString('N')) + '.out') }",
       '      else { $fx_no = [IO.Path]::GetTempFileName() }',
       '    }',
       '    [void]$p.Start()',
@@ -2060,6 +2068,63 @@ if (-not ('FauxnixBoundedStream' -as [type])) {
   Add-Type -TypeDefinition @'
 using System;
 using System.IO;
+using System.Collections;
+using System.Text;
+public static class FauxnixSessionState {
+  private static string previousCwdPath;
+  private static string previousCwd;
+  private static string previousEnvironmentPath;
+  private static string previousEnvironment;
+  public static void SaveCwd(string path, string cwd) {
+    if (path == previousCwdPath && cwd == previousCwd && File.Exists(path)) return;
+    File.WriteAllText(path, cwd, new UTF8Encoding(false));
+    previousCwdPath = path;
+    previousCwd = cwd;
+  }
+  private static void AppendJsonString(StringBuilder json, string value) {
+    json.Append((char)34);
+    foreach (char c in value) {
+      if (c == (char)34 || c == (char)92) {
+        json.Append((char)92).Append(c);
+      } else if (c < 32 || Char.IsSurrogate(c)) {
+        json.Append((char)92).Append('u').Append(((int)c).ToString("x4"));
+      } else {
+        json.Append(c);
+      }
+    }
+    json.Append((char)34);
+  }
+  public static void SaveEnvironment(string path) {
+    // Keep a complete snapshot: merging with the parent's environment on a
+    // later restart would resurrect values removed by unset.
+    IDictionary environment = Environment.GetEnvironmentVariables();
+    var json = new StringBuilder(4096);
+    json.Append('{');
+    bool first = true;
+    var keys = new string[environment.Count];
+    environment.Keys.CopyTo(keys, 0);
+    Array.Sort(keys, StringComparer.Ordinal);
+    foreach (string key in keys) {
+      // These values are request transport metadata and are always supplied
+      // afresh by Node; changing them does not change persistent shell state.
+      if (String.Equals(key, "FAUXNIX_NATIVE_SPOOL_DIR", StringComparison.OrdinalIgnoreCase) ||
+          String.Equals(key, "FAUXNIX_PREV_EXIT", StringComparison.OrdinalIgnoreCase) ||
+          String.Equals(key, "FAUXNIX_STDIN_FILE", StringComparison.OrdinalIgnoreCase) ||
+          String.Equals(key, "FAUXNIX_CWD", StringComparison.OrdinalIgnoreCase)) continue;
+      if (!first) json.Append(',');
+      first = false;
+      AppendJsonString(json, key);
+      json.Append(':');
+      AppendJsonString(json, (string)environment[key]);
+    }
+    json.Append('}');
+    string current = json.ToString();
+    if (path == previousEnvironmentPath && current == previousEnvironment && File.Exists(path)) return;
+    File.WriteAllText(path, current, new UTF8Encoding(false));
+    previousEnvironmentPath = path;
+    previousEnvironment = current;
+  }
+}
 public sealed class FauxnixBoundedStream : Stream {
   private readonly MemoryStream inner;
   private readonly long limit;
