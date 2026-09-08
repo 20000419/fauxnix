@@ -3,14 +3,36 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import {
-  getDefaultEnvironment,
+  DEFAULT_INHERITED_ENV_VARS,
   StdioClientTransport,
 } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { describe, expect, it } from 'vitest';
 
 const onWindows = process.platform === 'win32';
 
+// Windows worker environments use case-sensitive JS lookups even though native
+// process environments do not. Keep the SDK allow-list, but resolve mixed-case
+// keys such as SystemRoot and Path before launching the MCP child.
+function mcpTestEnvironment(source: NodeJS.ProcessEnv): Record<string, string> {
+  const normalized = new Map(Object.entries(source).map(([key, value]) => [key.toUpperCase(), value]));
+  const inherited: Record<string, string> = {};
+  for (const key of DEFAULT_INHERITED_ENV_VARS) {
+    const value = normalized.get(key.toUpperCase());
+    if (value !== undefined && !value.startsWith('()')) inherited[key] = value;
+  }
+  return inherited;
+}
+
 describe.skipIf(!onWindows)('MCP compiled batch tool', () => {
+  it('keeps mixed-case Windows launch variables within the SDK allow-list', () => {
+    expect(mcpTestEnvironment({
+      SystemRoot: 'C:\\Windows',
+      Path: 'C:\\Windows\\System32',
+      Temp: '() { ignored; }',
+      UNRELATED_VALUE: 'not inherited',
+    })).toEqual({ SYSTEMROOT: 'C:\\Windows', PATH: 'C:\\Windows\\System32' });
+  });
+
   it('preflights every step and returns byte-exact per-step results in one call', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fauxnix-mcp-batch-'));
     const tsx = join(process.cwd(), 'node_modules', 'tsx', 'dist', 'cli.mjs');
@@ -19,7 +41,7 @@ describe.skipIf(!onWindows)('MCP compiled batch tool', () => {
       args: [tsx, 'src/index.ts', 'mcp'],
       cwd: process.cwd(),
       env: {
-        ...getDefaultEnvironment(),
+        ...mcpTestEnvironment(process.env),
         FAUXNIX_PS: process.env.FAUXNIX_PS ?? '',
       },
       stderr: 'pipe',
@@ -51,7 +73,7 @@ describe.skipIf(!onWindows)('MCP compiled batch tool', () => {
         stepsCompleted: number;
         steps: Array<{ id?: string; status: string; stdout?: string; exitCode?: number }>;
       };
-      expect(result.isError).not.toBe(true);
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
       expect(structured.stopReason).toBe('command_failed');
       expect(structured.stepsCompleted).toBe(4);
       expect(structured.steps[2].id).toBe('measure');
