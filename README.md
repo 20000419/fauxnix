@@ -6,7 +6,7 @@
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![20000419/fauxnix MCP server](https://glama.ai/mcp/servers/20000419/fauxnix/badges/score.svg)](https://glama.ai/mcp/servers/20000419/fauxnix)
 
-**Run Linux-style commands on Windows — natively, deterministically, with no VM and no WSL.**
+**Run Linux-style commands on Windows — natively, deterministically, no VM, no WSL.**
 
 fauxnix is a bash→PowerShell translation layer built for AI agents. Your agent keeps writing the
 bash it already knows (`ls -la | grep foo`, `find . -name '*.ts' | wc -l`, `kill -9 1234`), and
@@ -14,8 +14,15 @@ fauxnix deterministically translates each command into PowerShell, executes it n
 back output that looks like GNU/Linux: `ls -l` columns, bash-style error messages, coreutils exit
 codes, UTF-8/GBK handled automatically.
 
+One-command install for **Claude Code · Codex · OpenCode · Kimi Code · Qwen Code**, plus any MCP
+client. **109 translated commands · 400+ automated tests · 253-case differential corpus verified
+against real GNU coreutils · zero LLM calls at runtime.**
+
+## Try it now — no install
+
 ```bash
-npm install -g fauxnix-cli    # then point any MCP harness at `fauxnix mcp`
+npx fauxnix-cli@latest "ls -la src | head -3"
+npx fauxnix-cli@latest translate "find . -name '*.log' -mtime +7 -delete"
 ```
 
 ![fauxnix demo](docs/assets/demo.svg)
@@ -29,11 +36,98 @@ $ fauxnix "cat nope.txt"
 cat: nope.txt: No such file or directory        # not a PowerShell stack trace
 ```
 
+## Connect your agent — one command
+
+```bash
+npm install -g fauxnix-cli
+fauxnix install --claude     # or --codex / --opencode / --kimi / --qwen
+fauxnix doctor               # verifies encoding, harness config, and MCP round-trip
+```
+
+Idempotent; prints exactly what changed. Manual configurations below if you prefer to edit
+config files yourself.
+
+> npm package name is `fauxnix-cli` (the `fauxnix` name on npm belongs to an unrelated 2015
+> websocket library); the installed command is `fauxnix`. Requires Windows with PowerShell 5.1+
+> (built-in) and Node.js ≥ 18.
+
+<details>
+<summary><b>Manual config per harness</b></summary>
+
+**Claude Code**
+```bash
+claude mcp add fauxnix -- fauxnix mcp
+```
+
+**Codex** (`~/.codex/config.toml` or `codex mcp add fauxnix -- fauxnix mcp`)
+```toml
+[mcp_servers.fauxnix]
+command = "fauxnix"
+args = ["mcp"]
+```
+Note: in non-interactive `codex exec` mode, MCP tool calls are auto-denied by the approval
+layer; pass `--dangerously-bypass-approvals-and-sandbox` (or run interactively and approve
+once).
+
+**OpenCode** (`opencode.json`)
+```json
+{
+  "mcp": {
+    "fauxnix": { "type": "local", "command": ["fauxnix", "mcp"] }
+  }
+}
+```
+
+**Kimi Code** — MCP servers live in a JSON file, not the TOML config: `~/.kimi-code/mcp.json`
+```json
+{
+  "mcpServers": {
+    "fauxnix": { "command": "fauxnix", "args": ["mcp"] }
+  }
+}
+```
+
+**Qwen Code** (`~/.qwen/settings.json`)
+```bash
+fauxnix install --qwen
+```
+The installer preserves the rest of `settings.json` and writes an absolute Node + package-entry
+launcher so Qwen startup does not depend on its working directory or `PATH` order. See
+[the Qwen example](docs/examples/qwen.md) for the generated JSON shape.
+
+**Any MCP client** — stdio server: `fauxnix mcp`. The tool name is `bash` (override with
+`FAUXNIX_TOOL_NAME`). The tool description already teaches the model the supported subset, so no
+system-prompt changes are required.
+
+Copy-paste quickstarts with a 10-command smoke test per harness: [`docs/examples/`](docs/examples/)
+
+</details>
+
+The MCP session persists `cwd`, environment variables, `export`/`unset`, `cd -`/OLDPWD, and
+positional parameters (`set --` / `$1` / `"$@"`) across tool calls — it behaves like a logged-in
+shell, not a stateless `exec`. `$0` is the MCP tool name, not a Windows path.
+
+For workflows whose commands are already known, the MCP server also exposes `bash_batch`: it
+compiles every step before execution, runs the plan atomically in one session, and returns one
+structured result per step in a single MCP round trip (stops on first nonzero exit by default).
+
+```json
+{
+  "steps": [
+    { "id": "write", "command": "printf 'a\\r\\nb' > data.txt" },
+    { "id": "measure", "command": "wc -c data.txt" }
+  ]
+}
+```
+
+See [compiled MCP batch plans](docs/rfc-mcp-batch-plans.md) for timeout, budget, cancellation,
+and preflight semantics.
+
 ## Measured: your model is probably worse at PowerShell than you think
 
 Same model (DeepSeek-V4-Pro), same 5 tasks, three execution modes on one Windows machine —
 full data in [`docs/benchmark-deepseek-v4-pro.md`](docs/benchmark-deepseek-v4-pro.md) and
-[`docs/benchmark-ark-models.md](docs/benchmark-ark-models.md):
+[`docs/benchmark-ark-models.md`](docs/benchmark-ark-models.md):
 
 | | PowerShell | **fauxnix** | Git Bash |
 |---|---|---|---|
@@ -49,178 +143,44 @@ with no bash toolchain installed.
 
 LLM agents are dramatically better at bash than at PowerShell — bash dominates training data, so
 models on Windows often produce "looks right, doesn't run" commands (wrong quoting, `curl` that
-isn't curl, mojibake from codepage mismatches, inscrutable `CategoryInfo` error dumps). Existing
-solutions are either a full VM (WSL — heavy, wrong filesystem, separate environment) or plain
-shell wrappers (still PowerShell underneath).
+isn't curl, mojibake from codepage mismatches, inscrutable `CategoryInfo` error dumps).
+
+| | fauxnix | Git Bash | WSL | Raw PowerShell |
+|---|---|---|---|---|
+| agent writes plain bash | ✓ | ✓ | ✓ | ✗ |
+| only needs Node (no bash toolchain / VM) | ✓ | ✗ | ✗ (VM, GBs) | ✓ |
+| native Windows filesystem & environment | ✓ | mostly | ✗ (9P bridge) | ✓ |
+| GNU-exact output, verified | ✓ 253-case differential | ✓ (is GNU) | ✓ | ✗ |
+| CRLF / UTF-8 / GBK traps handled | ✓ | locale-dependent | ✓ | ✗ |
+
+**If Git Bash already works for you, keep it** — we literally use it as our differential-testing
+oracle. fauxnix is for when you can't or don't want to ship one: agent fleets where the bash
+toolchain drifts or isn't detected (the [Windows ARM64 Git-Bash detection
+failure](https://github.com/anthropics/claude-code/issues/73461) is a live example), CI runners,
+locked-down machines, or anywhere a single `npm install -g` is easier than a toolchain.
 
 fauxnix takes the third road: **translate, don't emulate**. A large, high-value subset of the
 Linux command line — file ops, text processing, process management, archives, networking basics —
 maps cleanly onto PowerShell + .NET. fauxnix implements that subset faithfully and *fails loudly
 and helpfully* on what it can't translate, so the agent never gets silently-wrong results.
-
-Labs now train computer-use agents on fleets of real desktops. Reporting in 2026 (*The
-Information*, widely repeated) has OpenAI buying tens of thousands of Mac mini / Mac Studio
-boxes — no screen, no keyboard — to reinforcement-learn agents that click, edit, test, and
-run bash workflows, and Anthropic renting Mac minis through AWS for the same class of work.
-That scoring environment is macOS. Windows users should not have to install a guest Unix to
-keep up: the agent keeps writing bash; fauxnix makes the Windows box answer like the box the
-agent was trained on. See [`docs/rfc-computer-use-windows.md`](docs/rfc-computer-use-windows.md).
-
-## Install
-
-```bash
-npm install -g fauxnix-cli
-```
-
-Or from source:
-
-```bash
-git clone https://github.com/20000419/fauxnix && cd fauxnix
-npm ci
-npm install -g .
-```
-
-> npm package name is `fauxnix-cli` (the `fauxnix` name on npm belongs to an
-> unrelated 2015 websocket library); the installed command is still `fauxnix`.
-
-Requires: Windows with PowerShell 5.1+ (built-in) and Node.js ≥ 18.
-
-PowerShell 7 is an opt-in, CI-tested tier:
-
-```powershell
-$env:FAUXNIX_PS = 'pwsh'
-fauxnix check                 # edition: Core
-```
-
-Set the variable before starting `fauxnix` or its MCP harness; restart the
-harness after changing it. Windows PowerShell 5.1 remains the default. Invalid
-values and a missing selected executable fail loudly rather than falling back.
-The default is pinned below `SystemRoot`; `pwsh.exe` is resolved once from
-absolute `PATH` directories, excluding the current working directory.
-See [PowerShell 7 support](docs/powershell-7.md).
-
-## Quick start
-
-```bash
-# one-off commands
-fauxnix "ls -la"
-fauxnix "grep -rn TODO src | wc -l"
-fauxnix "cat log.txt | grep -i error | sort | uniq -c"
-
-# see what a command becomes (great for debugging / learning PS)
-fauxnix translate "find . -name '*.log' -mtime +7 -delete"
-
-# check your environment
-fauxnix check
-fauxnix doctor                   # check + encoding, harness config, MCP
-
-# write user-level MCP config (idempotent; also --codex/--opencode/--kimi/--qwen)
-fauxnix install --claude
-
-# run the MCP stdio server (what agent harnesses connect to)
-fauxnix mcp
-```
-
-`translate` only renders a script and does not read command operands. Because
-`sed -f` needs a script file, translate-only mode asks you to use `-e` with
-inline script text; normal command execution continues to support `sed -f`.
-
-Unknown commands (git, node, npm, python, cargo, gh, docker, ...) are **passed through natively**
-with argv-style quoting. Windows `.cmd`/`.bat` shims necessarily pass through `cmd.exe`; fauxnix
-preserves its supported punctuation and fails loudly for `%`, embedded double quotes, NUL, and
-line breaks rather than passing a different argument.
-
-## Use with your agent harness
-
-fauxnix ships an MCP stdio server exposing a `bash` tool (plus `fauxnix_translate` and
-`fauxnix_session`). Point any MCP-capable harness at it with
-`fauxnix install --claude` (or `--codex` / `--opencode` / `--kimi` / `--qwen`).
-Idempotent; prints what changed. Manual configs below.
-
-- **Quickstarts** — copy-paste config + a 10-command smoke: [`docs/examples/`](docs/examples/)
-
-**Claude Code**
-```bash
-claude mcp add fauxnix -- fauxnix mcp
-```
-
-**Codex** (`~/.codex/config.toml` or `codex mcp add fauxnix -- fauxnix mcp`)
-```toml
-[mcp_servers.fauxnix]
-command = "fauxnix"
-args = ["mcp"]
-```
-Note: in non-interactive `codex exec` mode, MCP tool calls are auto-denied by
-the approval layer; pass `--dangerously-bypass-approvals-and-sandbox` (or run
-interactively and approve once).
-
-**OpenCode** (`opencode.json`)
-```json
-{
-  "mcp": {
-    "fauxnix": { "type": "local", "command": ["fauxnix", "mcp"] }
-  }
-}
-```
-
-**Kimi Code** — unlike the others, MCP servers live in a JSON file, not the
-TOML config: `~/.kimi-code/mcp.json`
-```json
-{
-  "mcpServers": {
-    "fauxnix": { "command": "fauxnix", "args": ["mcp"] }
-  }
-}
-```
-
-**Qwen Code** (`~/.qwen/settings.json`)
-```bash
-fauxnix install --qwen
-```
-The installer preserves the rest of `settings.json` and writes an absolute
-Node + package-entry launcher so Qwen startup does not depend on its working
-directory or `PATH` order. See [the Qwen example](docs/examples/qwen.md) for
-the generated JSON shape.
-
-**Any MCP client** — stdio server: `fauxnix mcp`. The tool name is `bash` (override with
-`FAUXNIX_TOOL_NAME`). Tool description already teaches the model the supported subset, so no
-system-prompt changes are required.
-
-The MCP session persists `cwd`, environment variables, `export`/`unset`, `cd -`/OLDPWD, and
-positional parameters (`set --` / `$1` / `"$@"`) across tool calls — it behaves like a logged-in
-shell, not a stateless `exec`. `$0` is the MCP tool name (`bash` / `FAUXNIX_TOOL_NAME`), not a
-Windows path.
-
-For a workflow whose commands are already known, the MCP server also exposes
-`bash_batch`. It compiles every step before execution, runs the plan atomically
-in the same session, and returns one structured result per step in a single MCP
-round trip. It stops on the first nonzero exit by default; use separate `bash`
-calls only when the model must inspect one result before deciding the next
-command. Byte-exact workflows should include `wc -c FILE` or `stat -c %s FILE`
-as a verification step instead of inferring CRLF byte counts.
-
-```json
-{
-  "steps": [
-    { "id": "write", "command": "printf 'a\\r\\nb' > data.txt" },
-    { "id": "measure", "command": "wc -c data.txt" }
-  ]
-}
-```
-
-See [compiled MCP batch plans](docs/rfc-mcp-batch-plans.md) for timeout,
-budget, cancellation, and preflight semantics.
+That matters as labs train computer-use agents on Mac fleets — the agent keeps writing bash;
+fauxnix makes the Windows box answer like the box the agent was trained on
+([RFC: computer-use parity](docs/rfc-computer-use-windows.md)).
 
 ## What's translated
 
-~105 commands, all output-matched against real GNU coreutils on Windows (Git Bash) during
-development:
+109 commands, output-matched against real GNU coreutils on Windows (Git Bash) during development:
 
 - **files**: `ls cp mv rm mkdir rmdir touch mktemp ln readlink realpath basename dirname stat file du df find chmod chown diff`
 - **text filters**: `grep egrep sed awk sort uniq cut tr` — sed/awk scripts are parsed while
   preparing an executable plan (unsupported constructs throw named errors, never silently
-  misbehave); inspect-only `translate` keeps `sed -f` file reads out of that path
+  misbehave)
 - **text I/O**: `echo printf cat head tail wc tee nl tac md5sum sha1sum sha256sum base64 seq yes xargs`
+- **shell/system**: `cd pwd export unset env printenv ps kill pkill pgrep sleep which type whoami
+  id groups date uname hostname uptime free nproc clear true false test [ [[ : pushd popd dirs sudo
+  timeout man history less more source . eval exit alias set shift`
+- **network**: `curl wget ping netstat ss ip ifconfig nslookup dig host`
+- **archives**: `tar gzip gunzip zcat zip unzip`
 
 The curated **agent-daily 60** carry a `CommandSpec`: unknown options fail with a GNU-style
 usage error instead of being ignored. The generated [`docs/command-specs.md`](docs/command-specs.md)
@@ -230,20 +190,18 @@ compile; `sed`/`awk`/`egrep` keep their command-specific parsers; `tar` remains 
 `tar.exe` so supported bsdtar options reach the executable. Implemented GNU holes include
 `cp -n` / `mv -n` / `touch -c` / `tee --append` / `grep -m` / `head --lines` /
 `du --max-depth` / `env -u` / `ps -f` / `command -V` / `date --date=@SECONDS`.
-- **shell/system**: `cd pwd export unset env printenv ps kill pkill pgrep sleep which type whoami
-  id groups date uname hostname uptime free nproc clear true false test [ [[ : pushd popd dirs sudo
-  timeout man history less more source . eval exit alias set shift`
-- **network**: `curl wget ping netstat ss ip ifconfig nslookup dig host`
-- **archives**: `tar gzip gunzip zcat zip unzip`
 
 Plus shell syntax: pipes, `&&` / `||` / `;`, redirections (`> >> 2> 2>&1 < &>`, `/dev/null`),
 quoting, `$VAR` `$1` `$#` `"$@"` `set --` `shift`, `${name:-word}` `${name//pat/str}`
 `${name:off:len}` `${name[n]}` `${#name[@]}`, `A=(x y z)` array assignment, `$(...)` command
 substitution, `VAR=x cmd` prefixes, `~` expansion, and POSIX-style path normalization
-(`/tmp`, `/d/foo` → `D:\foo`).
+(`/tmp`, `/d/foo` → `D:\foo`). Exit codes follow bash conventions: 0 ok, 1 fail, 2 usage/serious,
+127 command not found, 124 timeout.
 
-Exit codes follow bash conventions: 0 ok, 1 fail, 2 usage/serious, 127 command not found,
-124 timeout.
+Unknown commands (git, node, npm, python, cargo, gh, docker, ...) are **passed through natively**
+with argv-style quoting. Windows `.cmd`/`.bat` shims necessarily pass through `cmd.exe`; fauxnix
+preserves its supported punctuation and fails loudly for `%`, embedded double quotes, NUL, and
+line breaks rather than passing a different argument.
 
 ## How it works
 
@@ -257,13 +215,17 @@ agent ◀── GNU-style output, bash-style errors ◀── UTF-8 framed host 
 - Each command maps to a generator that emits a self-contained PowerShell block honoring the
   "Fauxnix contract": string-per-line stdout, `[Console]::Error.WriteLine` for bash-style
   stderr, `$script:fx_exit` for exit codes, `$input` for stdin.
-- The executor wraps every script with UTF-8 enforcement (`[Console]::OutputEncoding`,
-  `$OutputEncoding`, `chcp 65001`), decodes native output at the process boundary (UTF-8 by
-  default or GBK(936) in `ansi` mode), keeps host frames UTF-8, strips CLIXML serialization and
+- The executor wraps every script with UTF-8 enforcement, decodes native output at the process
+  boundary (UTF-8 by default or GBK(936) in `ansi` mode), strips CLIXML serialization and
   PowerShell noise from stderr, and rewrites common PowerShell errors (including zh-CN locale
-  messages) into bash phrasing.
+  messages) into bash phrasing. File reads are always sniffed per file (UTF-8 strict → GBK
+  fallback), so grep/sed/awk over GBK files works in either mode.
 - Scripts run via `-EncodedCommand` (UTF-16LE) and transparently fall back to a temp `.ps1` file
   when the 32 KB command-line limit would be exceeded.
+
+PowerShell 7 is an opt-in, CI-tested tier: set `FAUXNIX_PS=pwsh` before starting fauxnix or its
+MCP harness. The default is Windows PowerShell 5.1; invalid values fail loudly rather than
+falling back. See [PowerShell 7 support](docs/powershell-7.md).
 
 ## Known deviations (honest list)
 
@@ -275,17 +237,13 @@ fauxnix optimizes for the commands agents actually run. Documented deviations:
   word expansion precedes the temporary environment).
 - `yes` is capped at 65,536 lines — PS 5.1 pipelines cannot signal upstream producers to stop, so
   an unbounded `yes | head` would hang.
-- `tail -f`, `eval`, `alias`, heredocs,
-  `env -i`/`--ignore-environment`,
-  background `&`, and output/fd redirects (`>` `>>` `2>` `2>>` `&>` `&>>`
-  `2>&1` `1>&2`) on a non-last pipeline stage (`echo hi >f | cat`) are
-  rejected with operation-specific, actionable error messages instead of
-  misbehaving. Per-stage `<` remains supported; fully routed per-stage output
-  fds are still tracked by #157.
-  (`if/then/elif/else/fi`, `for x in ...`, `while`/`until`, `case ... esac` (`;;` only; `;&`/`;;&` fail loud),
-  backtick substitution, `command -v`, pipeline `read`,
-  dotenv-style `source`, word-level `$((...))` arithmetic expansion, `A=(x y z)` arrays, and
-  `${name//pat/str}` / `${name:off:len}` are supported.)
+- `tail -f`, `eval`, `alias`, heredocs, `env -i`/`--ignore-environment`, background `&`, and
+  output/fd redirects on a non-last pipeline stage are rejected with operation-specific,
+  actionable error messages instead of misbehaving. Per-stage `<` remains supported.
+  (`if/then/elif/else/fi`, `for x in ...`, `while`/`until`, `case ... esac` (`;;` only),
+  backtick substitution, `command -v`, pipeline `read`, dotenv-style `source`, word-level
+  `$((...))` arithmetic expansion, `A=(x y z)` arrays, and `${name//pat/str}` /
+  `${name:off:len}` are supported.)
 - `command -v <builtin>` prints `/usr/bin/<name>` where bash prints the bare builtin name;
   exit codes and empty-result semantics match.
 - `chmod` maps only the read-only bit; exec bits are no-ops on Windows. `chown` is a silent no-op
@@ -298,13 +256,11 @@ fauxnix optimizes for the commands agents actually run. Documented deviations:
   "not supported" errors at translate time.
 - `curl`/`wget` refuse loopback/private/reserved addresses (localhost, 127.x, ::1, 10.x,
   172.16–31.x, 192.168.x, 169.254.x) as a safety default for agent-driven HTTP.
-- **Native-tool pipelines vs encoding**: PS 5.1 has a single console-encoding knob, so
-  piping localized admin tools (ipconfig, tasklist — GBK on zh-CN) and UTF-8-native dev
-  tools (node, curl) cannot both decode cleanly mid-pipeline. Default favors UTF-8 dev
-  tools; set `FAUXNIX_NATIVE_ENCODING=ansi` when your agents grep Chinese output of
-  native Windows admin tools. **File reads are always sniffed per file** (UTF-8 strict →
-  GBK fallback), so grep/sed/awk over GBK *files* works in either mode — unlike Git Bash,
-  which only matches the encoding its locale assumes.
+- **Native-tool pipelines vs encoding**: PS 5.1 has a single console-encoding knob, so piping
+  localized admin tools (ipconfig, tasklist — GBK on zh-CN) and UTF-8-native dev tools (node,
+  curl) cannot both decode cleanly mid-pipeline. Default favors UTF-8 dev tools; set
+  `FAUXNIX_NATIVE_ENCODING=ansi` when your agents grep Chinese output of native Windows admin
+  tools.
 
 ## Development
 
@@ -316,14 +272,17 @@ npm run build
 npx tsx scratch/run.mjs "any bash command"   # quick live check
 ```
 
-Differential vs Git Bash is opt-in (`FAUXNIX_DIFF_ORACLE=1`; skips if unset or `bash.exe` is missing — Git Bash is not required). See [`test/differential/README.md`](test/differential/README.md). The 253-case corpus enforces the RFC C-7 minimum of 200 cases and a 95% identity gate. The weekly oracle runs from `.github/workflows/differential.yml`; two consecutive green **scheduled** runs are still required release evidence after this gate lands.
+Differential vs Git Bash is opt-in (`FAUXNIX_DIFF_ORACLE=1`; skips if unset or `bash.exe` is
+missing — Git Bash is not required). See [`test/differential/README.md`](test/differential/README.md).
+The 253-case corpus enforces the RFC C-7 minimum of 200 cases and a 95% identity gate; the weekly
+oracle runs from `.github/workflows/differential.yml`.
 
 Architecture map: `src/parser.ts` (bash subset → AST) · `src/translator.ts` (AST → PowerShell +
 executor wrapper) · `src/executor.ts` (spawn, redirects, session persistence) ·
 `src/commands/*.ts` (per-command generators) · `src/mcp.ts` (MCP server) · `src/cli.ts`.
 
-Roadmap: [docs/rfc-roadmap-to-1.0.md](docs/rfc-roadmap-to-1.0.md) — tracks, milestones,
-and the RFC process for proposing waves.
+Roadmap: [docs/rfc-roadmap-to-1.0.md](docs/rfc-roadmap-to-1.0.md) — tracks, milestones, and the
+RFC process for proposing waves.
 
 ## Security
 
