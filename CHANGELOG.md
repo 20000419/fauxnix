@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.13.0 — 2026-09-10
+
+Post-rc.1 batch: the multi-step MCP round-trip tax, addressed (#215-#219, by vulragrag-star):
+
+- **`bash_batch` MCP tool** (#215, RFC #214): preplanned multi-step workflows execute
+  in one MCP round trip — every step compiles before anything runs, the plan executes
+  atomically in the resident session, each step returns a structured result, and the
+  default stops on the first nonzero exit. Use it when the command sequence is already
+  known; keep separate `bash` calls when the model must inspect one result before
+  deciding the next command.
+- **awk literal field assignment** (#217): `$1=$1`-style assignments rebuild the record
+  (the classic whitespace-normalize idiom now works).
+- **Resident session checkpoints** (#218): compiled session state is checkpointed and
+  reused instead of re-derived, cutting warm-call latency further; mixed-case Windows
+  MCP launch environments are preserved.
+- **`ls` multi-operand directory context** (#216): listings across several directories
+  keep per-operand directory context instead of collapsing to the last one.
+- **README v2** (#219): zero-install `npx` quickstart above the fold, agent-connect-first
+  install section, comparison table (vs Git Bash / WSL / raw PowerShell), honest
+  "if Git Bash works for you, keep it" framing.
+
+445 tests (+1 environment-skipped). 253-case Git Bash differential corpus. npm: `npm i -g fauxnix-cli`
+
 ## v0.12.0 — 2026-09-03
 
 Roadmap v2 complete — all 19 items shipped (#172-#192, by r3wretrhy and vulragrag-star):
