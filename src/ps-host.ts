@@ -35,7 +35,14 @@ class NativeStderrSpoolError extends Error {
   }
 }
 
-const READY_TIMEOUT_MS = 30_000;
+// First-ready-line budget. 30s covers every dev machine measured; contended CI
+// runners cold-booting powershell.exe under full test parallelism have exceeded it,
+// so FAUXNIX_HOST_READY_TIMEOUT_MS (milliseconds, minimum 1000) widens the budget
+// without changing the default.
+const READY_TIMEOUT_MS = (() => {
+  const raw = Number(process.env.FAUXNIX_HOST_READY_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw >= 1000 ? raw : 30_000;
+})();
 
 export const DEFAULT_STDOUT_LIMIT = 8_388_608;
 export const DEFAULT_STDERR_LIMIT = 1_048_576;
