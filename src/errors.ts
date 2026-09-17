@@ -139,5 +139,10 @@ export function normalizeStderr(stderr: string): string {
     return line;
   });
 
-  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  // GNU stderr lines are newline-terminated; bash guarantees a separating
+  // newline when 2>&1 merges stderr into a following stdout chunk (#222).
+  // Leading blank lines are PS boot noise; collapse runs of blanks only.
+  const joined = out.join('\n').replace(/\n{3,}/g, '\n\n');
+  if (!joined.trim()) return '';
+  return joined.replace(/^\n+/, '').replace(/[\r\n]+$/, '\n');
 }

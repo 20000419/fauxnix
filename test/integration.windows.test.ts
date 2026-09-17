@@ -1056,7 +1056,8 @@ describe.skipIf(!hasPs)(`integration (real ${selectedPowerShell.executable})`, {
     await run('cd sub');
     const r = await run('pwd');
     expect(r.stdout).toContain('/sub');
-    expect(r.stdout).toMatch(/C:\/.*Temp.*\/sub/);
+    // GNU rendering (#223): bash prints the POSIX drive form /c/...
+    expect(r.stdout).toMatch(/^\/[a-z]\/.*Temp.*\/sub/);
     // restore for subsequent tests — also exercises `cd -` (OLDPWD)
     const back = await run('cd - && pwd');
     expect(back.exitCode).toBe(0);
@@ -1476,7 +1477,10 @@ describe.skipIf(!hasPs)(`integration (real ${selectedPowerShell.executable})`, {
 
   it('daily-60 sysinfo implemented options preserve their documented semantics', async () => {
     const logicalPwd = (await run('pwd -L')).stdout.trim();
-    expect(realpathSync.native(logicalPwd).toLowerCase()).toBe(realpathSync.native(dir).toLowerCase());
+    // GNU rendering (#223): pwd prints /c/Users/...; convert back for the
+    // native realpath comparison.
+    const asWindows = logicalPwd.replace(/^\/([a-z])\//i, (_m, drive: string) => drive.toUpperCase() + ':/');
+    expect(realpathSync.native(asWindows).toLowerCase()).toBe(realpathSync.native(dir).toLowerCase());
     const physical = await run('pwd -P');
     expect(physical.exitCode).toBe(2);
     expect(physical.stderr).toContain('physical symlink/junction resolution');
@@ -2950,5 +2954,63 @@ describe.skipIf(!hasPs)(
         await extra.dispose();
       }
     }, 60_000);
+  },
+);
+
+describe.skipIf(!hasPs)(
+  'GNU rendering at process boundaries (#222/#223)',
+  { timeout: 60_000, hookTimeout: 60_000 },
+  () => {
+    let session: FauxnixSession;
+    let dir: string;
+    beforeAll(async () => {
+      session = new FauxnixSession();
+      dir = mkdtempSync(join(tmpdir(), 'fauxnix-gnu-render-'));
+      mkdirSync(join(dir, 'sub'));
+      await session.prewarm();
+      await session.run(translateCommandList(parseCommand('cd ' + JSON.stringify(dir))));
+    });
+    afterAll(async () => {
+      await session.dispose();
+      rmSync(dir, { recursive: true, force: true });
+    });
+    const run = (cmd: string) => session.run(translateCommandList(parseCommand(cmd)));
+
+    it('merged stderr keeps the separating newline before later stdout (#222)', async () => {
+      const r = await run('ls nope.txt 2>&1; echo rc=$?');
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toBe(
+        "ls: cannot access 'nope.txt': No such file or directory\nrc=2\n",
+      );
+    });
+
+    it('stderr is newline-terminated like GNU tools (#222)', async () => {
+      const r = await run('ls nope.txt');
+      expect(r.exitCode).toBe(2);
+      expect(r.stderr).toBe("ls: cannot access 'nope.txt': No such file or directory\n");
+    });
+
+    it('pwd prints the POSIX-form cwd (#223)', async () => {
+      const r = await run("cd sub && pwd");
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toMatch(/^\/[a-z]\/.*\/sub\n$/);
+      expect(r.stdout).not.toMatch(/:/);
+    });
+
+    it('$PWD, $OLDPWD, cd - echo, and dirs agree on POSIX form (#223)', async () => {
+      // absolute target: the previous test left the session cwd inside sub/
+      const r = await run(
+        `cd ${JSON.stringify(join(dir, 'sub'))} && cd - && echo "PWD=$PWD" "OLD=$OLDPWD" && dirs`,
+      );
+      expect(r.exitCode).toBe(0);
+      const lines = r.stdout.split('\n');
+      // cd - echoes the new cwd; $PWD/$OLDPWD/dir entries are all /drive/... form
+      for (const line of lines) {
+        if (!line) continue;
+        expect(line).toMatch(/(^|[= ])\/[a-z]\//);
+      }
+      // no Windows drive-letter form anywhere in the rendered output
+      expect(r.stdout).not.toMatch(/[A-Za-z]:[\\/]/);
+    });
   },
 );

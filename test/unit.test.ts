@@ -707,7 +707,7 @@ describe('parser', () => {
 describe('translator', () => {
   it('maps shell variables', () => {
     expect(varExpr('HOME')).toBe('$HOME');
-    expect(varExpr('PWD')).toBe('$PWD.Path');
+    expect(varExpr('PWD')).toBe('fx-posix([string]$PWD.Path)');
     expect(varExpr('USER')).toBe('$env:USERNAME');
     expect(varExpr('?')).toBe('[string]$fx_prev');
     expect(varExpr('1')).toContain('fx-posget');
