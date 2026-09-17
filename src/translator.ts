@@ -311,7 +311,7 @@ export function varExpr(
     case 'HOME':
       return '$HOME';
     case 'PWD':
-      return '$PWD.Path';
+      return 'fx-posix([string]$PWD.Path)';
     case 'USER':
     case 'LOGNAME':
       return '$env:USERNAME';
@@ -322,7 +322,7 @@ export function varExpr(
     case 'TERM':
       return "'xterm-256color'";
     case 'OLDPWD':
-      return '$env:FAUXNIX_OLDPWD';
+      return 'fx-posix([string]$env:FAUXNIX_OLDPWD)';
     case '?':
       return '[string]$fx_prev';
     case '$':
@@ -1416,6 +1416,7 @@ const WRAP_HELPER_ORDER = [
   'fx-winargv',
   'fx-cmdargv',
   'fx-native',
+  'fx-posix',
 ] as const;
 
 type WrapHelper = (typeof WRAP_HELPER_ORDER)[number];
@@ -1445,6 +1446,7 @@ const WRAP_HELPER_DEPS: Record<WrapHelper, WrapHelper[]> = {
   'fx-winargv': [],
   'fx-cmdargv': ['fx-winargv'],
   'fx-native': ['fx-cmdargv'],
+  'fx-posix': [],
 };
 
 /** Helpers the body calls that wrapScript still has to emit (not already defined there). */
@@ -1690,12 +1692,12 @@ export function wrapScript(body: string, opts: WrapScriptOptions = {}): string {
       '    if ($fx_pair.Substring(0, $fx_eq) -ceq $n) { return (fx-svdec $fx_pair.Substring($fx_eq + 1)) }',
       '  }',
       "  if ($n -ceq 'HOME') { return [string]$HOME }",
-      "  if ($n -ceq 'PWD') { return [string]$PWD.Path }",
+      "  if ($n -ceq 'PWD') { return fx-posix([string]$PWD.Path) }",
       "  if ($n -ceq 'USER' -or $n -ceq 'LOGNAME') { return [string]$env:USERNAME }",
       "  if ($n -ceq 'PATH') { return [string]$env:PATH }",
       "  if ($n -ceq 'SHELL') { return 'powershell' }",
       "  if ($n -ceq 'TERM') { return 'xterm-256color' }",
-      "  if ($n -ceq 'OLDPWD') { return $(if ($env:FAUXNIX_OLDPWD) { [string]$env:FAUXNIX_OLDPWD } else { $null }) }",
+      "  if ($n -ceq 'OLDPWD') { return $(if ($env:FAUXNIX_OLDPWD) { fx-posix([string]$env:FAUXNIX_OLDPWD) } else { $null }) }",
       "  if ($n -ceq 'HOSTNAME') { return [string]$env:COMPUTERNAME }",
       '  $ev = Get-ChildItem Env: | Where-Object { $_.Name -ceq $n } | Select-Object -First 1',
       '  if ($ev) { return [string]$ev.Value }',
@@ -1805,6 +1807,13 @@ export function wrapScript(body: string, opts: WrapScriptOptions = {}): string {
       '    } catch {}',
       '  }',
       '  return $false',
+      '}',
+    ],
+    'fx-posix': [
+      'function fx-posix($p) {',
+      '  $p = ([string]$p).Replace(\'\\\', \'/\')',
+      "  if ($p -match '^[A-Za-z]:') { return '/' + $p.Substring(0, 1).ToLower() + $p.Substring(2) }",
+      '  return $p',
       '}',
     ],
     'fx-subst': [

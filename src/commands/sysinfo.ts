@@ -189,7 +189,8 @@ const cd: Handler = (args) => {
   if (wordToString(operandWords[0]) === '-') {
     return [
       "if (-not $env:FAUXNIX_OLDPWD) { [Console]::Error.WriteLine('bash: cd: OLDPWD not set'); $script:fx_exit = 1 }",
-      'else { try { Set-Location -LiteralPath $env:FAUXNIX_OLDPWD } catch { [Console]::Error.WriteLine("bash: cd: " + $env:FAUXNIX_OLDPWD + ": No such file or directory"); $script:fx_exit = 1 } }',
+      // bash echoes the new cwd for `cd -` (and CDPATH hits); $OLDPWD/$PWD agree (#223).
+      'else { try { Set-Location -LiteralPath $env:FAUXNIX_OLDPWD; fx-posix((Get-Location).Path) } catch { [Console]::Error.WriteLine("bash: cd: " + $env:FAUXNIX_OLDPWD + ": No such file or directory"); $script:fx_exit = 1 } }',
     ].join('\n');
   }
   return [
@@ -206,7 +207,8 @@ const pwd: Handler = (args) => {
   const { operandWords } = parseWords(args);
   if (operandWords.length > 0) return psErr('pwd', "extra operand '" + wordToString(operandWords[0]) + "'. Try 'pwd --help'.");
   // -L is the default. CommandSpec rejects -P because junctions make it distinct.
-  return "(Get-Location).Path.Replace('\\', '/')";
+  // bash renders the cwd POSIX-form (/d/foo); $PWD and `cd -` must agree (#223).
+  return 'fx-posix((Get-Location).Path)';
 };
 
 /* ------------------------------------------------------------------ */
@@ -1634,12 +1636,12 @@ const FX_ENVGET_FN = [
   "  if (@($env:FAUXNIX_UNSETVARS -split ';' | Where-Object { $_ -ceq $n }).Count -gt 0) { return '' }",
   "  if (@($env:FAUXNIX_SETVARS -split ';' | Where-Object { $_ -ceq $n }).Count -gt 0) { return (fx-envexplicit $n) }",
   "  if ($n -ceq 'HOME') { return [string]$HOME }",
-  "  if ($n -ceq 'PWD') { return [string]$PWD.Path }",
+  "  if ($n -ceq 'PWD') { return fx-posix([string]$PWD.Path) }",
   "  if ($n -ceq 'USER' -or $n -ceq 'LOGNAME') { return [string]$env:USERNAME }",
   "  if ($n -ceq 'PATH') { return [string]$env:PATH }",
   "  if ($n -ceq 'SHELL') { return 'powershell' }",
   "  if ($n -ceq 'TERM') { return 'xterm-256color' }",
-  "  if ($n -ceq 'OLDPWD') { return [string]$env:FAUXNIX_OLDPWD }",
+  "  if ($n -ceq 'OLDPWD') { return fx-posix([string]$env:FAUXNIX_OLDPWD) }",
   "  if ($n -ceq '?') { return [string]$fx_prev }",
   "  if ($n -ceq '$') { return [string]$PID }",
   "  if ($n -ceq 'HOSTNAME') { return [string]$env:COMPUTERNAME }",
@@ -2540,9 +2542,9 @@ const DIRS_STACK_PS = [
 ].join('\n');
 
 const DIRS_PRINT_PS = [
-  '$fx_l = @((Get-Location).Path)',
-  'foreach ($fx_s in $fx_st) { $fx_l += $fx_s }',
-  "($fx_l -join ' ').Replace('\\', '/')",
+  '$fx_l = @(fx-posix((Get-Location).Path))',
+  'foreach ($fx_s in $fx_st) { $fx_l += fx-posix($fx_s) }',
+  "($fx_l -join ' ')",
 ].join('\n');
 
 const dirs: Handler = () => {
