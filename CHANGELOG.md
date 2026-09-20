@@ -1,5 +1,34 @@
 # Changelog
 
+## v1.0.0 — 2026-09-21
+
+**The stability release.** 1.0 means: interfaces (CLI, MCP tools, session semantics) are
+stable under semver from here, and the claim "an agent trained on bash can work on Windows
+through fauxnix without noticing it isn't bash" is verifiable from this repository alone.
+
+Since v0.13.0:
+
+- **GNU rendering at process boundaries** (#225, fixes #222/#223): stderr is
+  newline-terminated like GNU tools, so `2>&1` merges keep the separating newline; and the
+  cwd renders POSIX-form (`/d/foo`) across `pwd`, `$PWD`, `$OLDPWD`, `dirs`, and the `cd -`
+  echo. Differential oracle: **250/253 byte-identical (98.8%)** vs real Git Bash.
+- **Widenable host ready timeout** (#221, for #220): `FAUXNIX_HOST_READY_TIMEOUT_MS` widens
+  the 30s first-ready budget on contended CI runners; shipped default unchanged.
+
+1.0 gate evidence (all in-repo):
+
+- 14-day rc.1 soak (2026-09-07 → 09-21) with **zero P1/P2 findings**
+- differential corpus: 253 cases, ≥95% gate — currently **98.8%**; two consecutive green
+  **scheduled** oracle runs (2026-09-07, 2026-09-14)
+- locale matrix (zh-CN + en-US error wording pinned), ARM64 lane, PS 5.1 + PS 7 lanes green
+- release-check gate: clean tagged commit, CHANGELOG↔package.json lockstep
+- second external audit round: invited 2026-09-07; no response by ship date — recorded here
+  honestly. The automated gates above carried the release; the audit invitation stays open
+  for a post-1.0 pass.
+
+449 tests (+1 environment-skipped). 109 translated commands. 21 releases in 35 days.
+npm: `npm i -g fauxnix-cli`
+
 ## v0.13.0 — 2026-09-10
 
 Post-rc.1 batch: the multi-step MCP round-trip tax, addressed (#215-#219, by vulragrag-star):
