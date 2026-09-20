@@ -123,6 +123,14 @@ structured result per step in a single MCP round trip (stops on first nonzero ex
 See [compiled MCP batch plans](docs/rfc-mcp-batch-plans.md) for timeout, budget, cancellation,
 and preflight semantics.
 
+### Experimental: native shell facade
+
+`fauxnix facade` (experimental) implements the bash **process** contract — `facade -c "<cmd>"`
+one-shots with bash argv semantics (`$0`/`$1` from trailing operands) and a persistent stdin
+session with `<bash-input>` markers — so a harness can eventually point its built-in Bash tool
+at a fauxnix-backed `bash.exe` instead of an MCP sidecar, with zero protocol round trips.
+Status, launcher strategy, and security rules: [RFC — native shell facade](docs/rfc-bash-facade.md).
+
 ## Measured: your model is probably worse at PowerShell than you think
 
 Same model (DeepSeek-V4-Pro), same 5 tasks, three execution modes on one Windows machine —

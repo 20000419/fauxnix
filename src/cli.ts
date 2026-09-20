@@ -10,6 +10,7 @@ import { listCommandsJson, registeredNames, specsMarkdown } from './registry.js'
 import { encodeCommand } from './encoding.js';
 import { startMcpServer } from './mcp.js';
 import { collectDoctorReport } from './doctor.js';
+import { runFacade } from './facade.js';
 import { runInstall } from './install.js';
 import { packageVersion } from './version.js';
 import {
@@ -88,6 +89,12 @@ export async function runCli(argv: string[]): Promise<void> {
   if (verb === 'mcp') {
     await startMcpServer();
     return;
+  }
+
+  if (verb === 'facade') {
+    // Experimental bash.exe-compatible entry (RFC: docs/rfc-bash-facade.md).
+    // The process exit code is the facade contract; bypass runCli's exit(0).
+    process.exit(await runFacade(rest));
   }
 
   if (verb === 'translate') {
