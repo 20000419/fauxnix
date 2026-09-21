@@ -43,6 +43,10 @@ describe.skipIf(!onWindows)('MCP compiled batch tool', () => {
       env: {
         ...mcpTestEnvironment(process.env),
         FAUXNIX_PS: process.env.FAUXNIX_PS ?? '',
+        // The allow-list above drops non-SDK variables, so the CI ready-timeout
+        // knob (#221) must be forwarded explicitly or the MCP child falls back
+        // to the 30s default and dies on slow runner pools (#220 family).
+        FAUXNIX_HOST_READY_TIMEOUT_MS: process.env.FAUXNIX_HOST_READY_TIMEOUT_MS ?? '',
       },
       stderr: 'pipe',
     });
