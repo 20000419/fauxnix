@@ -12,6 +12,7 @@
     "LICENSE"
   ],
   "scripts": {
+    "prebuild": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "tsc",
     "prepare": "npm run build",
     "prepublishOnly": "npm run release:check -- --require-tag && npm run typecheck && npm test && npm run test:package",
