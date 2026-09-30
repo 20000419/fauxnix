@@ -8,6 +8,7 @@ import {
   psStr,
 } from '../registry.js';
 import { argListExpr, exprOfWord, operandExpr } from '../translator.js';
+import { PS_WRITE_FN, fxTermLine } from './text-output.js';
 
 /* ------------------------------------------------------------------ */
 /* Shared PS snippets                                                  */
@@ -438,30 +439,67 @@ const dirname: Handler = (args) => {
 /* stat / file                                                         */
 /* ------------------------------------------------------------------ */
 
+const STAT_DIRECTIVES: Record<string, string> = {
+  '%%': psStr('%'),
+  '%s': '[string]$fx_size',
+  '%n': '$fx_g',
+  '%F': '$fx_ft',
+  '%a': "$fx_mode.TrimStart('0')",
+  '%Y': '[string]$fx_epoch',
+  '%y': "$fx_it.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss')",
+};
+
 /** Expand the existing stat directives once; inserted metadata is literal. */
 function statFormatExpr(format: string): string {
-  const directives: Record<string, string> = {
-    '%%': psStr('%'),
-    '%s': '[string]$fx_size',
-    '%n': '$fx_g',
-    '%F': '$fx_ft',
-    '%a': "$fx_mode.TrimStart('0')",
-    '%Y': '[string]$fx_epoch',
-    '%y': "$fx_it.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss')",
-  };
   // Only odd slots are recognized directives. Other text, including unknown
   // directives, stays quoted rather than being mistaken for a lookup key.
   return format.split(/(%[%snFaYy])/)
-    .map((part, index) => index % 2 ? directives[part] : psStr(part))
+    .map((part, index) => index % 2 ? STAT_DIRECTIVES[part] : psStr(part))
     .join(' + ');
 }
 
-const stat: Handler = (args) => {
+/** GNU --printf escapes are scanned beside directives, never before them. */
+function statPrintfFormat(format: string): { expr: string; warnings: string[]; error?: string } {
+  const warnings: string[] = [];
+  let error: string | undefined;
+  const controls: Record<string, number> = { a: 7, b: 8, e: 27, f: 12, n: 10, r: 13, t: 9, v: 11 };
+  const expr = format.split(/(%[%snFaYy]|\\(?:[0-7]{1,3}|x[0-9a-fA-F]{1,2}|[\s\S]|$))/)
+    .map((part, index) => {
+      if (index % 2 === 0) return psStr(part);
+      if (part.startsWith('%')) return STAT_DIRECTIVES[part];
+      const escape = part.slice(1);
+      let byte: number | undefined;
+      if (/^[0-7]{1,3}$/.test(escape)) byte = parseInt(escape, 8) & 255;
+      else if (/^x[0-9a-fA-F]{1,2}$/.test(escape)) byte = parseInt(escape.slice(1), 16);
+      if (byte !== undefined) {
+        if (byte >= 128) {
+          error = 'stat: fauxnix: non-ASCII numeric byte escapes are not supported by the text output contract';
+        }
+        return '[string][char]' + byte;
+      }
+      if (Object.hasOwn(controls, escape)) return '[string][char]' + controls[escape];
+      if (escape === '\\') return psStr('\\');
+      if (escape === '') {
+        warnings.push('stat: warning: backslash at end of format');
+        return psStr('\\');
+      }
+      warnings.push("stat: warning: unrecognized escape '\\" + escape + "'");
+      return psStr(escape);
+    }).join(' + ');
+  return { expr, warnings, error };
+}
+
+const stat: Handler = (args, ctx) => {
   const { valueEntries, operandWords } = parseWords(args, ['c'], ['--format', '--printf']);
-  const fmt = valueEntries.at(-1)?.value ?? null;
+  const formatOption = valueEntries.at(-1);
+  const fmt = formatOption?.value ?? null;
+  const printfMode = formatOption?.name === '--printf';
+  const format = printfMode ? statPrintfFormat(fmt ?? '') : { expr: statFormatExpr(fmt ?? ''), warnings: [] };
+  if (format.error) return '[Console]::Error.WriteLine(' + psStr(format.error) + '); $script:fx_exit = 1';
   return [
     PS_FTIME_FN,
     PS_GLOB_FN,
+    ...(printfMode ? [PS_WRITE_FN, fxTermLine(ctx.position), '$fx_stat_out = New-Object System.Text.StringBuilder'] : []),
     '$fx_files = ' + psArray(operandWords),
     "if ($fx_files.Count -eq 0) { [Console]::Error.WriteLine('stat: missing operand'); $script:fx_exit = 1 }",
     'foreach ($fx_f in $fx_files) {',
@@ -476,8 +514,9 @@ const stat: Handler = (args) => {
     "    $fx_mode = '0664'; if ($fx_it.PSIsContainer) { $fx_mode = '0775' } elseif ($fx_ro) { $fx_mode = '0444' }",
     "    $fx_epoch = [long][math]::Floor(($fx_it.LastWriteTime.ToUniversalTime() - [datetime]'1970-01-01').TotalSeconds)",
     '    if (' + (fmt !== null ? '$true' : '$false') + ') {',
-    '      $fx_o = ' + statFormatExpr(fmt ?? ''),
-    '      $fx_o',
+    ...format.warnings.map((warning) => '      [Console]::Error.WriteLine(' + psStr(warning) + ')'),
+    '      $fx_o = ' + format.expr,
+    printfMode ? '      [void]$fx_stat_out.Append($fx_o)' : '      $fx_o',
     '    } else {',
     '      "  File: " + $fx_g',
     '      ("  Size: {0}`tBlocks: {1}`tIO Block: 4096  {2}" -f $fx_size, [math]::Ceiling($fx_size / 512), $fx_ft)',
@@ -487,6 +526,7 @@ const stat: Handler = (args) => {
     '    }',
     '  }',
     '}',
+    ...(printfMode ? ['fx-write ($fx_stat_out.ToString()) $fx_term'] : []),
   ].join('\n');
 };
 

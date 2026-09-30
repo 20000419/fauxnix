@@ -258,6 +258,11 @@ fauxnix optimizes for the commands agents actually run. Documented deviations:
   (as in Git Bash).
 - `ps aux` columns are approximations (no per-process CPU% accounting, USER shows `?`).
 - `gzip -c`/pipeline stdin is text-faithful, not byte-faithful; file-mode `gzip f` is byte-exact.
+- `stat --printf` omits the implicit newline and interprets text escapes, including ASCII
+  octal/hex escapes. Numeric escapes producing bytes `0x80`–`0xFF` are rejected before output;
+  use literal Unicode text instead. NUL is preserved in direct output, text pipelines, and
+  redirected files; command substitution retains fauxnix's existing text behavior rather
+  than Bash's NUL-removal behavior.
 - A pipeline producing exactly one line, piped into `wc -l`, counts that line (bash would count 0
   if the producer omitted the trailing newline). `printf 'x' | md5sum` stays byte-exact.
 - `sed`/`awk` support the common subset; hold-space, labels, arrays, loops throw named

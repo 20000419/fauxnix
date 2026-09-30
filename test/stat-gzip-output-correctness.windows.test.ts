@@ -131,6 +131,8 @@ describe.skipIf(!runnable)('stat and gzip output contracts on Windows', { timeou
       // Node independently checks the resulting archive rather than relying
       // on a magic-byte prefix in captured terminal text.
       const script = [
+        // Match the normal host: module auto-loading progress is not stderr.
+        "$ProgressPreference = 'SilentlyContinue'",
         "$ErrorActionPreference = 'Stop'",
         '$script:fx_exit = 0',
         '$fx_test_output = @(& {', body, '})',
