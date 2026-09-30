@@ -7,6 +7,7 @@ import { runCli, USAGE } from '../src/cli.js';
 import { collectDoctorReport } from '../src/doctor.js';
 import { kimiConfigPath, qwenConfigPath, runInstall } from '../src/install.js';
 import { FauxnixParseError, isUnquotedLiteral, wordToString } from '../src/ast.js';
+import type { CommandList, SimpleCommand } from '../src/ast.js';
 import { parseCommand as parse, tokenize } from '../src/parser.js';
 import {
   exprOfWord,
@@ -59,6 +60,15 @@ import {
 } from '../src/mcp.js';
 import '../src/commands/install-all.js';
 
+/** Fail the test if parsing produced the wrong command kind instead of skipping assertions. */
+function firstSimpleCommand(list: CommandList): SimpleCommand {
+  const command = list.segments[0]?.pipeline.commands[0];
+  if (command?.kind !== 'SimpleCommand') {
+    throw new Error(`Expected SimpleCommand, received ${command?.kind ?? 'no command'}`);
+  }
+  return command;
+}
+
 /* ---------------------------- parser ---------------------------- */
 
 describe('awk field assignment compilation', () => {
@@ -74,7 +84,7 @@ describe('parser', () => {
   it('parses a simple command with args', () => {
     const list = parse('ls -la /tmp');
     expect(list.segments).toHaveLength(1);
-    const cmd = list.segments[0].pipeline.commands[0];
+    const cmd = firstSimpleCommand(list);
     expect(cmd.args.map((a) => a.map((p) => ('text' in p ? p.text : '')).join(''))).toEqual([
       '-la',
       '/tmp',
@@ -89,55 +99,55 @@ describe('parser', () => {
 
   it('keeps quoted text literal', () => {
     const list = parse("echo 'a  b' \"c $d\"");
-    const args = list.segments[0].pipeline.commands[0].args;
+    const args = firstSimpleCommand(list).args;
     expect(args).toHaveLength(2);
   });
 
   it('parses redirects', () => {
     const list = parse('cat f > out.txt');
-    const cmd = list.segments[0].pipeline.commands[0];
+    const cmd = firstSimpleCommand(list);
     expect(cmd.redirects).toEqual([{ op: '>', target: 'out.txt' }]);
   });
 
   it('parses fd redirects (2>, 2>>, 2>/dev/null, 2>&1)', () => {
-    expect(parse('x 2> err.txt').segments[0].pipeline.commands[0].redirects[0].op).toBe('2>');
-    expect(parse('x 2>> err.txt').segments[0].pipeline.commands[0].redirects[0].op).toBe('2>>');
+    expect(firstSimpleCommand(parse('x 2> err.txt')).redirects[0].op).toBe('2>');
+    expect(firstSimpleCommand(parse('x 2>> err.txt')).redirects[0].op).toBe('2>>');
     expect(
-      parse('x 2> /dev/null').segments[0].pipeline.commands[0].redirects[0].target,
+      firstSimpleCommand(parse('x 2> /dev/null')).redirects[0].target,
     ).toBe('/dev/null');
-    expect(parse('x 2>&1').segments[0].pipeline.commands[0].redirects[0].op).toBe('2>&1');
+    expect(firstSimpleCommand(parse('x 2>&1')).redirects[0].op).toBe('2>&1');
   });
 
   it('keeps a word-final 2 out of 2>> and rejects unsupported multi-digit fds', () => {
-    const command = parse('echo file2>>out.txt').segments[0].pipeline.commands[0];
+    const command = firstSimpleCommand(parse('echo file2>>out.txt'));
     expect(command.args.map(wordToString)).toEqual(['file2']);
     expect(command.redirects).toEqual([{ op: '>>', target: 'out.txt' }]);
     expect(() => parse('echo 12>>out.txt')).toThrow(FauxnixParseError);
   });
 
   it('parses stdin redirects', () => {
-    expect(parse('wc -l < f').segments[0].pipeline.commands[0].redirects[0].op).toBe('<');
+    expect(firstSimpleCommand(parse('wc -l < f')).redirects[0].op).toBe('<');
   });
 
   it('parses assignment prefixes', () => {
-    const cmd = parse('FOO=bar baz').segments[0].pipeline.commands[0];
+    const cmd = firstSimpleCommand(parse('FOO=bar baz'));
     expect(cmd.assignments).toHaveLength(1);
     expect(cmd.assignments[0].name).toBe('FOO');
   });
 
   it('captures command substitution', () => {
-    const cmd = parse('echo $(date +%Y)').segments[0].pipeline.commands[0];
+    const cmd = firstSimpleCommand(parse('echo $(date +%Y)'));
     const parts = cmd.args[0];
     expect(parts.some((p) => p.kind === 'CmdSub' && p.cmd === 'date +%Y')).toBe(true);
   });
 
   it('quoted cmdsub and assignments keep newlines; unquoted splits', () => {
-    const q = parse('echo "$(printf a)"').segments[0].pipeline.commands[0];
+    const q = firstSimpleCommand(parse('echo "$(printf a)"'));
     expect(exprOfWord(q.args[0])).toContain('fx-csub');
     expect(exprOfWord(q.args[0])).not.toContain("-join ' '");
-    const u = parse('echo $(printf a)').segments[0].pipeline.commands[0];
+    const u = firstSimpleCommand(parse('echo $(printf a)'));
     expect(exprOfWord(u.args[0])).toContain("-join ' '");
-    const a = parse('X=$(printf a)').segments[0].pipeline.commands[0];
+    const a = firstSimpleCommand(parse('X=$(printf a)'));
     expect(exprOfWord(a.assignments[0].value, { preserveCmdSub: true })).toContain('fx-csub');
     expect(exprOfWord(a.assignments[0].value, { preserveCmdSub: true })).not.toContain("-join ' '");
   });
@@ -150,7 +160,7 @@ describe('parser', () => {
     expect(body).toContain("'b'");
     expect(body).toContain('-split [string][char]10');
     const quoted = exprOfWord(
-      parse('echo "$(echo a; echo b)"').segments[0].pipeline.commands[0].args[0],
+      firstSimpleCommand(parse('echo "$(echo a; echo b)"')).args[0],
     );
     expect(quoted).toContain('fx-csub');
     expect(quoted).toContain("'a'");
@@ -170,16 +180,15 @@ describe('parser', () => {
   });
 
   it('parses ${name:-word} parameter defaults', () => {
-    const cmd = parse('echo ${X:-def} ${Y:+on} ${Z:?err}').segments[0].pipeline.commands[0];
+    const cmd = firstSimpleCommand(parse('echo ${X:-def} ${Y:+on} ${Z:?err}'));
     expect(cmd.args[0]).toEqual([{ kind: 'Var', name: 'X', param: { op: ':-', word: 'def' } }]);
     expect(cmd.args[1]).toEqual([{ kind: 'Var', name: 'Y', param: { op: ':+', word: 'on' } }]);
     expect(cmd.args[2]).toEqual([{ kind: 'Var', name: 'Z', param: { op: ':?', word: 'err' } }]);
   });
 
   it('parses A=(x y z) as an array assignment', () => {
-    const cmd = parse('A=(x y z)').segments[0].pipeline.commands[0];
+    const cmd = firstSimpleCommand(parse('A=(x y z)'));
     expect(cmd.kind).toBe('SimpleCommand');
-    if (cmd.kind !== 'SimpleCommand') return;
     expect(cmd.name).toBeNull();
     expect(cmd.assignments).toHaveLength(1);
     expect(cmd.assignments[0].name).toBe('A');
@@ -191,26 +200,21 @@ describe('parser', () => {
   });
 
   it('parses A=() / A=(x) / A=( x y z ) and keeps quoted ( ) as scalar', () => {
-    const empty = parse('A=()').segments[0].pipeline.commands[0];
+    const empty = firstSimpleCommand(parse('A=()'));
     expect(empty.kind).toBe('SimpleCommand');
-    if (empty.kind !== 'SimpleCommand') return;
     expect(empty.assignments[0].values).toEqual([]);
-    const one = parse('A=(x)').segments[0].pipeline.commands[0];
-    if (one.kind !== 'SimpleCommand') return;
+    const one = firstSimpleCommand(parse('A=(x)'));
     expect(one.assignments[0].values).toHaveLength(1);
-    const spaced = parse('A=( x y z )').segments[0].pipeline.commands[0];
-    if (spaced.kind !== 'SimpleCommand') return;
+    const spaced = firstSimpleCommand(parse('A=( x y z )'));
     expect(spaced.assignments[0].values).toHaveLength(3);
-    const q = parse("A='(x y)'").segments[0].pipeline.commands[0];
-    if (q.kind !== 'SimpleCommand') return;
+    const q = firstSimpleCommand(parse("A='(x y)'"));
     expect(q.assignments[0].values).toBeUndefined();
-    const dq = parse('A="(x y)"').segments[0].pipeline.commands[0];
-    if (dq.kind !== 'SimpleCommand') return;
+    const dq = firstSimpleCommand(parse('A="(x y)"'));
     expect(dq.assignments[0].values).toBeUndefined();
   });
 
   it('parses ${X//a/b} and ${X:0:2} as Var replace/slice, not Text', () => {
-    const cmd = parse('echo ${X//a/b} ${X:0:2} ${X/l/L} ${X: -1}').segments[0].pipeline.commands[0];
+    const cmd = firstSimpleCommand(parse('echo ${X//a/b} ${X:0:2} ${X/l/L} ${X: -1}'));
     expect(cmd.args[0]).toEqual([
       { kind: 'Var', name: 'X', replace: { global: true, pat: 'a', repl: 'b' } },
     ]);
@@ -223,7 +227,7 @@ describe('parser', () => {
   });
 
   it('does not steal ${X:-def} as a slice', () => {
-    const cmd = parse('echo ${X:-def} ${Y:+on} ${Z:?err}').segments[0].pipeline.commands[0];
+    const cmd = firstSimpleCommand(parse('echo ${X:-def} ${Y:+on} ${Z:?err}'));
     expect(cmd.args[0]).toEqual([{ kind: 'Var', name: 'X', param: { op: ':-', word: 'def' } }]);
     expect(cmd.args[1][0].kind).toBe('Var');
     if (cmd.args[1][0].kind !== 'Var') return;
@@ -239,7 +243,7 @@ describe('parser', () => {
   });
 
   it('parses ${#name} and ${#name[@]}', () => {
-    const cmd = parse('echo ${#X} ${#Y[@]}').segments[0].pipeline.commands[0];
+    const cmd = firstSimpleCommand(parse('echo ${#X} ${#Y[@]}'));
     expect(cmd.args[0]).toEqual([{ kind: 'Var', name: 'X', length: true }]);
     expect(cmd.args[1]).toEqual([{ kind: 'Var', name: 'Y', index: '@', length: true }]);
   });
@@ -335,14 +339,14 @@ describe('parser', () => {
   });
 
   it('parses ${name[index]} subscripts', () => {
-    const cmd = parse('echo ${BASH_REMATCH[1]} ${PATH[0]} ${x[@]}').segments[0].pipeline.commands[0];
+    const cmd = firstSimpleCommand(parse('echo ${BASH_REMATCH[1]} ${PATH[0]} ${x[@]}'));
     expect(cmd.args[0]).toEqual([{ kind: 'Var', name: 'BASH_REMATCH', index: '1' }]);
     expect(cmd.args[1]).toEqual([{ kind: 'Var', name: 'PATH', index: '0' }]);
     expect(cmd.args[2]).toEqual([{ kind: 'Var', name: 'x', index: '@' }]);
   });
 
   it('parses positional specials $1 $# $@ $* ${1} ${#}', () => {
-    const cmd = parse('echo $1 $# $@ $* ${1} ${#} ${@} ${*} $0').segments[0].pipeline.commands[0];
+    const cmd = firstSimpleCommand(parse('echo $1 $# $@ $* ${1} ${#} ${@} ${*} $0'));
     expect(cmd.args.map((w) => w[0])).toEqual([
       { kind: 'Var', name: '1' },
       { kind: 'Var', name: '#' },
@@ -354,7 +358,7 @@ describe('parser', () => {
       { kind: 'Var', name: '*' },
       { kind: 'Var', name: '0' },
     ]);
-    expect(parse('echo ${#X}').segments[0].pipeline.commands[0].args[0]).toEqual([
+    expect(firstSimpleCommand(parse('echo ${#X}')).args[0]).toEqual([
       { kind: 'Var', name: 'X', length: true },
     ]);
   });
@@ -364,12 +368,12 @@ describe('parser', () => {
   });
 
   it('detects [@] splat through surrounding quotes', () => {
-    const cmd = parse('printf x pre"${a[@]}"post').segments[0].pipeline.commands[0];
+    const cmd = firstSimpleCommand(parse('printf x pre"${a[@]}"post'));
     expect(splatSpec(cmd.args[1])).toEqual({ name: 'a', prefix: 'pre', suffix: 'post' });
   });
 
   it('does not splat quoted ${name[*]}', () => {
-    const cmd = parse('printf x "${a[*]}"').segments[0].pipeline.commands[0];
+    const cmd = firstSimpleCommand(parse('printf x "${a[*]}"'));
     expect(splatSpec(cmd.args[1])).toBeNull();
   });
 
@@ -383,27 +387,27 @@ describe('parser', () => {
   });
 
   it('splats unquoted ${name[*]}', () => {
-    const cmd = parse('printf x ${a[*]}').segments[0].pipeline.commands[0];
+    const cmd = firstSimpleCommand(parse('printf x ${a[*]}'));
     expect(splatSpec(cmd.args[1])).toEqual({ name: 'a', prefix: '', suffix: '' });
   });
 
   it('splats $@ and quoted "$@", but not quoted "$*"', () => {
-    expect(splatSpec(parse('echo $@').segments[0].pipeline.commands[0].args[0])).toEqual({
+    expect(splatSpec(firstSimpleCommand(parse('echo $@')).args[0])).toEqual({
       name: '@',
       prefix: '',
       suffix: '',
     });
-    expect(splatSpec(parse('echo "$@"').segments[0].pipeline.commands[0].args[0])).toEqual({
+    expect(splatSpec(firstSimpleCommand(parse('echo "$@"')).args[0])).toEqual({
       name: '@',
       prefix: '',
       suffix: '',
     });
-    expect(splatSpec(parse('echo $*').segments[0].pipeline.commands[0].args[0])).toEqual({
+    expect(splatSpec(firstSimpleCommand(parse('echo $*')).args[0])).toEqual({
       name: '*',
       prefix: '',
       suffix: '',
     });
-    expect(splatSpec(parse('echo "$*"').segments[0].pipeline.commands[0].args[0])).toBeNull();
+    expect(splatSpec(firstSimpleCommand(parse('echo "$*"')).args[0])).toBeNull();
   });
 
   it('indexes ${name[0]} through fx-subget, not $env:', () => {
@@ -478,13 +482,11 @@ describe('parser', () => {
   });
 
   it('parses word-level $((...)) as Arith, not $( (expr) )', () => {
-    const cmd = parse('echo $((1+1))').segments[0].pipeline.commands[0];
+    const cmd = firstSimpleCommand(parse('echo $((1+1))'));
     expect(cmd.kind).toBe('SimpleCommand');
-    if (cmd.kind !== 'SimpleCommand') return;
     expect(cmd.args[0].some((p) => p.kind === 'Arith')).toBe(true);
     expect(wordToString(cmd.args[0])).toBe('$((1+1))');
-    const quoted = parse('echo "$((x+1))"').segments[0].pipeline.commands[0];
-    if (quoted.kind !== 'SimpleCommand') return;
+    const quoted = firstSimpleCommand(parse('echo "$((x+1))"'));
     const dq = quoted.args[0].find((p) => p.kind === 'DoubleQuoted');
     expect(dq && dq.kind === 'DoubleQuoted' && dq.parts.some((p) => p.kind === 'Arith')).toBe(true);
     expect(() => parse('X=$((x+1))')).not.toThrow();
@@ -494,7 +496,7 @@ describe('parser', () => {
   });
 
   it('parses backticks as command substitution', () => {
-    const cmd = parse('echo `date +%Y`').segments[0].pipeline.commands[0];
+    const cmd = firstSimpleCommand(parse('echo `date +%Y`'));
     expect(cmd.args[0].some((p) => p.kind === 'CmdSub' && p.cmd === 'date +%Y')).toBe(true);
   });
 
@@ -512,8 +514,8 @@ describe('parser', () => {
   });
 
   it('parses [[ ]] as a command with a closing word', () => {
-    const cmd = parse('[[ -f x ]]').segments[0].pipeline.commands[0];
-    expect(cmd.name.map((p) => ('text' in p ? p.text : '')).join('')).toBe('[[');
+    const cmd = firstSimpleCommand(parse('[[ -f x ]]'));
+    expect(cmd.name?.map((p) => ('text' in p ? p.text : '')).join('')).toBe('[[');
     const last = cmd.args[cmd.args.length - 1];
     expect(last.map((p) => ('text' in p ? p.text : '')).join('')).toBe(']]');
   });
@@ -523,20 +525,20 @@ describe('parser', () => {
   });
 
   it('folds | inside an extglob on the == operand', () => {
-    const cmd = parse('[[ foo == @(foo|bar) ]]').segments[0].pipeline.commands[0];
+    const cmd = firstSimpleCommand(parse('[[ foo == @(foo|bar) ]]'));
     const args = cmd.args.map((w) => w.map((p) => ('text' in p ? p.text : '')).join(''));
     expect(args).toEqual(['foo', '==', '@(foo|bar)', ']]']);
   });
 
   it('keeps regex grouping parentheses on the =~ operand', () => {
-    const cmd = parse('[[ ab =~ (ab) ]]').segments[0].pipeline.commands[0];
+    const cmd = firstSimpleCommand(parse('[[ ab =~ (ab) ]]'));
     expect(
       cmd.args.map((w) => w.map((p) => ('text' in p ? p.text : '')).join('')),
     ).toEqual(['ab', '=~', '(ab)', ']]']);
   });
 
   it('splits attached grouping parens but keeps extglob parens', () => {
-    const grouped = parse('[[ ("" && "") || "" ]]').segments[0].pipeline.commands[0];
+    const grouped = firstSimpleCommand(parse('[[ ("" && "") || "" ]]'));
     expect(isUnquotedLiteral(grouped.args[0], '(')).toBe(true);
     expect(grouped.args[1][0].kind).toBe('DoubleQuoted');
     expect(isUnquotedLiteral(grouped.args[2], '&&')).toBe(true);
@@ -544,44 +546,44 @@ describe('parser', () => {
     expect(isUnquotedLiteral(grouped.args[4], ')')).toBe(true);
     expect(isUnquotedLiteral(grouped.args[5], '||')).toBe(true);
     expect(grouped.args[6][0].kind).toBe('DoubleQuoted');
-    const ext = parse('[[ foo == @(foo|bar) ]]').segments[0].pipeline.commands[0];
+    const ext = firstSimpleCommand(parse('[[ foo == @(foo|bar) ]]'));
     expect(
       ext.args.map((w) => w.map((p) => ('text' in p ? p.text : '')).join('')),
     ).toEqual(['foo', '==', '@(foo|bar)', ']]']);
   });
 
   it('folds | inside +( ) and !( ) extglobs', () => {
-    const plus = parse('[[ foo == +(foo|bar) ]]').segments[0].pipeline.commands[0];
+    const plus = firstSimpleCommand(parse('[[ foo == +(foo|bar) ]]'));
     expect(
       plus.args.map((w) => w.map((p) => ('text' in p ? p.text : '')).join('')),
     ).toEqual(['foo', '==', '+(foo|bar)', ']]']);
-    const bang = parse('[[ xyz == !(foo|bar) ]]').segments[0].pipeline.commands[0];
+    const bang = firstSimpleCommand(parse('[[ xyz == !(foo|bar) ]]'));
     expect(
       bang.args.map((w) => w.map((p) => ('text' in p ? p.text : '')).join('')),
     ).toEqual(['xyz', '==', '!(foo|bar)', ']]']);
   });
 
   it('keeps tight || after =~ as regex, not a boolean or', () => {
-    const cmd = parse('[[ z =~ a|| ]]').segments[0].pipeline.commands[0];
+    const cmd = firstSimpleCommand(parse('[[ z =~ a|| ]]'));
     const args = cmd.args.map((w) => w.map((p) => ('text' in p ? p.text : '')).join(''));
     expect(args).toEqual(['z', '=~', 'a||', ']]']);
   });
 
   it('accepts a leading | on the =~ operand', () => {
-    const cmd = parse('[[ x =~ |x ]]').segments[0].pipeline.commands[0];
+    const cmd = firstSimpleCommand(parse('[[ x =~ |x ]]'));
     const args = cmd.args.map((w) => w.map((p) => ('text' in p ? p.text : '')).join(''));
     expect(args).toEqual(['x', '=~', '|x', ']]']);
   });
 
   it('glues | inside [[ ]] so =~ alternation stays one operand', () => {
-    const cmd = parse('[[ abc =~ ^a|z$ ]]').segments[0].pipeline.commands[0];
+    const cmd = firstSimpleCommand(parse('[[ abc =~ ^a|z$ ]]'));
     expect(cmd.redirects).toHaveLength(0);
     const args = cmd.args.map((w) => w.map((p) => ('text' in p ? p.text : '')).join(''));
     expect(args).toEqual(['abc', '=~', '^a|z$', ']]']);
   });
 
   it('keeps > and < inside [[ ]] as comparison operators, not redirects', () => {
-    const cmd = parse('[[ z > important.txt ]]').segments[0].pipeline.commands[0];
+    const cmd = firstSimpleCommand(parse('[[ z > important.txt ]]'));
     expect(cmd.redirects).toHaveLength(0);
     expect(
       cmd.args.map((w) => w.map((p) => ('text' in p ? p.text : '')).join('')),
@@ -589,7 +591,7 @@ describe('parser', () => {
   });
 
   it('does not fold tight && after =~ into the regex', () => {
-    const cmd = parse('[[ aXXb =~ a&&b ]]').segments[0].pipeline.commands[0];
+    const cmd = firstSimpleCommand(parse('[[ aXXb =~ a&&b ]]'));
     expect(
       cmd.args.map((w) => w.map((p) => ('text' in p ? p.text : '')).join('')),
     ).toEqual(['aXXb', '=~', 'a', '&&', 'b', ']]']);
@@ -620,7 +622,7 @@ describe('parser', () => {
   });
 
   it('does not treat quoted @( as an extglob', () => {
-    const cmd = parse("[[ '@(' == '@(' ]]").segments[0].pipeline.commands[0];
+    const cmd = firstSimpleCommand(parse("[[ '@(' == '@(' ]]"));
     expect(cmd.args).toHaveLength(4);
   });
 
@@ -631,7 +633,7 @@ describe('parser', () => {
   it('accepts a newline after && inside [[ ]] but not after a bare operand', () => {
     const list = parse('[[ -f file &&\n -r file ]]');
     expect(list.segments).toHaveLength(1);
-    const inner = list.segments[0].pipeline.commands[0].args.map((w) =>
+    const inner = firstSimpleCommand(list).args.map((w) =>
       w.map((p) => ('text' in p ? p.text : '')).join(''),
     );
     expect(inner).toEqual(['-f', 'file', '&&', '-r', 'file', ']]']);
@@ -649,29 +651,29 @@ describe('parser', () => {
   });
 
   it('keeps spaces inside a grouped =~ / extglob operand', () => {
-    const re = parse("[[ ' x ' =~ ( x ) ]]").segments[0].pipeline.commands[0];
+    const re = firstSimpleCommand(parse("[[ ' x ' =~ ( x ) ]]"));
     expect(re.args.map(wordToString)).toEqual([' x ', '=~', '( x )', ']]']);
-    const ext = parse("[[ 'bar baz' == @(foo|bar baz) ]]").segments[0].pipeline.commands[0];
+    const ext = firstSimpleCommand(parse("[[ 'bar baz' == @(foo|bar baz) ]]"));
     expect(ext.args.map(wordToString)).toEqual(['bar baz', '==', '@(foo|bar baz)', ']]']);
-    const grouped = parse('[[ ( x =~ ( x ) ) ]]').segments[0].pipeline.commands[0];
+    const grouped = firstSimpleCommand(parse('[[ ( x =~ ( x ) ) ]]'));
     expect(grouped.args.map(wordToString)).toEqual(['(', 'x', '=~', '( x )', ')', ']]']);
-    const tight = parse('[[ ( x =~ ( x)) ]]').segments[0].pipeline.commands[0];
+    const tight = firstSimpleCommand(parse('[[ ( x =~ ( x)) ]]'));
     expect(tight.args.map(wordToString)).toEqual(['(', 'x', '=~', '( x)', ')', ']]']);
-    const spacedAlt = parse("[[ 'a c' =~ (a | b)c ]]").segments[0].pipeline.commands[0];
+    const spacedAlt = firstSimpleCommand(parse("[[ 'a c' =~ (a | b)c ]]"));
     expect(spacedAlt.args.map(wordToString)).toEqual(['a c', '=~', '(a | b)c', ']]']);
-    const spacedExt = parse("[[ 'x ' == @(x | y) ]]").segments[0].pipeline.commands[0];
+    const spacedExt = firstSimpleCommand(parse("[[ 'x ' == @(x | y) ]]"));
     expect(spacedExt.args.map(wordToString)).toEqual(['x ', '==', '@(x | y)', ']]']);
   });
 
   it('keeps regex-balanced parens inside a grouped =~', () => {
-    const cmd = parse('[[ ( x =~ (x) ) ]]').segments[0].pipeline.commands[0];
+    const cmd = firstSimpleCommand(parse('[[ ( x =~ (x) ) ]]'));
     expect(
       cmd.args.map((w) => w.map((p) => ('text' in p ? p.text : '')).join('')),
     ).toEqual(['(', 'x', '=~', '(x)', ')', ']]']);
   });
 
   it('peels a grouping close attached to a =~ operand', () => {
-    const cmd = parse('[[ ( x =~ x) ]]').segments[0].pipeline.commands[0];
+    const cmd = firstSimpleCommand(parse('[[ ( x =~ x) ]]'));
     expect(
       cmd.args.map((w) => w.map((p) => ('text' in p ? p.text : '')).join('')),
     ).toEqual(['(', 'x', '=~', 'x', ')', ']]']);
@@ -680,7 +682,7 @@ describe('parser', () => {
   it('treats newline after && inside [[ ]] as whitespace', () => {
     const list = parse('[[ -f a &&\n -f b ]]');
     expect(list.segments).toHaveLength(1);
-    const inner = list.segments[0].pipeline.commands[0].args.map((w) =>
+    const inner = firstSimpleCommand(list).args.map((w) =>
       w.map((p) => ('text' in p ? p.text : '')).join(''),
     );
     expect(inner).toEqual(['-f', 'a', '&&', '-f', 'b', ']]']);
@@ -689,7 +691,7 @@ describe('parser', () => {
   it('keeps && and || inside [[ ]] as arguments, not list operators', () => {
     const list = parse('[[ -f a && -f b || -f c ]] && echo ok');
     expect(list.segments).toHaveLength(2);
-    const inner = list.segments[0].pipeline.commands[0].args.map((w) =>
+    const inner = firstSimpleCommand(list).args.map((w) =>
       w.map((p) => ('text' in p ? p.text : '')).join(''),
     );
     expect(inner).toEqual(['-f', 'a', '&&', '-f', 'b', '||', '-f', 'c', ']]']);
@@ -1115,8 +1117,7 @@ describe('registry helpers', () => {
   });
 
   it('parseWords splits flags, values and operands', () => {
-    const words = parse('x -abc -n 5 --long=v --file g.txt operand1')
-      .segments[0].pipeline.commands[0].args;
+    const words = firstSimpleCommand(parse('x -abc -n 5 --long=v --file g.txt operand1')).args;
     const r = parseWords(words, ['n'], ['--file']);
     expect([...r.flags]).toEqual(['a', 'b', 'c']);
     expect(r.values.get('-n')).toBe('5');
@@ -1126,13 +1127,13 @@ describe('registry helpers', () => {
   });
 
   it('parseWords supports glued short values (-n5)', () => {
-    const words = parse('x -n5 f').segments[0].pipeline.commands[0].args;
+    const words = firstSimpleCommand(parse('x -n5 f')).args;
     const r = parseWords(words, ['n']);
     expect(r.values.get('-n')).toBe('5');
   });
 
   it('parseWords stops option scanning after --', () => {
-    const words = parse('x -- -n').segments[0].pipeline.commands[0].args;
+    const words = firstSimpleCommand(parse('x -- -n')).args;
     const r = parseWords(words, ['n']);
     expect(r.operandWords.map((w) => w.map((p) => ('text' in p ? p.text : '')).join(''))).toEqual([
       '-n',

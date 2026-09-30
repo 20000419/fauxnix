@@ -171,6 +171,12 @@ export function tokenize(input: string): Token[] {
       let buf = '';
       while (i < n && input[i] !== '"') {
         const c = input[i];
+        // A quoted continuation joins the physical lines just as it does
+        // outside quotes; unlike an ordinary quoted newline it adds no text.
+        if (c === '\\' && input[i + 1] === '\n') {
+          i += 2;
+          continue;
+        }
         if (c === '\\' && i + 1 < n && '"$`\\'.includes(input[i + 1])) {
           buf += input[i + 1];
           i += 2;
@@ -493,13 +499,20 @@ function readDollar(input: string, i: number): { part: WordPart; next: number } 
     let depth = 1;
     let k = j + 1;
     while (k < n && depth > 0) {
+      // Escaped delimiters belong to the command text, not the enclosing
+      // substitution. Preserve both characters for its recursive tokenizer.
+      if (input[k] === '\\' && k + 1 < n) {
+        k += 2;
+        continue;
+      }
       if (input[k] === '(') depth++;
       else if (input[k] === ')') depth--;
       else if (input[k] === "'" || input[k] === '"') {
         const q = input[k];
         k++;
         while (k < n && input[k] !== q) {
-          if (input[k] === '\\') k++;
+          // Single quotes are fully literal, including a final backslash.
+          if (q === '"' && input[k] === '\\') k++;
           k++;
         }
       }
@@ -945,6 +958,9 @@ export function parseCommand(input: string): CommandList {
       const t = peek();
       if (t.type === 'OP' && t.op === '|') {
         next();
+        // Bash permits physical newlines (and comments on those lines)
+        // while waiting for the next pipeline stage, as after && and ||.
+        while (peek().type === 'OP' && peek().op === '\n') next();
         continue;
       }
       break;

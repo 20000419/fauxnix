@@ -281,7 +281,35 @@ export class PowerShellHost {
       return this.cancelledResult();
     }
 
-    const started = await this.ensureStarted();
+    // Startup is part of the caller's deadline. A cold host must not send a
+    // command after its caller has already cancelled or exhausted its budget.
+    const deadline = Date.now() + timeoutMs;
+    let startupTimer: NodeJS.Timeout | undefined;
+    let onStartupAbort: (() => void) | undefined;
+    const interrupted = new Promise<'cancelled' | 'timed_out'>((resolve) => {
+      startupTimer = setTimeout(() => resolve('timed_out'), Math.max(0, timeoutMs));
+      onStartupAbort = () => resolve('cancelled');
+      signal?.addEventListener('abort', onStartupAbort, { once: true });
+      if (signal?.aborted) resolve('cancelled');
+    });
+    let started: HostInvokeResult | null | 'cancelled' | 'timed_out';
+    try {
+      started = await Promise.race([this.ensureStarted(), interrupted]);
+    } finally {
+      clearTimeout(startupTimer);
+      if (onStartupAbort) signal?.removeEventListener('abort', onStartupAbort);
+    }
+    if (started === 'cancelled' || signal?.aborted) {
+      await this.stop();
+      return this.cancelledResult();
+    }
+    if (started === 'timed_out' || Date.now() >= deadline) {
+      await this.stop();
+      return {
+        stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), exitCode: 124,
+        timedOut: true, cancelled: false, truncated: false,
+      };
+    }
     if (started) return { ...started, cancelled: false, truncated: false };
 
     const id = 'f' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -333,9 +361,9 @@ export class PowerShellHost {
     signal?.addEventListener('abort', onAbort, { once: true });
     try {
       if (this.protocol === 2) {
-        return await this.collectV2(id, timeoutMs, resolvedLimits);
+        return await this.collectV2(id, Math.max(0, deadline - Date.now()), resolvedLimits);
       }
-      const raw = await this.nextJsonLine(timeoutMs, id);
+      const raw = await this.nextJsonLine(Math.max(0, deadline - Date.now()), id);
       const msg = decodeHostResponse(raw);
       const native = this.drainNativeStderr();
       return {

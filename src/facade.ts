@@ -43,14 +43,20 @@ async function runOneShot(
   script: string,
   positionals: string[],
 ): Promise<number> {
+  // bash -c '' is a successful no-op, distinct from a missing operand.
+  if (script === '') return 0;
   // bash: trailing operands set $0, then $1.. via `set --`.
-  process.env['FAUXNIX_ARG0'] = positionals[0] ?? 'bash';
+  session.env['FAUXNIX_ARG0'] = positionals[0] ?? 'bash';
   if (positionals.length > 1) {
     const r = await runScript(
       session,
       'set -- ' + positionals.slice(1).map(bashQuote).join(' '),
     );
-    if (r.exitCode !== 0) return r.exitCode;
+    if (r.exitCode !== 0) {
+      if (r.stdout) process.stdout.write(r.stdout);
+      if (r.stderr) process.stderr.write(r.stderr);
+      return r.exitCode;
+    }
   }
   const r = await runScript(session, script);
   if (r.stdout) process.stdout.write(r.stdout);
@@ -78,7 +84,8 @@ async function runMarkerSession(session: FauxnixSession): Promise<number> {
             if (r.stderr) process.stderr.write(r.stderr);
             process.stdout.write(`<bash-exit>${r.exitCode}</bash-exit>\n`);
           } catch (err) {
-            process.stderr.write(`fauxnix: facade: ${(err as Error).message}\n`);
+            const msg = err instanceof Error ? err.message : String(err);
+            process.stderr.write(`fauxnix: facade: ${msg}\n`);
             process.stdout.write('<bash-exit>127</bash-exit>\n');
           }
         });
@@ -99,7 +106,7 @@ export async function runFacade(argv: string[]): Promise<number> {
     }
     if (argv[0] === '-c' || argv[0] === '-e') {
       const [script, ...positionals] = argv.slice(1);
-      if (!script) {
+      if (script === undefined) {
         process.stderr.write('bash: -c: option requires an argument\n');
         return 2;
       }
@@ -108,7 +115,7 @@ export async function runFacade(argv: string[]): Promise<number> {
     return await runMarkerSession(session);
   } catch (err) {
     // bash -c exits 2 on syntax errors; 127 covers the not-found family
-    const msg = (err as Error).message ?? String(err);
+    const msg = err instanceof Error ? err.message : String(err);
     process.stderr.write('bash: -c: ' + msg + '\n');
     return msg.includes('not found') ? 127 : 2;
   } finally {

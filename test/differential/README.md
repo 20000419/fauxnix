@@ -11,7 +11,7 @@ The **1.0.0 hard gate** is:
 - ≥ **95%** byte-identical (stdout / stderr / exit, newlines normalized)
 - two consecutive green **scheduled** oracle runs
 
-`corpus.json` now contains **253 sourced, unique cases** grown from the
+`corpus.json` now contains **270 sourced, unique cases** grown from the
 40-case scaffold and the shipped integration/audit regressions. The corpus
 size gate is enforced in the default test suite, and an opted-in oracle run
 must remain at or above 95% identity.

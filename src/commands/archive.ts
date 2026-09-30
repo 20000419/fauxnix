@@ -1,5 +1,5 @@
 import { Word, wordToString } from '../ast.js';
-import { CommandSpec, Handler, OptionSpec, PipelineCtx, parseWords, psStr } from '../registry.js';
+import { CommandSpec, Handler, OptionSpec, PipelineCtx, parseWords } from '../registry.js';
 import { argListExpr, exprOfWord, operandExpr } from '../translator.js';
 
 /* ------------------------------------------------------------------ */
@@ -161,16 +161,13 @@ function parseGzipArgs(args: Word[]): GzParsed {
       // other long options (force/quiet/verbose/no-name/recursive...) ignored
       continue;
     }
-    if (/^-[1-9]$/.test(t)) {
-      p.level = parseInt(t.slice(1), 10);
-      continue;
-    }
-    if (t.startsWith('-') && t.length > 1 && !/^-\d/.test(t)) {
+    if (t.startsWith('-') && t.length > 1 && (!/^-\d/.test(t) || /^-[1-9]/.test(t))) {
       for (const c of t.slice(1)) {
         if (c === 'd') p.decompress = true;
         else if (c === 'k') p.keep = true;
         else if (c === 'c') p.stdout = true;
         else if (c === 't') p.test = true;
+        else if (/^[1-9]$/.test(c)) p.level = Number(c);
         // f/q/v/n/r accepted as no-ops
       }
       continue;
@@ -333,38 +330,16 @@ const tar: Handler = (args) => {
 /* ------------------------------------------------------------------ */
 
 const zip: Handler = (args) => {
-  const raw = args.map(wordToString);
-  let excludeNote = false;
-  const rest: Word[] = [];
-  for (let i = 0; i < raw.length; i++) {
-    const t = raw[i];
-    if (t === '-x' || t === '--exclude') {
-      excludeNote = true;
-      if (i + 1 < args.length) i++;
-      continue;
-    }
-    if (t.startsWith('--exclude=')) {
-      excludeNote = true;
-      continue;
-    }
-    if (t.startsWith('-') && t.length > 1 && !/^-\d/.test(t)) continue; // -r -q ... implicit
-    rest.push(args[i]);
-  }
-  const note = excludeNote
-    ? '[Console]::Error.WriteLine(' +
-      psStr('zip: fauxnix: -x/--exclude patterns are not supported, ignoring') +
-      ')\n'
-    : '';
+  // CommandSpec has already rejected unsupported options. Keep the same
+  // operand boundary as that validation, especially filenames after `--`.
+  const { operandWords: rest } = parseWords(args);
   if (rest.length < 2) {
-    return (
-      note +
-      "[Console]::Error.WriteLine('zip error: Nothing to do! (fauxnix: usage: zip [-r] ARCHIVE FILES...)'); $script:fx_exit = 12"
-    );
+    return "[Console]::Error.WriteLine('zip error: Nothing to do! (fauxnix: usage: zip [-r] ARCHIVE FILES...)'); $script:fx_exit = 12";
   }
   const arc = operandExpr(rest[0]);
   const inputs = argListExpr(rest.slice(1), operandExpr);
   return [
-    note + '$fx_arc = ' + arc,
+    '$fx_arc = ' + arc,
     '$fx_inputs = ' + inputs,
     '$fx_valid = @()',
     'foreach ($fx_p in $fx_inputs) {',
@@ -406,6 +381,28 @@ const zip: Handler = (args) => {
   ].join('\n');
 };
 
+/** Remove a literal option prefix without flattening quoted/dynamic values. */
+function afterOptionPrefix(word: Word, length: number): Word {
+  let remaining = length;
+  const strip = (parts: Word): Word => {
+    const result: Word = [];
+    for (const part of parts) {
+      if (remaining === 0) {
+        result.push(part);
+      } else if (part.kind === 'Text' || part.kind === 'SingleQuoted') {
+        const taken = Math.min(remaining, part.text.length);
+        remaining -= taken;
+        if (taken < part.text.length) result.push({ ...part, text: part.text.slice(taken) });
+      } else if (part.kind === 'DoubleQuoted') {
+        const tail = strip(part.parts);
+        if (tail.length > 0) result.push({ ...part, parts: tail });
+      }
+    }
+    return result;
+  };
+  return strip(word);
+}
+
 const unzip: Handler = (args) => {
   const raw = args.map(wordToString);
   let list = false;
@@ -414,14 +411,12 @@ const unzip: Handler = (args) => {
   const rest: Word[] = [];
   for (let i = 0; i < raw.length; i++) {
     const t = raw[i];
-    if (t === '-d' && i + 1 < args.length) {
-      dir = args[i + 1];
-      i++;
-      continue;
+    if (t === '--') {
+      rest.push(...args.slice(i + 1));
+      break;
     }
     if (t.startsWith('--directory=')) {
-      const dv: Word = [{ kind: 'Text', text: t.slice('--directory='.length) }];
-      dir = dv;
+      dir = afterOptionPrefix(args[i], '--directory='.length);
       continue;
     }
     if (t === '--directory' && i + 1 < args.length) {
@@ -430,8 +425,15 @@ const unzip: Handler = (args) => {
       continue;
     }
     if (t.startsWith('-') && t.length > 1 && !/^-\d/.test(t)) {
-      if (t.includes('l')) list = true;
-      if (t.includes('o')) over = true;
+      for (let c = 1; c < t.length; c++) {
+        if (t[c] === 'l') list = true;
+        else if (t[c] === 'o') over = true;
+        else if (t[c] === 'd') {
+          if (c + 1 < t.length) dir = afterOptionPrefix(args[i], c + 1);
+          else if (i + 1 < args.length) dir = args[++i];
+          break;
+        }
+      }
       continue;
     }
     rest.push(args[i]);

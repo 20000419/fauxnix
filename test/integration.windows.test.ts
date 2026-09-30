@@ -2905,10 +2905,10 @@ describe.skipIf(!hasPs)(`integration (real ${selectedPowerShell.executable})`, {
 });
 
 // RFC 1.0 U-8 (#118): CI budgets so the 15× warm-host win cannot regress
-// to per-command spawn (~1.25s). hookTimeout 60s like the fixture beforeAll.
+// to per-command spawn (~1.25s). Each test includes host startup and disposal.
 describe.skipIf(!hasPs)(
   'performance guard (RFC U-8)',
-  { timeout: 60_000, hookTimeout: 60_000 },
+  { timeout: 60_000 },
   () => {
     it('first frame after prewarm for echo hi is under 400ms', async () => {
       const extra = new FauxnixSession();
@@ -2959,7 +2959,7 @@ describe.skipIf(!hasPs)(
 
 describe.skipIf(!hasPs)(
   'GNU rendering at process boundaries (#222/#223)',
-  { timeout: 60_000, hookTimeout: 60_000 },
+  { timeout: 60_000 },
   () => {
     let session: FauxnixSession;
     let dir: string;
@@ -2969,11 +2969,11 @@ describe.skipIf(!hasPs)(
       mkdirSync(join(dir, 'sub'));
       await session.prewarm();
       await session.run(translateCommandList(parseCommand('cd ' + JSON.stringify(dir))));
-    });
+    }, 60_000);
     afterAll(async () => {
       await session.dispose();
       rmSync(dir, { recursive: true, force: true });
-    });
+    }, 60_000);
     const run = (cmd: string) => session.run(translateCommandList(parseCommand(cmd)));
 
     it('merged stderr keeps the separating newline before later stdout (#222)', async () => {

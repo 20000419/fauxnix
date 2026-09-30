@@ -15,14 +15,15 @@
     "prebuild": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "tsc",
     "prepare": "npm run build",
-    "prepublishOnly": "npm run release:check -- --require-tag && npm run typecheck && npm test && npm run test:package",
+    "prepublishOnly": "npm run release:check -- --require-tag && npm run typecheck && npm run typecheck:test && npm test && npm run test:package",
     "release:check": "node scripts/release-check.mjs",
     "test": "vitest run",
     "test:package": "node scripts/package-smoke.mjs",
     "benchmark:mcp-batch": "npm run build && node scripts/benchmark-mcp-batch.mjs",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "dev": "tsx src/index.ts"
+    "dev": "tsx src/index.ts",
+    "typecheck:test": "tsc --project tsconfig.test.json"
   },
   "keywords": [
     "bash",

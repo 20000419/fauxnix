@@ -93,102 +93,6 @@ function textExpr(w: Word): string {
   return exprOfWord(w);
 }
 
-/** Collect EVERY value of a short option (-kN, -k N) — parseWords keeps only the last. */
-function collectShortValues(args: Word[], letter: string): string[] {
-  const out: string[] = [];
-  let onlyOps = false;
-  for (let i = 0; i < args.length; i++) {
-    const t = wordToString(args[i]);
-    if (t === '--') {
-      onlyOps = true;
-      continue;
-    }
-    if (onlyOps) continue;
-    if (t === '-' + letter) {
-      if (i + 1 < args.length) {
-        out.push(wordToString(args[i + 1]));
-        i++;
-      }
-    } else if (t.startsWith('-' + letter) && t.length > 2 && !t.startsWith('--')) {
-      out.push(t.slice(2));
-    }
-  }
-  return out;
-}
-
-interface LongOptionValue {
-  name: string;
-  value: string;
-}
-
-/** Collect repeated value-taking long options without mistaking short bundles for values. */
-function collectLongValues(args: Word[], names: string[]): LongOptionValue[] {
-  const out: LongOptionValue[] = [];
-  let onlyOps = false;
-  for (let i = 0; i < args.length; i++) {
-    const t = wordToString(args[i]);
-    if (t === '--') {
-      onlyOps = true;
-      continue;
-    }
-    if (onlyOps || !t.startsWith('--')) continue;
-    const eq = t.indexOf('=');
-    const name = eq >= 0 ? t.slice(0, eq) : t;
-    if (!names.includes(name)) continue;
-    if (eq >= 0) {
-      out.push({ name, value: t.slice(eq + 1) });
-    } else if (i + 1 < args.length) {
-      out.push({ name, value: wordToString(args[i + 1]) });
-      i++;
-    }
-  }
-  return out;
-}
-
-/**
- * Collect EVERY value of a short option and its long aliases, in argv order.
- * parseWords keeps only the last; grep -e/--regexp must OR-accumulate.
- * Handles -e PAT, -ePAT, -ie PAT (bundled), --regexp PAT, --regexp=PAT.
- */
-function collectRepeatOptionValues(args: Word[], short: string, longs: string[]): string[] {
-  const out: string[] = [];
-  let onlyOps = false;
-  for (let i = 0; i < args.length; i++) {
-    const t = wordToString(args[i]);
-    if (t === '--') {
-      onlyOps = true;
-      continue;
-    }
-    if (onlyOps) continue;
-    if (t.startsWith('--')) {
-      const eq = t.indexOf('=');
-      const name = eq >= 0 ? t.slice(0, eq) : t;
-      if (!longs.includes(name)) continue;
-      if (eq >= 0) {
-        out.push(t.slice(eq + 1));
-      } else if (i + 1 < args.length) {
-        out.push(wordToString(args[i + 1]));
-        i++;
-      }
-      continue;
-    }
-    if (!(t.startsWith('-') && t.length > 1 && !/^-?\d/.test(t.slice(1, 2)))) continue;
-    const body = t.slice(1);
-    for (let c = 0; c < body.length; c++) {
-      if (body[c] !== short) continue;
-      const rest = body.slice(c + 1);
-      if (rest) {
-        out.push(rest);
-      } else if (i + 1 < args.length) {
-        out.push(wordToString(args[i + 1]));
-        i++;
-      }
-      break;
-    }
-  }
-  return out;
-}
-
 /** Build the "collect file operands through fx-glob" PS prologue. */
 function psCollectSources(
   filesExpr: string,
@@ -332,17 +236,18 @@ function ereToDotNet(re: string): string {
 
 const grep: Handler = (args) => {
   const filterOptionNames = ['--include', '--exclude', '--exclude-dir'];
-  const filterOptions = collectLongValues(args, filterOptionNames);
-  const fileFilterOptions = filterOptions.filter((o) => o.name !== '--exclude-dir');
-  const excludeDirGlobs = filterOptions
-    .filter((o) => o.name === '--exclude-dir')
-    .map((o) => o.value.replace(/[\\/]+$/, ''));
-
-  const { flags, operandWords, values, missingValue } = parseWords(
+  const { flags, operandWords, values, valueEntries, missingValue } = parseWords(
     args,
     ['A', 'B', 'C', 'm', 'e'],
     [...filterOptionNames, '--max-count', '--regexp'],
   );
+  // Reuse the argv walk so another option's value is never mistaken for
+  // a filter or repeated pattern, even when that value starts with a dash.
+  const filterOptions = valueEntries.filter((o) => filterOptionNames.includes(o.name));
+  const fileFilterOptions = filterOptions.filter((o) => o.name !== '--exclude-dir');
+  const excludeDirGlobs = filterOptions
+    .filter((o) => o.name === '--exclude-dir')
+    .map((o) => o.value.replace(/[\\/]+$/, ''));
   const missingFilterOption = missingValue.find((o) =>
     [...filterOptionNames, '-m', '--max-count', '-e', '--regexp'].includes(o),
   );
@@ -386,7 +291,9 @@ const grep: Handler = (args) => {
   const ctxA = Math.max(toInt(values.get('-A')), toInt(values.get('-C')));
   const ctxB = Math.max(toInt(values.get('-B')), toInt(values.get('-C')));
 
-  const regexpPats = collectRepeatOptionValues(args, 'e', ['--regexp']);
+  const regexpPats = valueEntries
+    .filter((o) => o.name === '-e' || o.name === '--regexp')
+    .map((o) => o.value);
   if (regexpPats.length === 0 && operandWords.length === 0) {
     return (
       "[Console]::Error.WriteLine('usage: grep [OPTION]... PATTERN [FILE]...'); $script:fx_exit = 2"
@@ -2328,7 +2235,7 @@ function parseSortKeySpec(spec: string, g: { n: boolean; b: boolean; f: boolean 
 }
 
 const sort: Handler = (args) => {
-  const { flags, longs, values, operandWords } = parseWords(args, ['t', 'k'], []);
+  const { flags, longs, values, valueEntries, operandWords } = parseWords(args, ['t', 'k'], []);
   const globalR = flags.has('r') || longs.has('--reverse');
   const globalN = flags.has('n') || longs.has('--numeric-sort');
   const uniqMode = flags.has('u') || longs.has('--unique');
@@ -2347,8 +2254,10 @@ const sort: Handler = (args) => {
   }
 
   const specs: SortKeySpec[] = [];
-  for (const k of collectShortValues(args, 'k')) {
-    specs.push(parseSortKeySpec(k, { n: globalN, b: globalB, f: globalF }));
+  for (const option of valueEntries) {
+    if (option.name === '-k') {
+      specs.push(parseSortKeySpec(option.value, { n: globalN, b: globalB, f: globalF }));
+    }
   }
 
   const lines: string[] = [PS_READTEXT_FN, PS_SPLITLINES_FN, PS_GLOB_FN];

@@ -19,8 +19,8 @@ const TOOL_NAME = process.env.FAUXNIX_TOOL_NAME || 'bash';
 const BATCH_TOOL_NAME = TOOL_NAME + '_batch';
 // Text and structured output both appear in the JSON response. Leave room for
 // worst-case JSON escaping below the official stdio client's 10 MiB limit.
-const BATCH_STDOUT_LIMIT = 262_144;
-const BATCH_STDERR_LIMIT = 65_536;
+const MCP_STDOUT_LIMIT = 262_144;
+const MCP_STDERR_LIMIT = 65_536;
 
 const EXEC_ANNOTATIONS: ToolAnnotations = {
   readOnlyHint: false,
@@ -53,6 +53,7 @@ Unknown commands (git, node, npm, python, cargo...) are passed through and execu
 Not supported: heredocs, env -i/--ignore-environment, background jobs. if/then/elif/else/fi, for-in loops, while/until, case ... esac, and word-level \$((...)) arithmetic expansion are supported.
 CWD, environment variables, export/unset, cd, and positional parameters (set -- / $1 / "$@") persist across calls within this session — a resident PowerShell 5.1 host is started when the MCP session begins (and after reset), so the first bash tool call is already warm.
 Efficiency: when two or more commands or verification steps are already known, prefer ${BATCH_TOOL_NAME} once instead of making several ${TOOL_NAME} calls. Keep separate calls only when the next command requires model interpretation of the previous output. For byte-exact work, measure with wc -c or stat -c %s instead of inferring CRLF byte counts from displayed text.
+MCP capture is bounded to 256 KiB stdout and 64 KiB stderr across the complete command list; larger output is marked truncated. Redirect larger artifacts to files. These transport-safe budgets include room for JSON escaping and duplicate text/structured fields.
 Exit codes follow bash conventions (0 ok, 1 fail, 2 usage/serious, 127 command not found, 124 timeout, 130 cancelled). The tool also returns structuredContent (schemaVersion 1) with stdout/stderr/exitCode/timedOut/cancelled/truncated/sessionId.
 
 Platform requirement: the execution backend is native Windows PowerShell 5.1+. On hosts without PowerShell on PATH (e.g. Linux containers/sandboxes), the bash tool returns exit code 127 with an actionable error instead of running the command.`;
@@ -261,189 +262,208 @@ export async function startMcpServer(): Promise<void> {
     { capabilities: { tools: {} } },
   );
   const session = new FauxnixSession();
-  await session.prewarm();
-
-  server.tool(
-    TOOL_NAME,
-    TOOL_DESCRIPTION,
-    {
-      command: z.string().describe('The bash-style command line to run'),
-      timeout_ms: z
-        .number()
-        .int()
-        .min(1000)
-        .max(600_000)
-        .optional()
-        .describe('Timeout in milliseconds (default 120000)'),
-    },
-    EXEC_ANNOTATIONS,
-    async ({ command, timeout_ms }, extra) => {
-      try {
-        const plans = translateCommandList(parseCommand(command), EXECUTE_TRANSLATION);
-        const result = await session.run(plans, {
-          timeoutMs: timeout_ms,
-          signal: extra.signal,
-        });
-        const infra = result.spawnError === 'ENOENT' || result.spawnError === 'START';
-        return bashToolResult(result, session.id, infra);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        return bashToolResult(
-          {
-            stdout: '',
-            stderr: msg,
-            exitCode: 2,
-            timedOut: false,
-            cancelled: false,
-            truncated: false,
-          },
-          session.id,
-          true,
-        );
-      }
-    },
-  );
-
-  server.tool(
-    BATCH_TOOL_NAME,
-    BATCH_TOOL_DESCRIPTION,
-    {
-      steps: z
-        .array(
-          z.object({
-            id: z.string().min(1).max(64).optional().describe('Optional short step label'),
-            command: z.string().min(1).max(16384).describe('Bash-style command for this step'),
-          }),
-        )
-        .min(1)
-        .max(32)
-        .describe('Ordered workflow steps; all are compiled before execution begins'),
-      stop_on_error: z
-        .boolean()
-        .optional()
-        .default(true)
-        .describe('Stop after the first nonzero exit (default true)'),
-      timeout_ms: z
-        .number()
-        .int()
-        .min(1000)
-        .max(600_000)
-        .optional()
-        .describe('Total timeout for the complete batch (default 120000)'),
-      stdout_limit_bytes: z
-        .number()
-        .int()
-        .min(0)
-        .max(BATCH_STDOUT_LIMIT)
-        .optional()
-        .describe('Total stdout budget shared by every step (default 262144)'),
-      stderr_limit_bytes: z
-        .number()
-        .int()
-        .min(0)
-        .max(BATCH_STDERR_LIMIT)
-        .optional()
-        .describe('Total stderr budget shared by every step (default 65536)'),
-    },
-    EXEC_ANNOTATIONS,
-    async (
-      { steps, stop_on_error, timeout_ms, stdout_limit_bytes, stderr_limit_bytes },
-      extra,
-    ) => {
-      try {
-        const compiled = compileBatchSteps(steps);
-        const result = await session.runBatch(compiled, {
-          stopOnError: stop_on_error,
-          timeoutMs: timeout_ms,
-          stdoutLimit: stdout_limit_bytes ?? BATCH_STDOUT_LIMIT,
-          stderrLimit: stderr_limit_bytes ?? BATCH_STDERR_LIMIT,
-          signal: extra.signal,
-        });
-        return batchToolResult(steps, result, session.id);
-      } catch (e) {
-        if (e instanceof BatchCompileError) {
-          return batchCompileErrorResult(steps, e, session.id);
+  const input = process.stdin;
+  let shutdownPromise: Promise<void> | undefined;
+  const shutdown = (): Promise<void> => {
+    if (!shutdownPromise) {
+      input.removeListener('end', onShutdown);
+      input.removeListener('close', onShutdown);
+      process.removeListener('SIGINT', onShutdown);
+      process.removeListener('SIGTERM', onShutdown);
+      // Schedule cleanup after storing the promise so transport.close callbacks
+      // can request shutdown again without disposing the session twice.
+      shutdownPromise = Promise.resolve().then(async () => {
+        try {
+          await session.dispose();
+        } finally {
+          try {
+            await server.close();
+          } catch {
+            /* best effort, including partially connected transports */
+          }
         }
-        const message = e instanceof Error ? e.message : String(e);
-        return {
-          content: [{ type: 'text' as const, text: message }],
-          structuredContent: {
-            schemaVersion: 1 as const,
-            sessionId: session.id,
-            preflightOk: true,
-            stopReason: 'infrastructure' as const,
-            stepsRequested: steps.length,
-            stepsCompleted: 0,
-            timedOut: false,
-            cancelled: false,
-            truncated: false,
-            steps: steps.map((step, index) => ({
-              index,
-              ...(step.id ? { id: step.id } : {}),
-              status: 'skipped' as const,
-            })),
-          },
-          isError: true as const,
-        };
-      }
-    },
-  );
-
-  server.tool(
-    'fauxnix_translate',
-    'Translate a bash-style command into the equivalent PowerShell script WITHOUT executing it. Useful for learning/debugging what fauxnix does under the hood.',
-    { command: z.string().describe('The bash-style command line to translate (never executed)') },
-    TRANSLATE_ANNOTATIONS,
-    async ({ command }) => translateToolResult(command),
-  );
-
-  server.tool(
-    'fauxnix_session',
-    'Inspect or reset the persistent fauxnix shell session (current directory, environment, positional count, session id). Actions: "status" (default) or "reset".',
-    {
-      action: z
-        .enum(['status', 'reset'])
-        .default('status')
-        .describe('"status" shows the session state (cwd, tracked env keys, positional count); "reset" clears it back to a fresh shell'),
-    },
-    SESSION_ANNOTATIONS,
-    async ({ action }) => {
-      if (action === 'reset') {
-        await session.reset();
-        return { content: [{ type: 'text', text: 'fauxnix: session reset' }] };
-      }
-      return { content: [{ type: 'text', text: formatSessionStatus(session) }] };
-    },
-  );
-
-  const transport = new StdioServerTransport();
-  let shuttingDown = false;
-  const shutdown = async () => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    await session.dispose();
-    try {
-      await server.close();
-    } catch {
-      /* ignore */
+      });
     }
+    return shutdownPromise;
   };
-  process.stdin.on('end', () => {
-    void shutdown();
-  });
-  process.stdin.on('close', () => {
-    void shutdown();
-  });
-  process.on('SIGINT', () => {
-    void shutdown();
-  });
-  process.on('SIGTERM', () => {
-    void shutdown();
-  });
-  transport.onclose = () => {
-    void shutdown();
+  const onShutdown = () => {
+    void shutdown().catch(() => undefined);
   };
-  await server.connect(transport);
+
+  try {
+    await session.prewarm();
+
+    server.tool(
+      TOOL_NAME,
+      TOOL_DESCRIPTION,
+      {
+        command: z.string().describe('The bash-style command line to run'),
+        timeout_ms: z
+          .number()
+          .int()
+          .min(1000)
+          .max(600_000)
+          .optional()
+          .describe('Timeout in milliseconds (default 120000)'),
+      },
+      EXEC_ANNOTATIONS,
+      async ({ command, timeout_ms }, extra) => {
+        try {
+          const plans = translateCommandList(parseCommand(command), EXECUTE_TRANSLATION);
+          const result = await session.run(plans, {
+            timeoutMs: timeout_ms,
+            signal: extra.signal,
+            stdoutLimit: MCP_STDOUT_LIMIT,
+            stderrLimit: MCP_STDERR_LIMIT,
+          });
+          const infra = result.infrastructureError === true ||
+            result.spawnError === 'ENOENT' || result.spawnError === 'START';
+          return bashToolResult(result, session.id, infra);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          return bashToolResult(
+            {
+              stdout: '',
+              stderr: msg,
+              exitCode: 2,
+              timedOut: false,
+              cancelled: false,
+              truncated: false,
+            },
+            session.id,
+            true,
+          );
+        }
+      },
+    );
+
+    server.tool(
+      BATCH_TOOL_NAME,
+      BATCH_TOOL_DESCRIPTION,
+      {
+        steps: z
+          .array(
+            z.object({
+              id: z.string().min(1).max(64).optional().describe('Optional short step label'),
+              command: z.string().min(1).max(16384).describe('Bash-style command for this step'),
+            }),
+          )
+          .min(1)
+          .max(32)
+          .describe('Ordered workflow steps; all are compiled before execution begins'),
+        stop_on_error: z
+          .boolean()
+          .optional()
+          .default(true)
+          .describe('Stop after the first nonzero exit (default true)'),
+        timeout_ms: z
+          .number()
+          .int()
+          .min(1000)
+          .max(600_000)
+          .optional()
+          .describe('Total timeout for the complete batch (default 120000)'),
+        stdout_limit_bytes: z
+          .number()
+          .int()
+          .min(0)
+          .max(MCP_STDOUT_LIMIT)
+          .optional()
+          .describe('Total stdout budget shared by every step (default 262144)'),
+        stderr_limit_bytes: z
+          .number()
+          .int()
+          .min(0)
+          .max(MCP_STDERR_LIMIT)
+          .optional()
+          .describe('Total stderr budget shared by every step (default 65536)'),
+      },
+      EXEC_ANNOTATIONS,
+      async (
+        { steps, stop_on_error, timeout_ms, stdout_limit_bytes, stderr_limit_bytes },
+        extra,
+      ) => {
+        try {
+          const compiled = compileBatchSteps(steps);
+          const result = await session.runBatch(compiled, {
+            stopOnError: stop_on_error,
+            timeoutMs: timeout_ms,
+            stdoutLimit: stdout_limit_bytes ?? MCP_STDOUT_LIMIT,
+            stderrLimit: stderr_limit_bytes ?? MCP_STDERR_LIMIT,
+            signal: extra.signal,
+          });
+          return batchToolResult(steps, result, session.id);
+        } catch (e) {
+          if (e instanceof BatchCompileError) {
+            return batchCompileErrorResult(steps, e, session.id);
+          }
+          const message = e instanceof Error ? e.message : String(e);
+          return {
+            content: [{ type: 'text' as const, text: message }],
+            structuredContent: {
+              schemaVersion: 1 as const,
+              sessionId: session.id,
+              preflightOk: true,
+              stopReason: 'infrastructure' as const,
+              stepsRequested: steps.length,
+              stepsCompleted: 0,
+              timedOut: false,
+              cancelled: false,
+              truncated: false,
+              steps: steps.map((step, index) => ({
+                index,
+                ...(step.id ? { id: step.id } : {}),
+                status: 'skipped' as const,
+              })),
+            },
+            isError: true as const,
+          };
+        }
+      },
+    );
+
+    server.tool(
+      'fauxnix_translate',
+      'Translate a bash-style command into the equivalent PowerShell script WITHOUT executing it. Useful for learning/debugging what fauxnix does under the hood.',
+      { command: z.string().describe('The bash-style command line to translate (never executed)') },
+      TRANSLATE_ANNOTATIONS,
+      async ({ command }) => translateToolResult(command),
+    );
+
+    server.tool(
+      'fauxnix_session',
+      'Inspect or reset the persistent fauxnix shell session (current directory, environment, positional count, session id). Actions: "status" (default) or "reset".',
+      {
+        action: z
+          .enum(['status', 'reset'])
+          .default('status')
+          .describe('"status" shows the session state (cwd, tracked env keys, positional count); "reset" clears it back to a fresh shell'),
+      },
+      SESSION_ANNOTATIONS,
+      async ({ action }) => {
+        if (action === 'reset') {
+          await session.reset();
+          return { content: [{ type: 'text', text: 'fauxnix: session reset' }] };
+        }
+        return { content: [{ type: 'text', text: formatSessionStatus(session) }] };
+      },
+    );
+
+    const transport = new StdioServerTransport();
+    input.on('end', onShutdown);
+    input.on('close', onShutdown);
+    process.on('SIGINT', onShutdown);
+    process.on('SIGTERM', onShutdown);
+    transport.onclose = onShutdown;
+    await server.connect(transport);
+  } catch (error) {
+    try {
+      await shutdown();
+    } catch {
+      /* preserve the startup error if session teardown also fails */
+    }
+    throw error;
+  }
 }
 
 // keep referenced for tree-shaking clarity

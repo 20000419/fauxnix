@@ -2,8 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, quality/validation-20260930]
   pull_request:
+
+concurrency:
+  group: fauxnix-validation-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -35,6 +39,7 @@ jobs:
     env:
       FAUXNIX_PS: ${{ matrix.fauxnix_ps }}
       FAUXNIX_HOST_READY_TIMEOUT_MS: '90000'
+      FAUXNIX_DIFF_ORACLE: ${{ matrix.name == 'windows-x64-desktop' && '1' || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -59,7 +64,38 @@ jobs:
           if ($check -notmatch 'edition\s+:\s+${{ matrix.edition }}') {
             throw 'fauxnix check did not report the expected ${{ matrix.edition }} edition'
           }
+      - name: Require the Git Bash differential oracle
+        if: matrix.name == 'windows-x64-desktop'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'C:\Program Files\Git\bin\bash.exe')) {
+            throw 'The validation lane requires a real Git Bash differential oracle'
+          }
       - run: npm run typecheck
+      - run: npm run typecheck:test
       - run: npm run build
       - run: npm test
+      - run: npm run test:package
+
+  portable:
+    name: portable (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [18, 20, 22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run release:check
+      - run: npm run typecheck
+      - run: npm run typecheck:test
+      - run: npm run build
+      # The native Windows execution and Git Bash oracle remain separate gates.
+      - run: npm test -- --dir test
       - run: npm run test:package

@@ -63,3 +63,43 @@ export function normalizeHostNewlines(s: string): string {
 export function encodeCommand(script: string): string {
   return Buffer.from(script, 'utf16le').toString('base64');
 }
+
+/** Keep the longest whole-codepoint prefix within a caller's UTF-8 byte budget. */
+export function clipUtf8(text: string, limit: number): { text: string; truncated: boolean } {
+  const total = Buffer.byteLength(text, 'utf8');
+  if (total <= limit) return { text, truncated: false };
+
+  // Captures normally exceed the caller budget by at most one codepoint.
+  // Trim that small suffix rather than walking megabytes of retained output.
+  // For a small budget, use the forward path instead; neither path allocates
+  // another full UTF-8 buffer or splits a surrogate pair.
+  if (total - limit <= limit) {
+    let used = total;
+    let end = text.length;
+    while (used > limit && end > 0) {
+      const last = text.charCodeAt(end - 1);
+      const previous = end > 1 ? text.charCodeAt(end - 2) : 0;
+      if (last >= 0xdc00 && last <= 0xdfff && previous >= 0xd800 && previous <= 0xdbff) {
+        used -= 4;
+        end -= 2;
+      } else {
+        // Lone surrogates encode as a three-byte replacement character,
+        // but retain their original JS spelling just as the forward path does.
+        used -= last < 0x80 ? 1 : last < 0x800 ? 2 : 3;
+        end--;
+      }
+    }
+    return { text: text.slice(0, end), truncated: true };
+  }
+
+  let used = 0;
+  let end = 0;
+  for (const codepoint of text) {
+    const value = codepoint.codePointAt(0)!;
+    const size = value < 0x80 ? 1 : value < 0x800 ? 2 : value < 0x10000 ? 3 : 4;
+    if (used + size > limit) break;
+    used += size;
+    end += codepoint.length;
+  }
+  return { text: text.slice(0, end), truncated: true };
+}

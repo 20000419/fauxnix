@@ -1361,6 +1361,97 @@
       "id": "utf8-grep",
       "cmd": "printf '你好，世界\\n' | grep '世界'",
       "source": "integration: UTF-8 roundtrip"
+    },
+    {
+      "id": "sort-bundled-numeric-key",
+      "cmd": "sort -nk2,2 audit-numbers.txt",
+      "source": "test/compatibility-regressions.windows.test.ts / quality audit",
+      "files": {
+        "audit-numbers.txt": "z 2\na 10\nm 1\n"
+      }
+    },
+    {
+      "id": "grep-option-shaped-pattern",
+      "cmd": "grep -F -e '--include=*.txt' audit-notes.log",
+      "source": "test/compatibility-regressions.windows.test.ts / quality audit",
+      "files": {
+        "audit-notes.log": "--include=*.txt\nordinary\n"
+      }
+    },
+    {
+      "id": "quoted-line-continuation",
+      "cmd": "printf \"%s\" \"first\\\nsecond\"",
+      "source": "test/compatibility-regressions.windows.test.ts / quality audit"
+    },
+    {
+      "id": "substitution-escaped-close",
+      "cmd": "printf '%s' \"$(printf '%s' \\))\"",
+      "source": "test/compatibility-regressions.windows.test.ts / quality audit"
+    },
+    {
+      "id": "substitution-escaped-open",
+      "cmd": "printf '%s' \"$(printf '%s' \\()\"",
+      "source": "test/compatibility-regressions.windows.test.ts / quality audit"
+    },
+    {
+      "id": "substitution-single-quote-backslash",
+      "cmd": "printf '%s' \"$(printf '%s' '\\')\"",
+      "source": "test/compatibility-regressions.windows.test.ts / quality audit"
+    },
+    {
+      "id": "pipeline-newline-continuation",
+      "cmd": "printf 'a\\nb\\n' |\n# continuation\nhead -n 1",
+      "source": "test/compatibility-regressions.windows.test.ts / quality audit"
+    },
+    {
+      "id": "head-bundled-count",
+      "cmd": "printf 'a\\nb\\nc\\n' | head -qn2",
+      "source": "test/textio-system-correctness.windows.test.ts / quality audit"
+    },
+    {
+      "id": "head-last-count-mode",
+      "cmd": "printf 'a\\nb\\nc\\n' | head -c1 -n2",
+      "source": "test/textio-system-correctness.windows.test.ts / quality audit"
+    },
+    {
+      "id": "head-negative-zero",
+      "cmd": "printf 'a\\nb\\nc\\n' | head -n -0",
+      "source": "test/textio-system-correctness.windows.test.ts / quality audit"
+    },
+    {
+      "id": "head-header-order",
+      "cmd": "printf 'a\\nb\\nc\\n' | head -vq -n1",
+      "source": "test/textio-system-correctness.windows.test.ts / quality audit"
+    },
+    {
+      "id": "tail-header-order",
+      "cmd": "printf 'a\\nb\\nc\\n' | tail -vq -n1",
+      "source": "test/textio-system-correctness.windows.test.ts / quality audit"
+    },
+    {
+      "id": "echo-toggle-order",
+      "cmd": "echo -Een 'a\\nb'",
+      "source": "test/textio-system-correctness.windows.test.ts / quality audit"
+    },
+    {
+      "id": "printf-single-terminator",
+      "cmd": "printf -- --",
+      "source": "test/textio-system-correctness.windows.test.ts / quality audit"
+    },
+    {
+      "id": "date-last-value",
+      "cmd": "date -u -d @0 --date=@1 +%s",
+      "source": "test/textio-system-correctness.windows.test.ts / quality audit"
+    },
+    {
+      "id": "base64-wrap-order",
+      "cmd": "printf 'a\\nb\\nc\\n' | base64 -w4 --wrap=8",
+      "source": "test/textio-system-correctness.windows.test.ts / quality audit"
+    },
+    {
+      "id": "wc-unicode-scalars",
+      "cmd": "printf 'A😀é\\n' | wc -m",
+      "source": "test/textio-system-correctness.windows.test.ts / quality audit"
     }
   ]
 }
