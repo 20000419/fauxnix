@@ -9,17 +9,31 @@ const { Writable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 (async () => {
   const controller = new AbortController();
+  let finished = false;
+  let stopping = false;
+  const stopDecoder = () => {
+    if (finished || stopping) return;
+    stopping = true;
+    controller.abort();
+    // A stalled output pipe can retain native writes after stream destruction.
+    // The owner has gone, so bound only this read-only decoder's shutdown.
+    setTimeout(() => process.exit(1), 1000).unref();
+  };
+  const leased = process.argv[4] === 'lease';
+  if (leased) {
+    // PowerShell keeps this private input pipe open without writing to it.
+    // EOF is an ownership signal, not compressed input or a host RPC message.
+    process.stdin.on('end', stopDecoder);
+    process.stdin.on('error', stopDecoder);
+    process.stdin.resume();
+  }
   const parent = Number(process.argv[3]);
   const watcher = Number.isSafeInteger(parent) && parent > 0 ? setInterval(() => {
     try { process.kill(parent, 0); }
     catch (error) {
       if (error.code === 'ESRCH') {
         clearInterval(watcher);
-        controller.abort();
-        // A stalled inherited pipe can retain a pending native write after
-        // stream destruction. Once the parent is gone, terminate only this
-        // read-only decoder after a bounded best-effort diagnostic drain.
-        setTimeout(() => process.exit(1), 1000).unref();
+        stopDecoder();
       }
     }
   }, 250) : undefined;
@@ -41,7 +55,11 @@ const { pipeline } = require('node:stream/promises');
   } catch (error) {
     process.stderr.write('gzip decoder: ' + String(error.message).slice(0, 2048) + '\n');
     process.exitCode = error.code === 'Z_DATA_ERROR' || error.code === 'Z_BUF_ERROR' ? 2 : 1;
-  } finally { if (watcher) clearInterval(watcher); }
+  } finally {
+    finished = true;
+    if (watcher) clearInterval(watcher);
+    if (leased) process.stdin.destroy();
+  }
 })();
 `;
 
@@ -67,9 +85,10 @@ export function gzipNodeFunctions(pure: boolean): string {
     '    $fx_psi.FileName = ' + node,
     '    $fx_psi.UseShellExecute = $false; $fx_psi.CreateNoWindow = $true',
     '    $fx_psi.RedirectStandardOutput = $true; $fx_psi.RedirectStandardError = $true',
+    '    $fx_psi.RedirectStandardInput = $true',
     '    $fx_psi.StandardErrorEncoding = New-Object Text.UTF8Encoding($false)',
     "    $fx_mode = 'stream'; if ($testOnly) { $fx_mode = 'test' }",
-    '    $fx_psi.Arguments = ' + psStr(prefix) + " + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($fx_inputPath)) + ' ' + $fx_mode + ' ' + $PID",
+    '    $fx_psi.Arguments = ' + psStr(prefix) + " + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($fx_inputPath)) + ' ' + $fx_mode + ' ' + $PID + ' lease'",
     '    $fx_process = New-Object Diagnostics.Process',
     '    $fx_process.StartInfo = $fx_psi',
     "    if (-not $fx_process.Start()) { throw 'unable to start the Node gzip decoder' }",

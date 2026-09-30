@@ -33,9 +33,11 @@ the existing text-line interface still needs O(longest-line) memory. Disk exhaus
 fails without committing or deleting the archive. UTF-8/GBK text handling remains.
 
 Normal failure disposes streams, kills a still-running owned helper and removes
-owned temporary artifacts. Pipe failure is the primary child failure signal; a
-parent-liveness watcher also aborts after PowerShell dies and bounds the decoder's
-own shutdown if a stalled inherited pipe cannot drain. The normal command
+owned temporary artifacts. PowerShell holds a private redirected stdin pipe open
+for the decoder lifetime; EOF aborts decoding. This is not compressed input or
+a host RPC change. Output-pipe failure also aborts. A PID watcher is best effort
+only: a PID-only backpressure test did not terminate reliably on Windows. Owner
+pipe closure bounds the decoder's own shutdown if a stalled output cannot drain. The normal command
 budget still belongs to the host. Direct standalone scripts have no added wall
 clock limit. No speedup is claimed; child startup and stdout spooling cost are
 measured separately.

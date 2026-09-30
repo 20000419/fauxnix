@@ -14,7 +14,10 @@ The **1.0.0 hard gate** is:
 `corpus.json` now contains **270 sourced, unique cases** grown from the
 40-case scaffold and the shipped integration/audit regressions. The corpus
 size gate is enforced in the default test suite, and an opted-in oracle run
-must remain at or above 95% identity.
+must remain at or above 95% identity. The current CI minimum-Node 22.20.0
+x64 PS5.1 lane requires Git Bash and runs this unchanged corpus plus the
+separate 41-case awk/sort oracle. Missing Git Bash fails that lane explicitly;
+other lanes may still skip the oracle.
 
 The Unicode `wc -m` case sets `LC_ALL=C.UTF-8` for that command explicitly.
 The oracle otherwise runs under `LC_ALL=C`, where GNU `wc -m` counts each input
@@ -31,8 +34,10 @@ identity pass or added to the mismatch allowlist. Replacing the newly added
 astral identity fixture with the BMP fixture changes this corpus: do not
 claim a same-case percentage improvement over the previous 270-case run.
 
-The four currently reviewed differences are listed by case ID in
-`gate.knownMismatchIds`. The oracle rejects every new mismatch even while the
+The two remaining reviewed allowlist entries are listed by case ID in
+`gate.knownMismatchIds`: `or-fallback` and `bracket-leading-empty-alt`. The
+last validated 270-case run observed only the latter mismatch (269 identical);
+`sort-ignore-case` and `awk-printf-fields` were fixed without changing their cases. The oracle rejects every new mismatch even while the
 aggregate stays above 95%; removing an entry after its behavior is fixed is
 allowed. This prevents the percentage threshold from hiding regressions.
 

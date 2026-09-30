@@ -56,24 +56,36 @@ describe('real Node gzip decoder', () => {
     expect(result.status, result.stderr?.toString()).toBe(0);
     expect(result.stdout.length).toBe(0);
   });
-  it('aborts a backpressured decoder when its known disposable parent has exited', async () => {
-    const parent = spawnSync(process.execPath, ['-e', ''], { timeout: 5000 });
-    expect(parent.status).toBe(0);
-    const path = join(directory, 'parent-exit.gz');
+  it('aborts a backpressured decoder when its owning pipe closes', async () => {
+    // The original PID-only fixture timed out on Windows. Production now uses
+    // an explicit lifetime pipe, so test that signal with a genuinely active
+    // decoder and unconsumed output, rather than guessing a dead PID.
+    const path = join(directory, 'owner-pipe-close.gz');
     const archive = gzipSync(Buffer.alloc(4 * 1024 * 1024, 97));
     writeFileSync(path, archive);
-    const child = spawn(process.execPath, args(path, 'stream', parent.pid), { stdio: ['ignore', 'pipe', 'pipe'] });
-    // Leave stdout paused so completion cannot race ahead of the watcher.
+    const child = spawn(process.execPath, [...args(path, 'stream'), 'lease'], { stdio: ['pipe', 'pipe', 'pipe'] });
+    let diagnostics = '';
+    child.stderr.on('data', (chunk) => { diagnostics = (diagnostics + chunk.toString()).slice(-8192); });
     try {
-      const status = await new Promise<number | null>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('decoder did not stop')), 5000);
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('decoder did not produce output: ' + diagnostics)), 5000);
+        child.once('error', (error) => { clearTimeout(timer); reject(error); });
+        child.stdout.once('readable', () => { clearTimeout(timer); resolve(); });
+      });
+      expect(child.stdout.readableLength).toBeGreaterThan(0);
+      const exited = new Promise<number | null>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('decoder did not stop: ' + diagnostics)), 8000);
         child.once('error', (error) => { clearTimeout(timer); reject(error); });
         child.once('exit', (code) => { clearTimeout(timer); resolve(code); });
       });
-      expect(status).toBe(1);
+      child.stdin.end();
+      expect(await exited, diagnostics).toBe(1);
       expect(readFileSync(path)).toEqual(archive);
-    } finally { child.stdout.destroy(); child.stderr.destroy(); if (child.exitCode === null) child.kill(); }
-  });
+    } finally {
+      child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy();
+      if (child.exitCode === null) child.kill();
+    }
+  }, 15000);
   it('pins executable plans and renders an explicit pure-script Node dependency', () => {
     expect(gzipNodeFunctions(false)).toContain(process.execPath.replaceAll("'", "''"));
     expect(gzipNodeFunctions(true)).toContain('Get-Command node.exe -CommandType Application -ErrorAction Stop');

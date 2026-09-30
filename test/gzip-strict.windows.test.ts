@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -91,15 +91,22 @@ describe.skipIf(!runnable)('strict translated gzip decoding on Windows', { timeo
   });
 
   function raw(script: string, spool: string) {
-    return spawnSync(ps.executable, [...POWERSHELL_ARGS, '-EncodedCommand', Buffer.from(
+    const path = join(spool, 'fixture.ps1');
+    writeFileSync(path, '\ufeff' +
       `$ProgressPreference = 'SilentlyContinue'; $ErrorActionPreference = 'Stop'; Set-Location -LiteralPath ${psStr(directory)}; $script:fx_exit = 0;\n` + script,
-      'utf16le').toString('base64')], { encoding: 'utf8', timeout: 45000, env: { ...process.env, TEMP: spool, TMP: spool } });
+      'utf8');
+    // The generated helper plus long hosted-runner paths can exceed Windows'
+    // command-line limit after UTF-16/base64 expansion. Use an owned script.
+    try {
+      return spawnSync(ps.executable, [...POWERSHELL_ARGS, '-File', path],
+        { encoding: 'utf8', timeout: 45000, env: { ...process.env, TEMP: spool, TMP: spool } });
+    } finally { rmSync(path, { force: true }); }
   }
 
   it('cleans delete-on-close input/stdout spools for a valid byte-array helper input', () => {
     const spool = join(directory, 'spools'); mkdirSync(spool);
     const body = translateCommandList(parseCommand('gunzip -c unused.gz'))[0].body;
-    const helpers = body.slice(0, body.indexOf('$fx_files ='));
+    const helpers = body.slice(body.indexOf('function fx-gz-decode'), body.indexOf('$fx_files ='));
     const result = raw(helpers + `\n$inputBytes = [Convert]::FromBase64String('${good.toString('base64')}'); ` +
       '$stream = fx-gz-open $inputBytes $true; $reader = New-Object IO.StreamReader($stream); ' +
       'try { [Console]::Out.Write($reader.ReadToEnd()) } finally { $reader.Dispose() }; exit 0', spool);
@@ -130,7 +137,7 @@ describe.skipIf(!runnable)('strict translated gzip decoding on Windows', { timeo
     writeFileSync(join(directory, 'sample.gz'), good);
     const spool = join(directory, 'spools'); mkdirSync(spool);
     const body = translateCommandList(parseCommand('gunzip -c sample.gz'))[0].body;
-    const helpers = body.slice(0, body.indexOf('$fx_files ='));
+    const helpers = body.slice(body.indexOf('function fx-gz-decode'), body.indexOf('$fx_files ='));
     const script = helpers + '\n$sink = New-Object IO.MemoryStream(,[byte[]]@(65,66,67)); ' +
       '$sink.Dispose(); try { fx-gz-decode ' + psStr(join(directory, 'sample.gz')) +
       ' $false $sink $false; exit 99 } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }';
@@ -159,5 +166,53 @@ describe.skipIf(!runnable)('strict translated gzip decoding on Windows', { timeo
       expect(readFileSync(join(directory, 'sample.gz'))).toEqual(bytes);
       expect(readFileSync(join(directory, 'sample'), 'utf8')).toBe('preexisting bytes');
     } finally { await cancelled.dispose(); }
+  });
+
+  it('terminates an active decoder when its real PowerShell owner is killed', async () => {
+    const archive = gzipSync(Buffer.alloc(4 * 1024 * 1024, 97));
+    writeFileSync(join(directory, 'sample.gz'), archive);
+    writeFileSync(join(directory, 'sample'), 'preexisting bytes');
+    const body = translateCommandList(parseCommand('gunzip sample.gz'))[0].body;
+    const started = "if (-not $fx_process.Start()) { throw 'unable to start the Node gzip decoder' }";
+    expect(body).toContain(started);
+    // Coordinate an active decoder with a deliberately paused consumer. The
+    // actual decoder and its owned pipes are unchanged; no write is mocked.
+    const instrumented = body.replace(started, started +
+      "\n[Console]::Error.WriteLine('FX_HELPER_READY:' + $fx_process.Id); Start-Sleep -Seconds 30");
+    const script = join(directory, 'owner.ps1');
+    writeFileSync(script, '\ufeff$ProgressPreference = \'SilentlyContinue\'; Set-Location -LiteralPath ' +
+      psStr(directory) + '; $script:fx_exit = 0;\n' + instrumented, 'utf8');
+    const owner = spawn(ps.executable, [...POWERSHELL_ARGS, '-File', script], { stdio: ['ignore', 'pipe', 'pipe'] });
+    owner.stdout.resume();
+    let diagnostics = '';
+    try {
+      const helperPid = await new Promise<number>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('helper did not start: ' + diagnostics)), 20000);
+        owner.once('error', (error) => { clearTimeout(timer); reject(error); });
+        owner.stderr.on('data', (chunk) => {
+          diagnostics = (diagnostics + chunk.toString()).slice(-8192);
+          const match = /FX_HELPER_READY:(\d+)/.exec(diagnostics);
+          if (match) { clearTimeout(timer); resolve(Number(match[1])); }
+        });
+      });
+      expect(Number.isSafeInteger(helperPid) && helperPid > 0).toBe(true);
+      expect(owner.exitCode).toBeNull();
+      expect(owner.signalCode).toBeNull();
+      const ended = new Promise<void>((resolve) => owner.once('exit', () => resolve()));
+      expect(owner.kill()).toBe(true);
+      await ended;
+      // Wait on this owned helper's actual Windows process handle, not a PID
+      // signal-zero heuristic. Do not terminate arbitrary processes by PID.
+      const waited = spawnSync(ps.executable, [...POWERSHELL_ARGS, '-Command',
+        `$p = Get-Process -Id ${helperPid} -ErrorAction SilentlyContinue; if ($null -eq $p) { exit 0 }; if ($p.WaitForExit(8000)) { exit 0 }; exit 1`],
+        { encoding: 'utf8', timeout: 15000 });
+      expect(waited.error).toBeUndefined();
+      expect(waited.status, waited.stderr).toBe(0);
+      expect(readFileSync(join(directory, 'sample.gz'))).toEqual(archive);
+      expect(readFileSync(join(directory, 'sample'), 'utf8')).toBe('preexisting bytes');
+    } finally {
+      if (owner.exitCode === null && owner.signalCode === null) owner.kill();
+      owner.stdout.destroy(); owner.stderr.destroy();
+    }
   });
 });
