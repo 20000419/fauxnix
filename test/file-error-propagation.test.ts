@@ -9,13 +9,13 @@ function bodyOf(command: string): string {
 }
 
 describe('file and archive cmdlet failures enter their declared catch blocks', () => {
-  it('mv rejects resolved source/destination aliases before removing the destination', () => {
+  it('mv rejects resolved source/destination aliases before replacing the destination', () => {
     const body = bodyOf('mv source.txt ./source.txt');
     const source = body.indexOf('$fx_sourcePath = (Resolve-Path -LiteralPath $fx_g -ErrorAction Stop).ProviderPath');
     const target = body.indexOf('$fx_targetPath = (Resolve-Path -LiteralPath $fx_target -ErrorAction Stop).ProviderPath');
     const equality = body.indexOf("if ($fx_sourcePath.TrimEnd([char[]]'\\/') -eq $fx_targetPath.TrimEnd([char[]]'\\/'))");
-    const failure = body.indexOf('are the same file');
-    const removal = body.indexOf('Remove-Item -LiteralPath $fx_target');
+    const failure = body.indexOf('are the same file', equality);
+    const removal = body.indexOf('fx-move-replace-file $fx_sourcePath $fx_targetPath');
     expect(source).toBeGreaterThan(-1);
     expect(target).toBeGreaterThan(source);
     expect(equality).toBeGreaterThan(target);
@@ -27,7 +27,6 @@ describe('file and archive cmdlet failures enter their declared catch blocks', (
   it.each([
     ['cp source destination', 'Copy-Item'],
     ['mv source destination', 'Move-Item'],
-    ['mv source destination', 'Remove-Item'],
     ['rm file', 'Remove-Item'],
     ['mkdir directory', 'New-Item'],
     ['rmdir directory', 'Remove-Item'],
