@@ -60,6 +60,30 @@ jobs:
             throw 'fauxnix check did not report the expected ${{ matrix.edition }} edition'
           }
       - run: npm run typecheck
+      - run: npm run typecheck:test
       - run: npm run build
       - run: npm test
+      - run: npm run test:package
+
+  portable:
+    name: portable (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [18, 20, 22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run release:check
+      - run: npm run typecheck
+      - run: npm run typecheck:test
+      - run: npm run build
+      # The native Windows execution and Git Bash oracle remain separate gates.
+      - run: npm test -- --dir test
       - run: npm run test:package

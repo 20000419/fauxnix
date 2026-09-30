@@ -1,6 +1,7 @@
 import { Word, wordToString } from '../ast.js';
 import { CommandSpec, Handler, lookup, parseWords, psStr } from '../registry.js';
 import { argListExpr, exprOfWord, operandExpr } from '../translator.js';
+import { PS_WRITE_FN, fxTermLine } from './text-output.js';
 
 /* ------------------------------------------------------------------ */
 /* Shared PS snippets (same shape as files.ts / text-filters.ts)       */
@@ -74,39 +75,6 @@ const PS_UNESQ_FN = [
   '  $sb.ToString()',
   '}',
 ].join('\n');
-
-/**
- * Terminal-aware write. When this block's output goes straight to the console
- * (a lone `& { }` scriptblock — $MyInvocation name is empty — or the last
- * stage of a pipeline):
- *   - a string ending in \n is emitted as line items (the console formatter
- *     appends the final newline; still correct inside $(...) substitution);
- *   - a string without a trailing newline is written with the exact bytes so
- *     `echo -n`, `printf 'x'`, `base64 -w0`, `head -c N` stay GNU-exact.
- * Inside a pipeline stage emit one string item instead (line semantics
- * downstream; embedded \n is preserved for consumers that re-split).
- */
-const PS_WRITE_FN = [
-  'function fx-write($s, $term) {',
-  "  if ($s -eq '') { return }",
-  // Inside quoted/assignment $(...) the collector wants one string object
-  // so interior newlines survive (PS would otherwise join lines with spaces).
-  '  if ($script:fx_csub) { $s; return }',
-  '  if (-not $term) { $s; return }',
-  '  if (-not $s.EndsWith([string][char]10)) { [Console]::Out.Write($s); return }',
-  '  $t = $s.Substring(0, $s.Length - 1)',
-  '  foreach ($fx_l in $t.Split([char]10)) { $fx_l }',
-  '}',
-].join('\n');
-
-/** $fx_term: is this block's output console-terminal? (see PS_WRITE_FN) */
-function fxTermLine(position: 'first' | 'middle' | 'last'): string {
-  return (
-    "$fx_term = (($MyInvocation.MyCommand.Name -eq '') -or " +
-    (position === 'last' ? '$true' : '$false') +
-    ')'
-  );
-}
 
 /** PS boolean literal. */
 function pb(v: boolean): string {
@@ -205,9 +173,10 @@ const echo: Handler = (args, ctx) => {
     else if (t === '-e') esc = true;
     else if (t === '-E') esc = false;
     else if (/^-[neE]{2,}$/.test(t)) {
-      if (t.includes('n')) noNewline = true;
-      if (t.includes('e')) esc = true;
-      if (t.includes('E')) esc = false;
+      for (const flag of t.slice(1)) {
+        if (flag === 'n') noNewline = true;
+        else esc = flag === 'e';
+      }
     } else break;
     i++;
   }
@@ -359,11 +328,7 @@ const PS_PRINTF_FNS = [
 
 const printf: Handler = (args, ctx) => {
   // no options; skip a single leading `--` separator
-  const ops: Word[] = [];
-  for (const w of args) {
-    if (ops.length === 0 && wordToString(w) === '--') continue;
-    ops.push(w);
-  }
+  const ops = args.length > 0 && wordToString(args[0]) === '--' ? args.slice(1) : args;
   if (ops.length === 0) {
     return psErrExpr(psStr('printf: usage: printf format [arguments]'), '2');
   }
@@ -373,6 +338,9 @@ const printf: Handler = (args, ctx) => {
     fxTermLine(ctx.position),
     '$fx_fmt = ' + exprOfWord(ops[0]),
     '$fx_av = ' + psArray(ops.slice(1), exprOfWord),
+    // A substitution can fail while producing an argument. printf's status
+    // belongs to printf itself; later formatting/write exceptions still fail.
+    '$script:fx_exit = 0',
     'fx-write (fx-printf $fx_fmt $fx_av) $fx_term',
   ].join('\n');
 };
@@ -436,9 +404,26 @@ const head: Handler = (args, ctx) => {
   // option scan (legacy `head -N` supported; -n/-c take values, incl. negative)
   let nLines: string | null = null;
   let nBytes: string | null = null;
+  let dropLast = false;
   const operandWords: Word[] = [];
   let quiet = false;
   let verbose = false;
+  const setCount = (kind: 'lines' | 'bytes', raw: string): string | null => {
+    const literal = countMagnitudeLiteral(raw);
+    if (literal === null) {
+      return psErrExpr(psStr("head: invalid number of " + kind + ": '" + raw + "'"));
+    }
+    dropLast = raw.startsWith('-');
+    const signedLiteral = dropLast && literal !== '0' ? '-' + literal : literal;
+    if (kind === 'bytes') {
+      nBytes = signedLiteral;
+      nLines = null;
+    } else {
+      nLines = signedLiteral;
+      nBytes = null;
+    }
+    return null;
+  };
   {
     let i = 0;
     let onlyOps = false;
@@ -469,17 +454,19 @@ const head: Handler = (args, ctx) => {
           } else {
             i++;
           }
-          if (name === '--bytes') nBytes = val;
-          else nLines = val;
+          const err = setCount(name === '--bytes' ? 'bytes' : 'lines', val);
+          if (err !== null) return err;
           continue;
         }
         if (name === '--quiet' || name === '--silent') {
           quiet = true;
+          verbose = false;
           i++;
           continue;
         }
         if (name === '--verbose') {
           verbose = true;
+          quiet = false;
           i++;
           continue;
         }
@@ -487,33 +474,34 @@ const head: Handler = (args, ctx) => {
         continue;
       }
       let m: RegExpMatchArray | null;
-      if (t === '-n' || t === '-c') {
-        const val = i + 1 < args.length ? wordToString(args[i + 1]) : null;
-        if (val === null) {
-          return psErrExpr(psStr('head: option requires an argument -- ' + t.slice(1)));
-        }
-        if (t === '-c') nBytes = val;
-        else nLines = val;
-        i += 2;
-        continue;
-      }
-      if ((m = t.match(/^-[nc](.+)$/)) !== null) {
-        if (t[1] === 'c') nBytes = m[1];
-        else nLines = m[1];
-        i++;
-        continue;
-      }
       if ((m = t.match(/^-(\d+)$/)) !== null) {
-        nLines = m[1];
+        const err = setCount('lines', m[1]);
+        if (err !== null) return err;
         i++;
         continue;
       }
       if (t.startsWith('-') && t.length > 1) {
-        for (const ch of t.slice(1)) {
-          if (ch === 'q') quiet = true;
-          else if (ch === 'v') verbose = true;
+        const body = t.slice(1);
+        let usedNext = false;
+        for (let c = 0; c < body.length; c++) {
+          const ch = body[c];
+          if (ch === 'q') { quiet = true; verbose = false; }
+          else if (ch === 'v') { verbose = true; quiet = false; }
+          else if (ch === 'n' || ch === 'c') {
+            let val = body.slice(c + 1);
+            if (val === '') {
+              if (i + 1 >= args.length) {
+                return psErrExpr(psStr('head: option requires an argument -- ' + ch));
+              }
+              val = wordToString(args[i + 1]);
+              usedNext = true;
+            }
+            const err = setCount(ch === 'c' ? 'bytes' : 'lines', val);
+            if (err !== null) return err;
+            break;
+          }
         }
-        i++;
+        i += usedNext ? 2 : 1;
         continue;
       }
       operandWords.push(args[i]);
@@ -522,11 +510,6 @@ const head: Handler = (args, ctx) => {
   }
   const bytesMode = nBytes !== null;
   const countLit = bytesMode ? nBytes! : nLines !== null ? nLines : '10';
-  if (!/^[+-]?\d+$/.test(countLit)) {
-    return psErrExpr(
-      psStr("head: invalid number of " + (bytesMode ? 'bytes' : 'lines') + ": '" + countLit + "'"),
-    );
-  }
 
   const lines: string[] = [
     PS_GLOB_FN,
@@ -544,6 +527,7 @@ const head: Handler = (args, ctx) => {
       (g) => qErr('head', g, 'Is a directory', 'error reading '),
     ),
     '$fx_count = [int](' + countLit + ')',
+    '$fx_dropLast = ' + pb(dropLast),
     '$fx_hdr = ((($fx_srcs.Count -gt 1) -and ' + pb(!quiet) + ') -or ' + pb(verbose) + ')',
     '$fx_first = $true',
   );
@@ -559,8 +543,9 @@ const head: Handler = (args, ctx) => {
       "    [void]$fx_out.Append('==> ' + $fx_disp + ' <==' + [string][char]10)",
       '  }',
       '  $fx_first = $false',
-      // GNU: --bytes=-N prints all but last N; -0 / N≥size → empty
+      // GNU: --bytes=-N prints all but last N, including the whole input for -0.
       '  if ($fx_count -lt 0) { $fx_len = [math]::Max(0, $fx_txt.Length + $fx_count) }',
+      '  elseif ($fx_dropLast) { $fx_len = $fx_txt.Length }',
       '  else { $fx_len = [math]::Min($fx_count, $fx_txt.Length) }',
       '  if ($fx_len -gt 0) { [void]$fx_out.Append($fx_txt.Substring(0, $fx_len)) }',
       '}',
@@ -579,6 +564,7 @@ const head: Handler = (args, ctx) => {
       '  $fx_first = $false',
       '  $fx_lim = $fx_ls.Count',
       '  if ($fx_count -lt 0) { $fx_lim = $fx_ls.Count + $fx_count }',
+      '  elseif ($fx_dropLast) { $fx_lim = $fx_ls.Count }',
       '  elseif ($fx_lim -gt $fx_count) { $fx_lim = $fx_count }',
       '  if ($fx_lim -lt 0) { $fx_lim = 0 }',
       '  for ($fx_i = 0; $fx_i -lt $fx_lim; $fx_i++) { $fx_ls[$fx_i] }',
@@ -592,8 +578,8 @@ const head: Handler = (args, ctx) => {
 /* tail                                                                */
 /* ------------------------------------------------------------------ */
 
-/** A count embedded in generated PS must be a canonical Int32 literal. */
-function tailCountLiteral(raw: string): string | null {
+/** A count magnitude embedded in generated PS must be a canonical Int32 literal. */
+function countMagnitudeLiteral(raw: string): string | null {
   if (!/^[+-]?\d+$/.test(raw)) return null;
   try {
     const n = BigInt(raw.replace(/^[+-]/, ''));
@@ -619,7 +605,7 @@ const tail: Handler = (args, ctx) => {
   let quiet = false;
   let verbose = false;
   const setCount = (kind: 'lines' | 'bytes', raw: string): string | null => {
-    const literal = tailCountLiteral(raw);
+    const literal = countMagnitudeLiteral(raw);
     if (literal === null) {
       return psErrExpr(psStr("tail: invalid number of " + kind + ": '" + raw + "'"));
     }
@@ -677,11 +663,13 @@ const tail: Handler = (args, ctx) => {
         }
         if (name === '--quiet' || name === '--silent') {
           quiet = true;
+          verbose = false;
           i++;
           continue;
         }
         if (name === '--verbose') {
           verbose = true;
+          quiet = false;
           i++;
           continue;
         }
@@ -706,8 +694,8 @@ const tail: Handler = (args, ctx) => {
         let usedNext = false;
         for (let c = 0; c < body.length; c++) {
           const ch = body[c];
-          if (ch === 'q') quiet = true;
-          else if (ch === 'v') verbose = true;
+          if (ch === 'q') { quiet = true; verbose = false; }
+          else if (ch === 'v') { verbose = true; quiet = false; }
           else if (ch === 'n' || ch === 'c') {
             let val = body.slice(c + 1);
             if (val === '') {
@@ -815,6 +803,7 @@ const wc: Handler = (args) => {
   // GNU: stdin (implicit or `-`) prints the classic 7-wide columns; real
   // file operands use dynamic widths; `-` displays the name '-'.
   const fromFiles = operandWords.some((w) => wordToString(w) !== '-');
+  const charCount = wantM ? '(fx-charcount $fx_txt)' : '$fx_txt.Length';
 
   return [
     PS_GLOB_FN,
@@ -822,6 +811,16 @@ const wc: Handler = (args) => {
     PS_SPLITLINES_FN,
     STDIN_ITEMS,
     PS_STDINRAW_FN,
+    ...(wantM ? [
+      'function fx-charcount($t) {',
+      '  $n = 0',
+      '  for ($i = 0; $i -lt $t.Length; $i++) {',
+      '    $n++',
+      '    if ([char]::IsHighSurrogate($t[$i]) -and ($i + 1) -lt $t.Length -and [char]::IsLowSurrogate($t[$i + 1])) { $i++ }',
+      '  }',
+      '  return $n',
+      '}',
+    ] : []),
     ...psCollectFiles(
       operandWords,
       (g) => sErr('wc', g, 'No such file or directory'),
@@ -848,14 +847,14 @@ const wc: Handler = (args) => {
     "    if ($fx_txt -ne '' -and -not $fx_txt.EndsWith([string][char]10)) { $fx_nl = $fx_nl + 1 }",
     '    $fx_ww = fx-wdcount @(fx-splitlines $fx_txt)',
     '    $fx_bc = [System.Text.Encoding]::UTF8.GetByteCount($fx_txt)',
-    "    $fx_rows += ,@($fx_nl, $fx_ww, $fx_bc, $fx_txt.Length, $fx_names[$fx_k])",
+    '    $fx_rows += ,@($fx_nl, $fx_ww, $fx_bc, ' + charCount + ', $fx_names[$fx_k])',
     '  } else {',
     '    $fx_txt = fx-read $fx_g',
     '    $fx_txt2 = $fx_txt.Replace([string][char]13 + [string][char]10, [string][char]10)',
     "    $fx_nl = [regex]::Matches($fx_txt2, '\\n').Count",
     '    $fx_bytes = [IO.File]::ReadAllBytes($fx_g).Length',
     '    $fx_ww = fx-wdcount @(fx-splitlines $fx_txt)',
-    '    $fx_rows += ,@($fx_nl, $fx_ww, $fx_bytes, $fx_txt.Length, $fx_names[$fx_k])',
+    '    $fx_rows += ,@($fx_nl, $fx_ww, $fx_bytes, ' + charCount + ', $fx_names[$fx_k])',
     '  }',
     '}',
     '$fx_tot = @(0, 0, 0, 0)',
@@ -1099,11 +1098,20 @@ const sha256sum = hashSum(
 /* ------------------------------------------------------------------ */
 
 const base64: Handler = (args, ctx) => {
-  const { flags, longs, values, operandWords } = parseWords(args, ['w'], ['--wrap']);
+  const { flags, longs, valueEntries, missingValue, operandWords } = parseWords(args, ['w'], ['--wrap']);
   const decode = flags.has('d') || longs.has('--decode');
+  if (missingValue.length > 0) {
+    return psErrExpr(psStr('base64: option requires an argument -- ' + missingValue[0]));
+  }
   let wrap = 76;
-  const wv = values.get('-w') ?? values.get('--wrap');
-  if (wv !== undefined && /^\d+$/.test(wv)) wrap = parseInt(wv, 10);
+  for (const { name, value } of valueEntries) {
+    if (name !== '-w' && name !== '--wrap') continue;
+    const literal = /^\d+$/.test(value) ? countMagnitudeLiteral(value) : null;
+    if (literal === null) {
+      return psErrExpr(psStr("base64: invalid wrap size: '" + value + "'"));
+    }
+    wrap = Number(literal);
+  }
 
   const pre = [
     PS_GLOB_FN,

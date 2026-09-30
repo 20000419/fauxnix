@@ -18,6 +18,21 @@ import { npmChildEnvironment } from './npm-child-env.mjs';
 const packageRoot = fileURLToPath(new URL('..', import.meta.url));
 const metadata = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'));
 
+function filesUnder(directory, prefix = '') {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const relative = prefix + entry.name;
+    return entry.isDirectory()
+      ? filesUnder(join(directory, entry.name), relative + '/')
+      : [relative];
+  }).sort();
+}
+
+const expectedDistFiles = filesUnder(join(packageRoot, 'src'))
+  .filter((filename) => filename.endsWith('.ts'))
+  .flatMap((filename) => [filename.slice(0, -3) + '.js', filename.slice(0, -3) + '.d.ts'])
+  .sort();
+
+
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: packageRoot,
@@ -60,6 +75,7 @@ const sourceDirectory = join(temporaryRoot, 'source');
 const sourceInstallDirectory = join(temporaryRoot, 'source-install');
 const packDirectory = join(temporaryRoot, 'pack');
 const installDirectory = join(temporaryRoot, 'installed package with spaces');
+const staleBuildFile = join(packageRoot, 'dist', basename(temporaryRoot) + '-orphan.js');
 
 try {
   mkdirSync(sourceDirectory);
@@ -114,7 +130,12 @@ try {
   });
   assert.equal(sourceVersion, `fauxnix ${metadata.version}`);
 
+  // A checkout can retain compiled modules from another branch. Packing must
+  // clean them rather than silently publish stale code (#228).
+  mkdirSync(join(packageRoot, 'dist'), { recursive: true });
+  writeFileSync(staleBuildFile, '// stale build sentinel\n');
   runNpm(['pack', '--silent', '--pack-destination', packDirectory]);
+  assert.equal(existsSync(staleBuildFile), false, 'npm pack must clean stale build output');
   const tarballs = readdirSync(packDirectory).filter((name) => name.endsWith('.tgz'));
   assert.equal(tarballs.length, 1, 'npm pack should produce exactly one tarball');
 
@@ -132,12 +153,17 @@ try {
     '.bin',
     process.platform === 'win32' ? 'fauxnix.cmd' : 'fauxnix',
   );
+  assert.deepEqual(
+    filesUnder(join(installedRoot, 'dist')),
+    expectedDistFiles,
+    'packed dist must match the current source modules exactly',
+  );
   assert.ok(existsSync(cliEntry), 'packed install should contain dist/index.js');
   assert.ok(existsSync(cliShim), 'packed install should expose the fauxnix executable');
 
   const version = runNpm(
-    ['exec', '--prefix', installDirectory, '--offline', '--', 'fauxnix', '--version'],
-    { cwd: temporaryRoot, env: cleanEnvironment },
+    ['exec', '--offline', '--', 'fauxnix', '--version'],
+    { cwd: installDirectory, env: cleanEnvironment },
   );
   assert.equal(version, `fauxnix ${metadata.version}`);
 
@@ -211,8 +237,6 @@ try {
   const translation = runNpm(
     [
       'exec',
-      '--prefix',
-      installDirectory,
       '--offline',
       '--',
       'fauxnix',
@@ -220,7 +244,7 @@ try {
       'echo',
       'package-smoke',
     ],
-    { cwd: temporaryRoot, env: cleanEnvironment },
+    { cwd: installDirectory, env: cleanEnvironment },
   );
   assert.match(translation, /package-smoke/);
 
@@ -229,6 +253,7 @@ try {
   console.log(`  ${version}`);
   console.log('Qwen absolute launcher passed from a workspace-local fauxnix shim');
 } finally {
+  rmSync(staleBuildFile, { force: true });
   const temporaryParent = dirname(temporaryRoot);
   assert.equal(temporaryParent, tmpdir(), 'refusing to clean a non-temporary path');
   rmSync(temporaryRoot, { recursive: true, force: true });

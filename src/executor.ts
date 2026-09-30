@@ -13,7 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Redirect } from './ast.js';
 import { SegmentPlan, normalizeLiteralPath, wrapScript } from './translator.js';
-import { decodeOutput, resolveNativePref } from './encoding.js';
+import { clipUtf8, decodeOutput, resolveNativePref } from './encoding.js';
 import { normalizeStderr } from './errors.js';
 import {
   DEFAULT_STDERR_LIMIT,
@@ -852,19 +852,6 @@ async function runPlans(
     infrastructureError,
     spawnError,
   };
-}
-
-function clipUtf8(text: string, limit: number): { text: string; truncated: boolean } {
-  if (Buffer.byteLength(text, 'utf8') <= limit) return { text, truncated: false };
-  let used = 0;
-  let end = 0;
-  for (const codepoint of text) {
-    const size = Buffer.byteLength(codepoint, 'utf8');
-    if (used + size > limit) break;
-    used += size;
-    end += codepoint.length;
-  }
-  return { text: text.slice(0, end), truncated: true };
 }
 
 /** Copy a host spool into an already-open redirect fd with bounded memory. */

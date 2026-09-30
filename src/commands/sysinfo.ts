@@ -876,13 +876,15 @@ const date: Handler = (args) => {
   const raw = args.map(wordToString);
   let dWord: Word | null = null;
   for (let k = 0; k < raw.length; k++) {
+    if (raw[k] === '--') break;
     if (raw[k] === '-d' || raw[k] === '--date') {
       dWord = args[k + 1] ?? null;
-      break;
+      k++;
+      continue;
     }
     if (raw[k].startsWith('--date=')) {
       dWord = wordAfterPrefix(args[k], '--date=');
-      break;
+      continue;
     }
     if (raw[k].startsWith('-') && !raw[k].startsWith('--')) {
       const body = raw[k].slice(1);
@@ -891,7 +893,7 @@ const date: Handler = (args) => {
         const prefix = '-' + body.slice(0, dIndex + 1);
         const attached = wordAfterPrefix(args[k], prefix);
         dWord = attached && attached.length > 0 ? attached : (args[k + 1] ?? null);
-        break;
+        if (body.slice(dIndex + 1) === '') k++;
       }
     }
   }

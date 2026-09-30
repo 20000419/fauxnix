@@ -93,8 +93,9 @@ export async function runCli(argv: string[]): Promise<void> {
 
   if (verb === 'facade') {
     // Experimental bash.exe-compatible entry (RFC: docs/rfc-bash-facade.md).
-    // The process exit code is the facade contract; bypass runCli's exit(0).
-    process.exit(await runFacade(rest));
+    // Let pending stdout/stderr writes drain before the process exits.
+    process.exitCode = await runFacade(rest);
+    return;
   }
 
   if (verb === 'translate') {
@@ -114,11 +115,14 @@ export async function runCli(argv: string[]): Promise<void> {
   const list = parseCommand(cmd);
   const plans = translateCommandList(list, EXECUTE_TRANSLATION);
   const session = new FauxnixSession();
-  const result = await session.run(plans);
-  if (result.stdout) process.stdout.write(result.stdout);
-  if (result.stderr) process.stderr.write(result.stderr);
-  await session.dispose();
-  process.exit(result.exitCode);
+  try {
+    const result = await session.run(plans);
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+    process.exitCode = result.exitCode;
+  } finally {
+    await session.dispose();
+  }
 }
 
 async function runDoctor(): Promise<void> {

@@ -1,5 +1,5 @@
 import { Word, wordToString } from '../ast.js';
-import { CommandSpec, Handler, OptionSpec, PipelineCtx, parseWords, psStr } from '../registry.js';
+import { CommandSpec, Handler, OptionSpec, PipelineCtx, parseWords } from '../registry.js';
 import { argListExpr, exprOfWord, operandExpr } from '../translator.js';
 
 /* ------------------------------------------------------------------ */
@@ -29,6 +29,34 @@ const PS_GZ_FNS = [
   '  $fx_gz.Write($b, 0, $b.Length)',
   '  $fx_gz.Close()',
   '  return ,$fx_ms.ToArray()',
+  '}',
+  'function fx-gz-output-exists($dst) {',
+  "  [Console]::Error.WriteLine('gzip: ' + $dst + ' already exists; not overwritten')",
+  '  if ($script:fx_exit -ne 1) { $script:fx_exit = 2 }',
+  '}',
+  // File compression is no-clobber by default. Ownership begins only after
+  // CreateNew succeeds, so a failed open never removes somebody else's file.
+  'function fx-gz-write-new($b, $dst) {',
+  '  $fx_os = $null',
+  '  $fx_owned = $false',
+  '  try {',
+  '    try {',
+  '      $fx_os = [IO.File]::Open($dst, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)',
+  '      $fx_owned = $true',
+  '    } catch {',
+  // This post-failure check selects a diagnostic; CreateNew enforces the
+  // no-overwrite contract even if a destination appears during the operation.
+  '      if (Test-Path -LiteralPath $dst) { fx-gz-output-exists $dst; return $false }',
+  '      throw',
+  '    }',
+  '    $fx_os.Write($b, 0, $b.Length)',
+  '    $fx_os.Dispose(); $fx_os = $null',
+  '    $fx_owned = $false',
+  '    return $true',
+  '  } finally {',
+  '    try { if ($null -ne $fx_os) { $fx_os.Dispose() } }',
+  '    finally { if ($fx_owned -and [IO.File]::Exists($dst)) { [IO.File]::Delete($dst) } }',
+  '  }',
   '}',
   'function fx-gz-open($src, $isBytes) {',
   '  if ($isBytes) { $fx_raw = New-Object System.IO.MemoryStream(,$src) }',
@@ -83,35 +111,51 @@ const PS_GZ_FNS = [
   '  }',
   '}',
   // File output is streamed into a sibling temporary file. The destination
-  // changes only after a complete decompression, and the temporary is removed
-  // on every failed path.
+  // is created only after the stream has been drained. File.Move never
+  // overwrites an existing destination, including one that appeared late.
   'function fx-gz-stream-file($src, $dst) {',
   '  $fx_full = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($dst)',
   '  $fx_parent = [IO.Path]::GetDirectoryName($fx_full)',
   "  $fx_tmp = [IO.Path]::Combine($fx_parent, '.fauxnix-gzip-' + [Guid]::NewGuid().ToString('N') + '.tmp')",
   '  $fx_gz = $null',
   '  $fx_os = $null',
+  '  $fx_tmpOwned = $false',
+  '  $fx_outputPhase = $false',
   '  try {',
   '    $fx_gz = fx-gz-open $src $false',
-  "    $fx_os = New-Object System.IO.FileStream($fx_tmp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)",
+  '    $fx_outputPhase = $true',
+  '    $fx_os = [IO.File]::Open($fx_tmp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)',
+  '    $fx_tmpOwned = $true',
   '    $fx_buf = New-Object byte[] 65536',
   '    while ($true) {',
+  '      $fx_outputPhase = $false',
   '      $fx_n = $fx_gz.Read($fx_buf, 0, $fx_buf.Length)',
   '      if ($fx_n -le 0) { break }',
+  '      $fx_outputPhase = $true',
   '      $fx_os.Write($fx_buf, 0, $fx_n)',
   '    }',
-  '    $fx_os.Dispose(); $fx_os = $null',
   '    $fx_gz.Dispose(); $fx_gz = $null',
-  '    if ([IO.File]::Exists($fx_full)) {',
-  '      $fx_null = [System.Management.Automation.Language.NullString]::Value',
-  '      [IO.File]::Replace($fx_tmp, $fx_full, $fx_null)',
+  '    $fx_outputPhase = $true',
+  '    $fx_os.Dispose(); $fx_os = $null',
+  '    try { [IO.File]::Move($fx_tmp, $fx_full); $fx_tmpOwned = $false }',
+  '    catch {',
+  '      if (Test-Path -LiteralPath $dst) { fx-gz-output-exists $dst; return $false }',
+  '      throw',
   '    }',
-  '    else { [IO.File]::Move($fx_tmp, $fx_full) }',
+  '    return $true',
   '  } catch {',
-  '    if ($null -ne $fx_os) { $fx_os.Dispose() }',
-  '    if ($null -ne $fx_gz) { $fx_gz.Dispose() }',
-  '    if ([IO.File]::Exists($fx_tmp)) { [IO.File]::Delete($fx_tmp) }',
+  '    if ($fx_outputPhase) {',
+  "      [Console]::Error.WriteLine('gzip: ' + $dst + ': ' + $_.Exception.Message)",
+  '      $script:fx_exit = 1',
+  '      return $false',
+  '    }',
   '    throw',
+  '  } finally {',
+  '    try { if ($null -ne $fx_os) { $fx_os.Dispose() } }',
+  '    finally {',
+  '      try { if ($null -ne $fx_gz) { $fx_gz.Dispose() } }',
+  '      finally { if ($fx_tmpOwned -and [IO.File]::Exists($fx_tmp)) { [IO.File]::Delete($fx_tmp) } }',
+  '    }',
   '  }',
   '}',
 ].join('\n');
@@ -161,16 +205,13 @@ function parseGzipArgs(args: Word[]): GzParsed {
       // other long options (force/quiet/verbose/no-name/recursive...) ignored
       continue;
     }
-    if (/^-[1-9]$/.test(t)) {
-      p.level = parseInt(t.slice(1), 10);
-      continue;
-    }
-    if (t.startsWith('-') && t.length > 1 && !/^-\d/.test(t)) {
+    if (t.startsWith('-') && t.length > 1 && (!/^-\d/.test(t) || /^-[1-9]/.test(t))) {
       for (const c of t.slice(1)) {
         if (c === 'd') p.decompress = true;
         else if (c === 'k') p.keep = true;
         else if (c === 'c') p.stdout = true;
         else if (c === 't') p.test = true;
+        else if (/^[1-9]$/.test(c)) p.level = Number(c);
         // f/q/v/n/r accepted as no-ops
       }
       continue;
@@ -243,40 +284,50 @@ function gzBlock(args: Word[], ctx: PipelineCtx, forced: Partial<GzOpts>): strin
       '    continue',
     );
   } else if (p.decompress) {
+    // Suffixes determine a destination filename only. gunzip -c and zcat
+    // validate the stream itself and accept any source filename.
+    if (!p.stdout) {
+      fileLoop.push(
+        '    $fx_low = $fx_f.ToLower()',
+        "    if (-not ($fx_low.EndsWith('.gz') -or $fx_low.EndsWith('.tgz'))) {",
+        "      [Console]::Error.WriteLine('gzip: ' + $fx_f + ': unknown suffix -- ignored')",
+        '      if ($script:fx_exit -ne 1) { $script:fx_exit = 2 }',
+        '      continue',
+        '    }',
+        '    $fx_out = $fx_f.Substring(0, $fx_f.Length - 3)',
+        "    if ($fx_low.EndsWith('.tgz')) { $fx_out = $fx_f.Substring(0, $fx_f.Length - 4) + '.tar' }",
+      );
+    }
     fileLoop.push(
-      '    $fx_low = $fx_f.ToLower()',
-      "    if (-not ($fx_low.EndsWith('.gz') -or $fx_low.EndsWith('.tgz'))) {",
-      "      [Console]::Error.WriteLine('gzip: ' + $fx_f + ': unknown suffix -- ignored')",
-      '      $script:fx_exit = 2',
-      '      continue',
-      '    }',
-      '    $fx_out = $fx_f.Substring(0, $fx_f.Length - 3)',
-      "    if ($fx_low.EndsWith('.tgz')) { $fx_out = $fx_f.Substring(0, $fx_f.Length - 4) + '.tar' }",
       '    try {',
       p.stdout
         ? '      fx-gz-stream-text $fx_f $false'
         : [
-            '      fx-gz-stream-file $fx_f $fx_out',
+            '      if (-not (fx-gz-stream-file $fx_f $fx_out)) { continue }',
             '      try { (Get-Item -LiteralPath $fx_out).LastWriteTime = (Get-Item -LiteralPath $fx_f).LastWriteTime } catch {}',
-            '      if (-not ' + b(p.keep) + ') { Remove-Item -LiteralPath $fx_f -Force }',
+            '      if (-not ' + b(p.keep) + ') { Remove-Item -LiteralPath $fx_f -Force -ErrorAction Stop }',
           ].join('\n'),
       "    } catch { [Console]::Error.WriteLine('gzip: ' + $fx_f + ': not in gzip format'); $script:fx_exit = 1 }",
     );
   } else {
+    if (!p.stdout) {
+      fileLoop.push(
+        '    $fx_low = $fx_f.ToLower()',
+        "    if ($fx_low.EndsWith('.gz') -or $fx_low.EndsWith('.tgz')) {",
+        "      [Console]::Error.WriteLine('gzip: ' + $fx_f + ': already has .gz suffix -- unchanged')",
+        '      continue',
+        '    }',
+      );
+    }
     fileLoop.push(
-      '    $fx_low = $fx_f.ToLower()',
-      "    if ($fx_low.EndsWith('.gz') -or $fx_low.EndsWith('.tgz')) {",
-      "      [Console]::Error.WriteLine('gzip: ' + $fx_f + ': already has .gz suffix -- unchanged')",
-      '      continue',
-      '    }',
       '    try {',
       p.stdout
         ? '      ' + emitBin('(fx-gz-cbytes ([IO.File]::ReadAllBytes($fx_f)) ' + p.level + ')')
         : [
             '      $fx_o = fx-gz-cbytes ([IO.File]::ReadAllBytes($fx_f)) ' + p.level,
-            "      [IO.File]::WriteAllBytes($fx_f + '.gz', $fx_o)",
+            "      if (-not (fx-gz-write-new $fx_o ($fx_f + '.gz'))) { continue }",
             "      try { (Get-Item -LiteralPath ($fx_f + '.gz')).LastWriteTime = (Get-Item -LiteralPath $fx_f).LastWriteTime } catch {}",
-            '      if (-not ' + b(p.keep) + ') { Remove-Item -LiteralPath $fx_f -Force }',
+            '      if (-not ' + b(p.keep) + ') { Remove-Item -LiteralPath $fx_f -Force -ErrorAction Stop }',
           ].join('\n'),
       "    } catch { [Console]::Error.WriteLine('gzip: ' + $fx_f + ': ' + $_.Exception.Message); $script:fx_exit = 1 }",
     );
@@ -333,38 +384,16 @@ const tar: Handler = (args) => {
 /* ------------------------------------------------------------------ */
 
 const zip: Handler = (args) => {
-  const raw = args.map(wordToString);
-  let excludeNote = false;
-  const rest: Word[] = [];
-  for (let i = 0; i < raw.length; i++) {
-    const t = raw[i];
-    if (t === '-x' || t === '--exclude') {
-      excludeNote = true;
-      if (i + 1 < args.length) i++;
-      continue;
-    }
-    if (t.startsWith('--exclude=')) {
-      excludeNote = true;
-      continue;
-    }
-    if (t.startsWith('-') && t.length > 1 && !/^-\d/.test(t)) continue; // -r -q ... implicit
-    rest.push(args[i]);
-  }
-  const note = excludeNote
-    ? '[Console]::Error.WriteLine(' +
-      psStr('zip: fauxnix: -x/--exclude patterns are not supported, ignoring') +
-      ')\n'
-    : '';
+  // CommandSpec has already rejected unsupported options. Keep the same
+  // operand boundary as that validation, especially filenames after `--`.
+  const { operandWords: rest } = parseWords(args);
   if (rest.length < 2) {
-    return (
-      note +
-      "[Console]::Error.WriteLine('zip error: Nothing to do! (fauxnix: usage: zip [-r] ARCHIVE FILES...)'); $script:fx_exit = 12"
-    );
+    return "[Console]::Error.WriteLine('zip error: Nothing to do! (fauxnix: usage: zip [-r] ARCHIVE FILES...)'); $script:fx_exit = 12";
   }
   const arc = operandExpr(rest[0]);
   const inputs = argListExpr(rest.slice(1), operandExpr);
   return [
-    note + '$fx_arc = ' + arc,
+    '$fx_arc = ' + arc,
     '$fx_inputs = ' + inputs,
     '$fx_valid = @()',
     'foreach ($fx_p in $fx_inputs) {',
@@ -400,11 +429,33 @@ const zip: Handler = (args) => {
     '        }',
     '      }',
     '    } finally { $fx_z.Dispose() }',
-    '    if ($fx_rename) { Move-Item -LiteralPath $fx_dst -Destination $fx_arc -Force }',
+    '    if ($fx_rename) { Move-Item -LiteralPath $fx_dst -Destination $fx_arc -Force -ErrorAction Stop }',
     "  } catch { [Console]::Error.WriteLine('zip: fauxnix: ' + $_.Exception.Message); $script:fx_exit = 1 }",
     '}',
   ].join('\n');
 };
+
+/** Remove a literal option prefix without flattening quoted/dynamic values. */
+function afterOptionPrefix(word: Word, length: number): Word {
+  let remaining = length;
+  const strip = (parts: Word): Word => {
+    const result: Word = [];
+    for (const part of parts) {
+      if (remaining === 0) {
+        result.push(part);
+      } else if (part.kind === 'Text' || part.kind === 'SingleQuoted') {
+        const taken = Math.min(remaining, part.text.length);
+        remaining -= taken;
+        if (taken < part.text.length) result.push({ ...part, text: part.text.slice(taken) });
+      } else if (part.kind === 'DoubleQuoted') {
+        const tail = strip(part.parts);
+        if (tail.length > 0) result.push({ ...part, parts: tail });
+      }
+    }
+    return result;
+  };
+  return strip(word);
+}
 
 const unzip: Handler = (args) => {
   const raw = args.map(wordToString);
@@ -414,14 +465,12 @@ const unzip: Handler = (args) => {
   const rest: Word[] = [];
   for (let i = 0; i < raw.length; i++) {
     const t = raw[i];
-    if (t === '-d' && i + 1 < args.length) {
-      dir = args[i + 1];
-      i++;
-      continue;
+    if (t === '--') {
+      rest.push(...args.slice(i + 1));
+      break;
     }
     if (t.startsWith('--directory=')) {
-      const dv: Word = [{ kind: 'Text', text: t.slice('--directory='.length) }];
-      dir = dv;
+      dir = afterOptionPrefix(args[i], '--directory='.length);
       continue;
     }
     if (t === '--directory' && i + 1 < args.length) {
@@ -430,8 +479,15 @@ const unzip: Handler = (args) => {
       continue;
     }
     if (t.startsWith('-') && t.length > 1 && !/^-\d/.test(t)) {
-      if (t.includes('l')) list = true;
-      if (t.includes('o')) over = true;
+      for (let c = 1; c < t.length; c++) {
+        if (t[c] === 'l') list = true;
+        else if (t[c] === 'o') over = true;
+        else if (t[c] === 'd') {
+          if (c + 1 < t.length) dir = afterOptionPrefix(args[i], c + 1);
+          else if (i + 1 < args.length) dir = args[++i];
+          break;
+        }
+      }
       continue;
     }
     rest.push(args[i]);

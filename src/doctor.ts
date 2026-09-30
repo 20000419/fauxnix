@@ -145,12 +145,14 @@ function detectCodex(home: string, env: NodeJS.ProcessEnv): string {
 }
 
 export function hasCodexFauxnix(text: string): boolean {
-  if (/^\s*\[mcp_servers\.(?:fauxnix|"fauxnix"|'fauxnix')\]/im.test(text)) return true;
   const tables = text.split(/^\s*\[/m);
   for (const table of tables) {
-    if (!/^mcp_servers\./i.test(table)) continue;
     const header = (table.split(/[\]\r\n]/, 1)[0] ?? '').trim();
-    if (/^mcp_servers\.(?:fauxnix|"fauxnix"|'fauxnix')$/i.test(header)) return true;
+    // TOML allows quoted key components and whitespace around dots and brackets.
+    // Recognize those equivalent spellings before install appends a duplicate table.
+    const server = /^(?:mcp_servers|"mcp_servers"|'mcp_servers')\s*\.\s*(.+)$/i.exec(header);
+    if (!server) continue;
+    if (/^(?:fauxnix|"fauxnix"|'fauxnix')$/i.test(server[1])) return true;
     const cmd = /^\s*command\s*=\s*(?:"([^"]*)"|'([^']*)')/im.exec(table);
     const command = cmd?.[1] ?? cmd?.[2];
     if (command && isFauxnixExecutable(command)) return true;

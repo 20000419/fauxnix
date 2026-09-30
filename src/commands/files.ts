@@ -8,6 +8,7 @@ import {
   psStr,
 } from '../registry.js';
 import { argListExpr, exprOfWord, operandExpr } from '../translator.js';
+import { PS_WRITE_FN, fxTermLine } from './text-output.js';
 
 /* ------------------------------------------------------------------ */
 /* Shared PS snippets                                                  */
@@ -169,22 +170,22 @@ const cp: Handler = (args) => {
     PS_GLOB_FN,
     '$fx_all = ' + argListExpr(operandWords),
     "if ($fx_all.Count -lt 2) { $fx_srcs = @(); $fx_dst = '' } else { $fx_dst = [string]$fx_all[$fx_all.Count - 1]; $fx_srcs = @($fx_all[0..($fx_all.Count - 2)]) }",
+    '$fx_srcs = @($fx_srcs | ForEach-Object { fx-glob $_ })',
     "if ($fx_srcs.Count -eq 0) { [Console]::Error.WriteLine('cp: missing file operand'); $script:fx_exit = 1 }",
     "elseif ($fx_dst -eq '') { [Console]::Error.WriteLine('cp: missing destination file operand'); $script:fx_exit = 1 }",
+    'elseif ($fx_srcs.Count -gt 1 -and -not (Test-Path -LiteralPath $fx_dst -PathType Container)) { [Console]::Error.WriteLine("cp: target \'" + $fx_dst + "\' is not a directory"); $script:fx_exit = 1 }',
     'else {',
-    '  foreach ($fx_s in $fx_srcs) {',
-    '    foreach ($fx_g in (fx-glob $fx_s)) {',
-    '      if (-not (Test-Path -LiteralPath $fx_g)) { [Console]::Error.WriteLine("cp: cannot stat \'" + $fx_g + "\': No such file or directory"); $script:fx_exit = 1; continue }',
-    '      $fx_isdir = (Test-Path -LiteralPath $fx_g -PathType Container)',
-    '      if ($fx_isdir -and ' + (recurse ? '$false' : '$true') + ') { [Console]::Error.WriteLine("cp: -r not specified; omitting directory \'" + $fx_g + "\'"); $script:fx_exit = 1; continue }',
-    '      $fx_target = $fx_dst',
-    '      if (Test-Path -LiteralPath $fx_dst -PathType Container) { $fx_target = Join-Path $fx_dst (Split-Path $fx_g -Leaf) }',
-    '      if (' + (noclobber ? '$true' : '$false') + ' -and (Test-Path -LiteralPath $fx_target)) { continue }',
-    '      try {',
-    '        Copy-Item -LiteralPath $fx_g -Destination $fx_target -Recurse:' + (recurse ? '$true' : '$false') + ' -Force',
-    '        if (' + (verbose ? '$true' : '$false') + ') { [Console]::Error.WriteLine("\'" + $fx_g + "\' -> \'" + $fx_target + "\'") }',
-    '      } catch { [Console]::Error.WriteLine("cp: cannot copy \'" + $fx_g + "\': " + $_.Exception.Message); $script:fx_exit = 1 }',
-    '    }',
+    '  foreach ($fx_g in $fx_srcs) {',
+    '    if (-not (Test-Path -LiteralPath $fx_g)) { [Console]::Error.WriteLine("cp: cannot stat \'" + $fx_g + "\': No such file or directory"); $script:fx_exit = 1; continue }',
+    '    $fx_isdir = (Test-Path -LiteralPath $fx_g -PathType Container)',
+    '    if ($fx_isdir -and ' + (recurse ? '$false' : '$true') + ') { [Console]::Error.WriteLine("cp: -r not specified; omitting directory \'" + $fx_g + "\'"); $script:fx_exit = 1; continue }',
+    '    $fx_target = $fx_dst',
+    '    if (Test-Path -LiteralPath $fx_dst -PathType Container) { $fx_target = Join-Path $fx_dst (Split-Path $fx_g -Leaf) }',
+    '    if (' + (noclobber ? '$true' : '$false') + ' -and (Test-Path -LiteralPath $fx_target)) { continue }',
+    '    try {',
+    '      Copy-Item -LiteralPath $fx_g -Destination $fx_target -Recurse:' + (recurse ? '$true' : '$false') + ' -Force -ErrorAction Stop',
+    '      if (' + (verbose ? '$true' : '$false') + ') { [Console]::Error.WriteLine("\'" + $fx_g + "\' -> \'" + $fx_target + "\'") }',
+    '    } catch { [Console]::Error.WriteLine("cp: cannot copy \'" + $fx_g + "\': " + $_.Exception.Message); $script:fx_exit = 1 }',
     '  }',
     '}',
   ].join('\n');
@@ -198,22 +199,46 @@ const mv: Handler = (args) => {
     PS_GLOB_FN,
     '$fx_all = ' + argListExpr(operandWords),
     "if ($fx_all.Count -lt 2) { $fx_srcs = @(); $fx_dst = '' } else { $fx_dst = [string]$fx_all[$fx_all.Count - 1]; $fx_srcs = @($fx_all[0..($fx_all.Count - 2)]) }",
+    '$fx_srcs = @($fx_srcs | ForEach-Object { fx-glob $_ })',
     "if ($fx_srcs.Count -eq 0) { [Console]::Error.WriteLine('mv: missing file operand'); $script:fx_exit = 1 }",
     "elseif ($fx_dst -eq '') { [Console]::Error.WriteLine('mv: missing destination file operand'); $script:fx_exit = 1 }",
     'elseif ($fx_srcs.Count -gt 1 -and -not (Test-Path -LiteralPath $fx_dst -PathType Container)) { [Console]::Error.WriteLine("mv: target \'" + $fx_dst + "\' is not a directory"); $script:fx_exit = 1 }',
     'else {',
-    '  foreach ($fx_s in $fx_srcs) {',
-    '    foreach ($fx_g in (fx-glob $fx_s)) {',
-    '      if (-not (Test-Path -LiteralPath $fx_g)) { [Console]::Error.WriteLine("mv: cannot stat \'" + $fx_g + "\': No such file or directory"); $script:fx_exit = 1; continue }',
-    '      $fx_target = $fx_dst',
-    '      if (Test-Path -LiteralPath $fx_dst -PathType Container) { $fx_target = Join-Path $fx_dst (Split-Path $fx_g -Leaf) }',
-    '      if (' + (noclobber ? '$true' : '$false') + ' -and (Test-Path -LiteralPath $fx_target)) { continue }',
-    '      try {',
-    '        if (Test-Path -LiteralPath $fx_target) { Remove-Item -LiteralPath $fx_target -Recurse -Force }',
-    '        Move-Item -LiteralPath $fx_g -Destination $fx_target -Force',
-    '        if (' + (verbose ? '$true' : '$false') + ') { [Console]::Error.WriteLine("renamed \'" + $fx_g + "\' -> \'" + $fx_target + "\'") }',
-    '      } catch { [Console]::Error.WriteLine("mv: cannot move \'" + $fx_g + "\': " + $_.Exception.Message); $script:fx_exit = 1 }',
-    '    }',
+    '  foreach ($fx_g in $fx_srcs) {',
+    '    if (-not (Test-Path -LiteralPath $fx_g)) { [Console]::Error.WriteLine("mv: cannot stat \'" + $fx_g + "\': No such file or directory"); $script:fx_exit = 1; continue }',
+    '    $fx_target = $fx_dst',
+    '    if (Test-Path -LiteralPath $fx_dst -PathType Container) { $fx_target = Join-Path $fx_dst (Split-Path $fx_g -Leaf) }',
+    '    if (' + (noclobber ? '$true' : '$false') + ' -and (Test-Path -LiteralPath $fx_target)) { continue }',
+    '    try {',
+    '      if (Test-Path -LiteralPath $fx_target) {',
+    '        $fx_sourcePath = (Resolve-Path -LiteralPath $fx_g -ErrorAction Stop).ProviderPath',
+    '        $fx_targetPath = (Resolve-Path -LiteralPath $fx_target -ErrorAction Stop).ProviderPath',
+    "        if ($fx_sourcePath.TrimEnd([char[]]'\\/') -eq $fx_targetPath.TrimEnd([char[]]'\\/')) {",
+    '          [Console]::Error.WriteLine("mv: \'" + $fx_g + "\' and \'" + $fx_target + "\' are the same file"); $script:fx_exit = 1; continue',
+    '        }',
+    '        $fx_sourceItem = Get-Item -LiteralPath $fx_g -Force -ErrorAction Stop',
+    '        $fx_targetItem = Get-Item -LiteralPath $fx_target -Force -ErrorAction Stop',
+    '        if (-not $fx_sourceItem.PSIsContainer -and $fx_targetItem.PSIsContainer) {',
+    '          [Console]::Error.WriteLine("mv: cannot overwrite directory \'" + $fx_target + "\' with non-directory \'" + $fx_g + "\'"); $script:fx_exit = 1; continue',
+    '        }',
+    '        if ($fx_sourceItem.PSIsContainer -and -not $fx_targetItem.PSIsContainer) {',
+    '          [Console]::Error.WriteLine("mv: cannot overwrite non-directory \'" + $fx_target + "\' with directory \'" + $fx_g + "\'"); $script:fx_exit = 1; continue',
+    '        }',
+    '        if ($fx_targetItem.PSIsContainer) {',
+    '          if (@(Get-ChildItem -LiteralPath $fx_target -Force -ErrorAction Stop).Count -gt 0) {',
+    '            [Console]::Error.WriteLine("mv: cannot move \'" + $fx_g + "\' to \'" + $fx_target + "\': Directory not empty"); $script:fx_exit = 1; continue',
+    '          }',
+    // Fail if contents appeared after the check; never recursively delete a
+    // directory or let Remove-Item prompt to do so. Use the resolved path
+    // because .NET and PowerShell need not share a current directory.
+    '          [IO.Directory]::Delete($fx_targetPath, $false)',
+    '        } else {',
+    '          Remove-Item -LiteralPath $fx_target -Force -ErrorAction Stop',
+    '        }',
+    '      }',
+    '      Move-Item -LiteralPath $fx_g -Destination $fx_target -Force -ErrorAction Stop',
+    '      if (' + (verbose ? '$true' : '$false') + ') { [Console]::Error.WriteLine("renamed \'" + $fx_g + "\' -> \'" + $fx_target + "\'") }',
+    '    } catch { [Console]::Error.WriteLine("mv: cannot move \'" + $fx_g + "\': " + $_.Exception.Message); $script:fx_exit = 1 }',
     '  }',
     '}',
   ].join('\n');
@@ -237,7 +262,7 @@ const rm: Handler = (args) => {
     '    $fx_isdir = (Test-Path -LiteralPath $fx_g -PathType Container)',
     '    if ($fx_isdir -and ' + (recurse ? '$false' : '$true') + ') { [Console]::Error.WriteLine("rm: cannot remove \'" + $fx_g + "\': Is a directory"); $script:fx_exit = 1; continue }',
     '    try {',
-    '      Remove-Item -LiteralPath $fx_g -Recurse:' + (recurse ? '$true' : '$false') + ' -Force',
+    '      Remove-Item -LiteralPath $fx_g -Recurse:' + (recurse ? '$true' : '$false') + ' -Force -ErrorAction Stop',
     '      if (' + (verbose ? '$true' : '$false') + ') { [Console]::Error.WriteLine("removed \'" + $fx_g + "\'") }',
     '    } catch { [Console]::Error.WriteLine("rm: cannot remove \'" + $fx_g + "\': Permission denied"); $script:fx_exit = 1 }',
     '  }',
@@ -258,11 +283,11 @@ const mkdir: Handler = (args) => {
     "if ($fx_dirs.Count -eq 0) { [Console]::Error.WriteLine('mkdir: missing operand'); $script:fx_exit = 1 }",
     'foreach ($fx_d in $fx_dirs) {',
     '  if (Test-Path -LiteralPath $fx_d) {',
-    '    if (' + (parents ? '$false' : '$true') + ') { [Console]::Error.WriteLine("mkdir: cannot create directory \'" + $fx_d + "\': File exists"); $script:fx_exit = 1 }',
+    '    if (' + (parents ? '$false' : '$true') + ' -or -not (Test-Path -LiteralPath $fx_d -PathType Container)) { [Console]::Error.WriteLine("mkdir: cannot create directory \'" + $fx_d + "\': File exists"); $script:fx_exit = 1 }',
     '    continue',
     '  }',
     '  try {',
-    '    New-Item -ItemType Directory -Path $fx_d -Force:' + (parents ? '$true' : '$false') + ' | Out-Null',
+    '    New-Item -ItemType Directory -Path $fx_d -Force:' + (parents ? '$true' : '$false') + ' -ErrorAction Stop | Out-Null',
     '    if (' + (verbose ? '$true' : '$false') + ') { [Console]::Error.WriteLine("mkdir: created directory \'" + $fx_d + "\'") }',
     '  } catch { [Console]::Error.WriteLine("mkdir: cannot create directory \'" + $fx_d + "\': " + $_.Exception.Message); $script:fx_exit = 1 }',
     '}',
@@ -277,7 +302,7 @@ const rmdir: Handler = (args) => {
     'foreach ($fx_d in $fx_dirs) {',
     '  if (-not (Test-Path -LiteralPath $fx_d -PathType Container)) { [Console]::Error.WriteLine("rmdir: failed to remove \'" + $fx_d + "\': No such file or directory"); $script:fx_exit = 1; continue }',
     '  if ((Get-ChildItem -LiteralPath $fx_d -Force).Count -gt 0) { [Console]::Error.WriteLine("rmdir: failed to remove \'" + $fx_d + "\': Directory not empty"); $script:fx_exit = 1; continue }',
-    '  try { Remove-Item -LiteralPath $fx_d -Force } catch { [Console]::Error.WriteLine("rmdir: failed to remove \'" + $fx_d + "\': " + $_.Exception.Message); $script:fx_exit = 1 }',
+    '  try { Remove-Item -LiteralPath $fx_d -Force -ErrorAction Stop } catch { [Console]::Error.WriteLine("rmdir: failed to remove \'" + $fx_d + "\': " + $_.Exception.Message); $script:fx_exit = 1 }',
     '}',
   ].join('\n');
 };
@@ -293,7 +318,7 @@ const touch: Handler = (args) => {
     '    try { (Get-Item -LiteralPath $fx_f).LastWriteTime = Get-Date } catch { [Console]::Error.WriteLine("touch: cannot touch \'" + $fx_f + "\': Permission denied"); $script:fx_exit = 1 }',
     '  } else {',
     '    if (' + (noCreate ? '$true' : '$false') + ') { continue }',
-    '    try { New-Item -ItemType File -Path $fx_f | Out-Null }',
+    '    try { New-Item -ItemType File -Path $fx_f -ErrorAction Stop | Out-Null }',
     '    catch { [Console]::Error.WriteLine("touch: cannot touch \'" + $fx_f + "\': No such file or directory"); $script:fx_exit = 1 }',
     '  }',
     '}',
@@ -307,7 +332,7 @@ const mktemp: Handler = (args) => {
     'try {',
     '  if (' + (dir ? '$true' : '$false') + ') {',
     "    $fx_p = Join-Path $env:TEMP ('fauxnix-' + ([IO.Path]::GetRandomFileName() -replace '\\.', ''))",
-    '    New-Item -ItemType Directory -Path $fx_p | Out-Null',
+    '    New-Item -ItemType Directory -Path $fx_p -ErrorAction Stop | Out-Null',
     '  } else {',
     '    $fx_p = [IO.Path]::GetTempFileName()',
     '  }',
@@ -331,7 +356,7 @@ const ln: Handler = (args) => {
     "if ($fx_src -eq '' -or $fx_dst -eq '') { [Console]::Error.WriteLine('ln: missing file operand'); $script:fx_exit = 1 }",
     'else {',
     '  if (Test-Path -LiteralPath $fx_dst -PathType Container) { $fx_dst = Join-Path $fx_dst (Split-Path $fx_src -Leaf) }',
-    '  try { New-Item -ItemType ' + kind + ' -Path $fx_dst -Target $fx_src | Out-Null }',
+    '  try { New-Item -ItemType ' + kind + ' -Path $fx_dst -Target $fx_src -ErrorAction Stop | Out-Null }',
     '  catch { [Console]::Error.WriteLine("ln: failed to create ' + label + ' \'" + $fx_dst + "\': " + $_.Exception.Message); $script:fx_exit = 1 }',
     '}',
   ].join('\n');
@@ -374,8 +399,9 @@ const realpath: Handler = (args) => {
 /* ------------------------------------------------------------------ */
 
 const basename: Handler = (args) => {
+  const { operandWords } = parseWords(args);
   return [
-    '$fx_ps = ' + argListExpr(args, exprOfWord),
+    '$fx_ps = ' + argListExpr(operandWords, exprOfWord),
     "if ($fx_ps.Count -eq 0) { [Console]::Error.WriteLine('basename: missing operand'); $script:fx_exit = 1 }",
     'elseif ($fx_ps.Count -eq 2) {',
     '  $fx_p = [string]$fx_ps[0]',
@@ -395,8 +421,9 @@ const basename: Handler = (args) => {
 };
 
 const dirname: Handler = (args) => {
+  const { operandWords } = parseWords(args);
   return [
-    '$fx_ps = ' + argListExpr(args, exprOfWord),
+    '$fx_ps = ' + argListExpr(operandWords, exprOfWord),
     "if ($fx_ps.Count -eq 0) { [Console]::Error.WriteLine('dirname: missing operand'); $script:fx_exit = 1 }",
     'foreach ($fx_p in $fx_ps) {',
     "  $fx_n = ($fx_p.TrimEnd('/')).TrimEnd('\\')",
@@ -412,12 +439,67 @@ const dirname: Handler = (args) => {
 /* stat / file                                                         */
 /* ------------------------------------------------------------------ */
 
-const stat: Handler = (args) => {
-  const { longs, values, operandWords } = parseWords(args, ['c'], ['--format', '--printf']);
-  const fmt = values.get('-c') ?? values.get('--format') ?? values.get('--printf') ?? null;
+const STAT_DIRECTIVES: Record<string, string> = {
+  '%%': psStr('%'),
+  '%s': '[string]$fx_size',
+  '%n': '$fx_g',
+  '%F': '$fx_ft',
+  '%a': "$fx_mode.TrimStart('0')",
+  '%Y': '[string]$fx_epoch',
+  '%y': "$fx_it.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss')",
+};
+
+/** Expand the existing stat directives once; inserted metadata is literal. */
+function statFormatExpr(format: string): string {
+  // Only odd slots are recognized directives. Other text, including unknown
+  // directives, stays quoted rather than being mistaken for a lookup key.
+  return format.split(/(%[%snFaYy])/)
+    .map((part, index) => index % 2 ? STAT_DIRECTIVES[part] : psStr(part))
+    .join(' + ');
+}
+
+/** GNU --printf escapes are scanned beside directives, never before them. */
+function statPrintfFormat(format: string): { expr: string; warnings: string[]; error?: string } {
+  const warnings: string[] = [];
+  let error: string | undefined;
+  const controls: Record<string, number> = { a: 7, b: 8, e: 27, f: 12, n: 10, r: 13, t: 9, v: 11 };
+  const expr = format.split(/(%[%snFaYy]|\\(?:[0-7]{1,3}|x[0-9a-fA-F]{1,2}|[\s\S]|$))/)
+    .map((part, index) => {
+      if (index % 2 === 0) return psStr(part);
+      if (part.startsWith('%')) return STAT_DIRECTIVES[part];
+      const escape = part.slice(1);
+      let byte: number | undefined;
+      if (/^[0-7]{1,3}$/.test(escape)) byte = parseInt(escape, 8) & 255;
+      else if (/^x[0-9a-fA-F]{1,2}$/.test(escape)) byte = parseInt(escape.slice(1), 16);
+      if (byte !== undefined) {
+        if (byte >= 128) {
+          error = 'stat: fauxnix: non-ASCII numeric byte escapes are not supported by the text output contract';
+        }
+        return '[string][char]' + byte;
+      }
+      if (Object.hasOwn(controls, escape)) return '[string][char]' + controls[escape];
+      if (escape === '\\') return psStr('\\');
+      if (escape === '') {
+        warnings.push('stat: warning: backslash at end of format');
+        return psStr('\\');
+      }
+      warnings.push("stat: warning: unrecognized escape '\\" + escape + "'");
+      return psStr(escape);
+    }).join(' + ');
+  return { expr, warnings, error };
+}
+
+const stat: Handler = (args, ctx) => {
+  const { valueEntries, operandWords } = parseWords(args, ['c'], ['--format', '--printf']);
+  const formatOption = valueEntries.at(-1);
+  const fmt = formatOption?.value ?? null;
+  const printfMode = formatOption?.name === '--printf';
+  const format = printfMode ? statPrintfFormat(fmt ?? '') : { expr: statFormatExpr(fmt ?? ''), warnings: [] };
+  if (format.error) return '[Console]::Error.WriteLine(' + psStr(format.error) + '); $script:fx_exit = 1';
   return [
     PS_FTIME_FN,
     PS_GLOB_FN,
+    ...(printfMode ? [PS_WRITE_FN, fxTermLine(ctx.position), '$fx_stat_out = New-Object System.Text.StringBuilder'] : []),
     '$fx_files = ' + psArray(operandWords),
     "if ($fx_files.Count -eq 0) { [Console]::Error.WriteLine('stat: missing operand'); $script:fx_exit = 1 }",
     'foreach ($fx_f in $fx_files) {',
@@ -430,11 +512,11 @@ const stat: Handler = (args) => {
       " { $fx_ft = 'symbolic link' }",
     "    $fx_ro = $fx_it.Attributes.ToString().Contains('ReadOnly')",
     "    $fx_mode = '0664'; if ($fx_it.PSIsContainer) { $fx_mode = '0775' } elseif ($fx_ro) { $fx_mode = '0444' }",
-    "    $fx_epoch = [int](($fx_it.LastWriteTime.ToUniversalTime() - [datetime]'1970-01-01').TotalSeconds)",
-    '    if (' + (fmt ? '$true' : '$false') + ') {',
-    '      $fx_o = ' + psStr(fmt ?? ''),
-    "      $fx_o = $fx_o.Replace('%s', [string]$fx_size).Replace('%n', $fx_g).Replace('%F', $fx_ft).Replace('%a', $fx_mode).Replace('%Y', [string]$fx_epoch).Replace('%y', $fx_it.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss')).Replace('%%', '%')",
-    '      $fx_o',
+    "    $fx_epoch = [long][math]::Floor(($fx_it.LastWriteTime.ToUniversalTime() - [datetime]'1970-01-01').TotalSeconds)",
+    '    if (' + (fmt !== null ? '$true' : '$false') + ') {',
+    ...format.warnings.map((warning) => '      [Console]::Error.WriteLine(' + psStr(warning) + ')'),
+    '      $fx_o = ' + format.expr,
+    printfMode ? '      [void]$fx_stat_out.Append($fx_o)' : '      $fx_o',
     '    } else {',
     '      "  File: " + $fx_g',
     '      ("  Size: {0}`tBlocks: {1}`tIO Block: 4096  {2}" -f $fx_size, [math]::Ceiling($fx_size / 512), $fx_ft)',
@@ -444,6 +526,7 @@ const stat: Handler = (args) => {
     '    }',
     '  }',
     '}',
+    ...(printfMode ? ['fx-write ($fx_stat_out.ToString()) $fx_term'] : []),
   ].join('\n');
 };
 
@@ -913,8 +996,8 @@ const chmod: Handler = (args) => {
     '  if (-not (Test-Path -LiteralPath $fx_f)) { [Console]::Error.WriteLine("chmod: cannot access \'" + $fx_f + "\': No such file or directory"); $script:fx_exit = 1; continue }',
     '  try {',
     '    $fx_it = Get-Item -LiteralPath $fx_f -Force',
-    '    if (' + (readOnly === null ? '$false' : String(readOnly)) + ') { $fx_it.Attributes = $fx_it.Attributes -bor [IO.FileAttributes]::ReadOnly }',
-    '    elseif (' + (readOnly === null ? '$false' : String(!readOnly)) + ') { $fx_it.Attributes = $fx_it.Attributes -band (-bnot [IO.FileAttributes]::ReadOnly) }',
+    '    if (' + (readOnly === true ? '$true' : '$false') + ') { $fx_it.Attributes = $fx_it.Attributes -bor [IO.FileAttributes]::ReadOnly }',
+    '    elseif (' + (readOnly === false ? '$true' : '$false') + ') { $fx_it.Attributes = $fx_it.Attributes -band (-bnot [IO.FileAttributes]::ReadOnly) }',
     '    # symbolic modes (+x, u+w ...): Windows has no exec bit — accepted as a no-op',
     '  } catch { [Console]::Error.WriteLine("chmod: changing permissions of \'" + $fx_f + "\': " + $_.Exception.Message); $script:fx_exit = 1 }',
     '}',
@@ -950,7 +1033,7 @@ const diff: Handler = (args) => {
     '  $fx_lb = @((fx-read $fx_b) -split "`r?`n")',
     "  if ($fx_lb.Count -eq 1 -and $fx_lb[0] -eq '') { $fx_lb = @() }",
     '  $fx_same = ($fx_la.Count -eq $fx_lb.Count)',
-    '  if ($fx_same) { for ($fx_i = 0; $fx_i -lt $fx_la.Count; $fx_i++) { if ($fx_la[$fx_i] -ne $fx_lb[$fx_i]) { $fx_same = $false; break } } }',
+    '  if ($fx_same) { for ($fx_i = 0; $fx_i -lt $fx_la.Count; $fx_i++) { if ($fx_la[$fx_i] -cne $fx_lb[$fx_i]) { $fx_same = $false; break } } }',
     '  if ($fx_same) { }',
     '  elseif (' + (brief ? '$true' : '$false') + ') { "Files " + $fx_a + " and " + $fx_b + " differ"; $script:fx_exit = 1 }',
     '  elseif ($fx_la.Count -gt 4000 -or $fx_lb.Count -gt 4000) { "Files " + $fx_a + " and " + $fx_b + " differ (too large for a fauxnix line diff)"; $script:fx_exit = 1 }',
@@ -960,14 +1043,14 @@ const diff: Handler = (args) => {
     "    $fx_dp = New-Object 'int[]' (($fx_n + 1) * $fx_w)",
     '    for ($fx_i = $fx_n - 1; $fx_i -ge 0; $fx_i--) {',
     '      for ($fx_j = $fx_m - 1; $fx_j -ge 0; $fx_j--) {',
-    '        if ($fx_la[$fx_i] -eq $fx_lb[$fx_j]) { $fx_dp[($fx_i * $fx_w) + $fx_j] = $fx_dp[(($fx_i + 1) * $fx_w) + ($fx_j + 1)] + 1 }',
+    '        if ($fx_la[$fx_i] -ceq $fx_lb[$fx_j]) { $fx_dp[($fx_i * $fx_w) + $fx_j] = $fx_dp[(($fx_i + 1) * $fx_w) + ($fx_j + 1)] + 1 }',
     '        else { $fx_r = $fx_dp[(($fx_i + 1) * $fx_w) + $fx_j]; $fx_d2 = $fx_dp[($fx_i * $fx_w) + ($fx_j + 1)]; if ($fx_r -ge $fx_d2) { $fx_dp[($fx_i * $fx_w) + $fx_j] = $fx_r } else { $fx_dp[($fx_i * $fx_w) + $fx_j] = $fx_d2 } }',
     '      }',
     '    }',
     "    $fx_ops = @()  # tuples: @('<op>', text, aIndex, bIndex)",
     '    $fx_i = 0; $fx_j = 0',
     '    while ($fx_i -lt $fx_n -and $fx_j -lt $fx_m) {',
-    "      if ($fx_la[$fx_i] -eq $fx_lb[$fx_j]) { $fx_ops += ,@('=', $fx_la[$fx_i], $fx_i, $fx_j); $fx_i++; $fx_j++ }",
+    "      if ($fx_la[$fx_i] -ceq $fx_lb[$fx_j]) { $fx_ops += ,@('=', $fx_la[$fx_i], $fx_i, $fx_j); $fx_i++; $fx_j++ }",
     "      elseif ($fx_dp[(($fx_i + 1) * $fx_w) + $fx_j] -ge $fx_dp[($fx_i * $fx_w) + ($fx_j + 1)]) { $fx_ops += ,@('-', $fx_la[$fx_i], $fx_i, $fx_j); $fx_i++ }",
     "      else { $fx_ops += ,@('+', $fx_lb[$fx_j], $fx_i, $fx_j); $fx_j++ }",
     '    }',
@@ -985,8 +1068,8 @@ const diff: Handler = (args) => {
     '      if ($fx_del.Count -gt 0) { $fx_a1 = $fx_del[0][1] + 1; $fx_a2 = $fx_del[$fx_del.Count - 1][1] + 1 }',
     '      if ($fx_add.Count -gt 0) { $fx_b1 = $fx_add[0][1] + 1; $fx_b2 = $fx_add[$fx_add.Count - 1][1] + 1 }',
     '      $fx_range = \'\'',
-    "      if ($fx_del.Count -eq 0) { $fx_range = ([string]$fx_b1) + 'a' + (fx-dr $fx_b1 $fx_b2) }",
-    "      elseif ($fx_add.Count -eq 0) { $fx_range = (fx-dr $fx_a1 $fx_a2) + 'd' + ([string]$fx_b1) }",
+    "      if ($fx_del.Count -eq 0) { $fx_range = ([string]$fx_ops[$fx_start][2]) + 'a' + (fx-dr $fx_b1 $fx_b2) }",
+    "      elseif ($fx_add.Count -eq 0) { $fx_range = (fx-dr $fx_a1 $fx_a2) + 'd' + ([string]$fx_ops[$fx_start][3]) }",
     "      else { $fx_range = (fx-dr $fx_a1 $fx_a2) + 'c' + (fx-dr $fx_b1 $fx_b2) }",
     '      $fx_range',
     "      foreach ($fx_d in $fx_del) { '< ' + $fx_d[0] }",

@@ -73,4 +73,27 @@ describe.skipIf(skipOracle)('differential vs Git Bash oracle', { timeout: 300_00
       `${summary}\nnew differential mismatches are not covered by the reviewed baseline`,
     ).toEqual([]);
   });
+
+  it('reports the astral Unicode oracle limitation while enforcing scalar counting', async () => {
+    const diagnostic = {
+      ...corpus,
+      cases: [{
+        id: 'wc-astral-unicode-oracle',
+        cmd: "printf 'A😀é\\n' | LC_ALL=C.UTF-8 wc -m",
+        source: 'Unicode scalar golden / GNU Linux reference; MSYS oracle diagnostic',
+      }],
+    };
+    const run = await runCorpus({ corpus: diagnostic, bashPath: resolveGitBash()! });
+    const result = run.results[0];
+    expect(result.fauxnix).toEqual({ stdout: '5\n', stderr: '', exitCode: 0 });
+    expect(result.bash.exitCode).toBe(0);
+    expect(result.bash.stderr).toBe('');
+    console.log('Astral Unicode oracle diagnostic (excluded from identity score): ' + JSON.stringify({
+      command: diagnostic.cases[0].cmd,
+      expectedLinuxScalarCount: '5\n',
+      fauxnix: result.fauxnix.stdout,
+      gitBash: result.bash.stdout,
+    }));
+  });
+
 });

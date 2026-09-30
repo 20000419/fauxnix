@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { FauxnixParseError, Word, wordToString } from '../ast.js';
 import { CommandSpec, Handler, parseWords, psStr } from '../registry.js';
+import { PS_WRITE_FN, fxTermLine } from './text-output.js';
 import {
   argListExpr,
   exprOfWord,
@@ -91,102 +92,6 @@ function textExpr(w: Word): string {
   const lit = literalOfWord(w);
   if (lit !== null) return psStr(lit);
   return exprOfWord(w);
-}
-
-/** Collect EVERY value of a short option (-kN, -k N) — parseWords keeps only the last. */
-function collectShortValues(args: Word[], letter: string): string[] {
-  const out: string[] = [];
-  let onlyOps = false;
-  for (let i = 0; i < args.length; i++) {
-    const t = wordToString(args[i]);
-    if (t === '--') {
-      onlyOps = true;
-      continue;
-    }
-    if (onlyOps) continue;
-    if (t === '-' + letter) {
-      if (i + 1 < args.length) {
-        out.push(wordToString(args[i + 1]));
-        i++;
-      }
-    } else if (t.startsWith('-' + letter) && t.length > 2 && !t.startsWith('--')) {
-      out.push(t.slice(2));
-    }
-  }
-  return out;
-}
-
-interface LongOptionValue {
-  name: string;
-  value: string;
-}
-
-/** Collect repeated value-taking long options without mistaking short bundles for values. */
-function collectLongValues(args: Word[], names: string[]): LongOptionValue[] {
-  const out: LongOptionValue[] = [];
-  let onlyOps = false;
-  for (let i = 0; i < args.length; i++) {
-    const t = wordToString(args[i]);
-    if (t === '--') {
-      onlyOps = true;
-      continue;
-    }
-    if (onlyOps || !t.startsWith('--')) continue;
-    const eq = t.indexOf('=');
-    const name = eq >= 0 ? t.slice(0, eq) : t;
-    if (!names.includes(name)) continue;
-    if (eq >= 0) {
-      out.push({ name, value: t.slice(eq + 1) });
-    } else if (i + 1 < args.length) {
-      out.push({ name, value: wordToString(args[i + 1]) });
-      i++;
-    }
-  }
-  return out;
-}
-
-/**
- * Collect EVERY value of a short option and its long aliases, in argv order.
- * parseWords keeps only the last; grep -e/--regexp must OR-accumulate.
- * Handles -e PAT, -ePAT, -ie PAT (bundled), --regexp PAT, --regexp=PAT.
- */
-function collectRepeatOptionValues(args: Word[], short: string, longs: string[]): string[] {
-  const out: string[] = [];
-  let onlyOps = false;
-  for (let i = 0; i < args.length; i++) {
-    const t = wordToString(args[i]);
-    if (t === '--') {
-      onlyOps = true;
-      continue;
-    }
-    if (onlyOps) continue;
-    if (t.startsWith('--')) {
-      const eq = t.indexOf('=');
-      const name = eq >= 0 ? t.slice(0, eq) : t;
-      if (!longs.includes(name)) continue;
-      if (eq >= 0) {
-        out.push(t.slice(eq + 1));
-      } else if (i + 1 < args.length) {
-        out.push(wordToString(args[i + 1]));
-        i++;
-      }
-      continue;
-    }
-    if (!(t.startsWith('-') && t.length > 1 && !/^-?\d/.test(t.slice(1, 2)))) continue;
-    const body = t.slice(1);
-    for (let c = 0; c < body.length; c++) {
-      if (body[c] !== short) continue;
-      const rest = body.slice(c + 1);
-      if (rest) {
-        out.push(rest);
-      } else if (i + 1 < args.length) {
-        out.push(wordToString(args[i + 1]));
-        i++;
-      }
-      break;
-    }
-  }
-  return out;
 }
 
 /** Build the "collect file operands through fx-glob" PS prologue. */
@@ -332,17 +237,18 @@ function ereToDotNet(re: string): string {
 
 const grep: Handler = (args) => {
   const filterOptionNames = ['--include', '--exclude', '--exclude-dir'];
-  const filterOptions = collectLongValues(args, filterOptionNames);
-  const fileFilterOptions = filterOptions.filter((o) => o.name !== '--exclude-dir');
-  const excludeDirGlobs = filterOptions
-    .filter((o) => o.name === '--exclude-dir')
-    .map((o) => o.value.replace(/[\\/]+$/, ''));
-
-  const { flags, operandWords, values, missingValue } = parseWords(
+  const { flags, operandWords, values, valueEntries, missingValue } = parseWords(
     args,
     ['A', 'B', 'C', 'm', 'e'],
     [...filterOptionNames, '--max-count', '--regexp'],
   );
+  // Reuse the argv walk so another option's value is never mistaken for
+  // a filter or repeated pattern, even when that value starts with a dash.
+  const filterOptions = valueEntries.filter((o) => filterOptionNames.includes(o.name));
+  const fileFilterOptions = filterOptions.filter((o) => o.name !== '--exclude-dir');
+  const excludeDirGlobs = filterOptions
+    .filter((o) => o.name === '--exclude-dir')
+    .map((o) => o.value.replace(/[\\/]+$/, ''));
   const missingFilterOption = missingValue.find((o) =>
     [...filterOptionNames, '-m', '--max-count', '-e', '--regexp'].includes(o),
   );
@@ -386,7 +292,9 @@ const grep: Handler = (args) => {
   const ctxA = Math.max(toInt(values.get('-A')), toInt(values.get('-C')));
   const ctxB = Math.max(toInt(values.get('-B')), toInt(values.get('-C')));
 
-  const regexpPats = collectRepeatOptionValues(args, 'e', ['--regexp']);
+  const regexpPats = valueEntries
+    .filter((o) => o.name === '-e' || o.name === '--regexp')
+    .map((o) => o.value);
   if (regexpPats.length === 0 && operandWords.length === 0) {
     return (
       "[Console]::Error.WriteLine('usage: grep [OPTION]... PATTERN [FILE]...'); $script:fx_exit = 2"
@@ -1916,7 +1824,7 @@ function awkFmtToPs(fmt: string): { ps: string; kinds: AwkFmtKind[] } {
   return { ps, kinds };
 }
 
-const awk: Handler = (args) => {
+const awk: Handler = (args, ctx) => {
   const { values, operandWords } = parseWords(args, ['F', 'v']);
 
   // -v may repeat; collect all of them
@@ -1968,6 +1876,11 @@ const awk: Handler = (args) => {
   }
   const fileWords = operandWords.slice(1);
   const prog = new AwkParser(progLit).parse();
+  // A printf program produces one text stream, not one line per statement.
+  // Pipeline/substitution consumers require one object to avoid synthetic
+  // separators. Direct terminal/file-spool output can stream each fragment.
+  const exactOutput = [...prog.begin, ...prog.items.flatMap((item) => item.act ?? []), ...prog.end]
+    .some((statement) => statement.k === 'printf');
 
   // FS mode
   const fsRaw = values.get('-F') ?? ' ';
@@ -2096,11 +2009,12 @@ const awk: Handler = (args) => {
     const out: string[] = [];
     for (const st of stmts) {
       if (st.k === 'print') {
-        if (st.args.length === 0) {
-          out.push('$fx_line');
-        } else {
-          out.push('(' + st.args.map((a) => '(fx-str ' + gen(a).ps + ')').join(' + (fx-str $fxv_OFS) + ') + ')');
-        }
+        const text = st.args.length === 0
+          ? '$fx_line'
+          : '(' + st.args.map((a) => '(fx-str ' + gen(a).ps + ')').join(' + (fx-str $fxv_OFS) + ') + ')';
+        out.push(exactOutput
+          ? 'fx-awk-write (' + text + ' + [string][char]10)'
+          : text);
       } else if (st.k === 'printf') {
         const f = awkFmtToPs(st.fmt);
         const argExprs = f.kinds.map((kind, idx) => {
@@ -2115,8 +2029,8 @@ const awk: Handler = (args) => {
           }
           return '(fx-str ' + raw + ')';
         });
-        const argList = argExprs.length ? ' ' + argExprs.join(', ') : '';
-        out.push('(' + f.ps + ' -f' + argList + ')');
+        const argList = argExprs.length ? ' ' + argExprs.join(', ') : ' @()';
+        out.push('fx-awk-write (' + f.ps + ' -f' + argList + ')');
       } else if (st.k === 'fieldassign') {
         out.push('$fx_fieldValue = (fx-str ' + gen(st.e).ps + ')');
         out.push('if ($fx_flds.Count -lt ' + st.index + ") { $fx_flds += @('') * (" + st.index + ' - $fx_flds.Count) }');
@@ -2144,6 +2058,21 @@ const awk: Handler = (args) => {
   };
 
   const lines: string[] = [PS_READTEXT_FN, PS_SPLITLINES_FN];
+  if (exactOutput) {
+    lines.push(
+      PS_WRITE_FN,
+      fxTermLine(ctx.position),
+      '$fx_awk_buffered = $script:fx_csub -or -not $fx_term',
+      'if ($fx_awk_buffered) { $fx_awk_out = New-Object System.Text.StringBuilder }',
+      'function fx-awk-write($s) {',
+      '  if ($fx_awk_buffered) { [void]$fx_awk_out.Append([string]$s) }',
+      // Console writes are immediate; emitted line objects may be collected
+      // later by the host. Use one write path for every direct fragment so
+      // printf tails cannot overtake newline-terminated printf/print output.
+      '  else { [Console]::Out.Write([string]$s) }',
+      '}',
+    );
+  }
   if (fileWords.length > 0) lines.push(PS_GLOB_FN);
 
   lines.push(
@@ -2281,6 +2210,7 @@ const awk: Handler = (args) => {
   lines.push('}');
 
   if (prog.end.length > 0) lines.push(...genStmts(prog.end, false));
+  if (exactOutput) lines.push('if ($fx_awk_buffered) { fx-write ($fx_awk_out.ToString()) $fx_term }');
 
   lines.push('if ($fx_err) { $script:fx_exit = 2 }');
   return lines.join('\n');
@@ -2328,7 +2258,7 @@ function parseSortKeySpec(spec: string, g: { n: boolean; b: boolean; f: boolean 
 }
 
 const sort: Handler = (args) => {
-  const { flags, longs, values, operandWords } = parseWords(args, ['t', 'k'], []);
+  const { flags, longs, values, valueEntries, operandWords } = parseWords(args, ['t', 'k'], []);
   const globalR = flags.has('r') || longs.has('--reverse');
   const globalN = flags.has('n') || longs.has('--numeric-sort');
   const uniqMode = flags.has('u') || longs.has('--unique');
@@ -2347,8 +2277,10 @@ const sort: Handler = (args) => {
   }
 
   const specs: SortKeySpec[] = [];
-  for (const k of collectShortValues(args, 'k')) {
-    specs.push(parseSortKeySpec(k, { n: globalN, b: globalB, f: globalF }));
+  for (const option of valueEntries) {
+    if (option.name === '-k') {
+      specs.push(parseSortKeySpec(option.value, { n: globalN, b: globalB, f: globalF }));
+    }
   }
 
   const lines: string[] = [PS_READTEXT_FN, PS_SPLITLINES_FN, PS_GLOB_FN];
@@ -2371,10 +2303,34 @@ const sort: Handler = (args) => {
   const fastPath = specs.length === 0 && !globalN && !globalB;
   if (fastPath) {
     const comparer = globalF ? 'OrdinalIgnoreCase' : 'Ordinal';
-    lines.push('$fx_arr = [string[]]$fx_lines');
+    if (globalF && uniqMode) {
+      // Native Array.Sort is unstable. Select the first input representative
+      // before sorting, as GNU -u disables the case-sensitive last resort.
+      lines.push(
+        '$fx_seen = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)',
+        '$fx_res = New-Object System.Collections.Generic.List[string]',
+        'foreach ($fx_l in $fx_lines) { if ($fx_seen.Add([string]$fx_l)) { $fx_res.Add([string]$fx_l) } }',
+        '$fx_arr = $fx_res.ToArray()',
+      );
+    } else {
+      lines.push('$fx_arr = [string[]]$fx_lines');
+    }
     lines.push('[array]::Sort($fx_arr, [System.StringComparer]::' + comparer + ')');
+    if (globalF && !uniqMode) {
+      // Retain native sorting, then order each equal-fold run by the original
+      // line. GNU's last-resort comparison ignores -f but still honors -r.
+      lines.push(
+        '$fx_start = 0',
+        'while ($fx_start -lt $fx_arr.Count) {',
+        '  $fx_end = $fx_start + 1',
+        '  while ($fx_end -lt $fx_arr.Count -and [System.StringComparer]::OrdinalIgnoreCase.Equals($fx_arr[$fx_start], $fx_arr[$fx_end])) { $fx_end++ }',
+        '  if (($fx_end - $fx_start) -gt 1) { [array]::Sort($fx_arr, $fx_start, ($fx_end - $fx_start), [System.StringComparer]::Ordinal) }',
+        '  $fx_start = $fx_end',
+        '}',
+      );
+    }
     if (globalR) lines.push('[array]::Reverse($fx_arr)');
-    if (uniqMode) {
+    if (uniqMode && !globalF) {
       lines.push('$fx_res = New-Object System.Collections.Generic.List[string]');
       lines.push('if ($fx_arr.Count -gt 0) { $fx_res.Add($fx_arr[0]) }');
       lines.push('for ($fx_i = 1; $fx_i -lt $fx_arr.Count; $fx_i++) {');

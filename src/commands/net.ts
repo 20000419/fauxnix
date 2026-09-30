@@ -1,5 +1,5 @@
 import { Word, wordToString } from '../ast.js';
-import { Handler, parseWords, psErr, psStr } from '../registry.js';
+import { Handler, parseWords, psErr, psErr2, psStr } from '../registry.js';
 import { argListExpr, exprOfWord, literalOfWord, operandExpr } from '../translator.js';
 
 /* ------------------------------------------------------------------ */
@@ -173,6 +173,7 @@ interface WgetMap {
   margs: string[];
   sawOutput: boolean;
   urls: string[];
+  error?: string;
 }
 
 /** Map GNU wget argv → curl.exe argv (only literal words are rewritten). */
@@ -180,7 +181,18 @@ function mapWgetArgs(args: Word[]): WgetMap {
   const margs: string[] = [];
   const urls: string[] = [];
   let sawOutput = false;
-  const raw = args.map(wordToString);
+  let outputIndex = -1;
+  // wget has one output destination. curl associates repeated -o options with
+  // successive URLs, so keep only wget's last choice, including stdout.
+  const setOutput = (word: Word | null): void => {
+    if (outputIndex >= 0) margs.splice(outputIndex, 2);
+    outputIndex = -1;
+    sawOutput = true;
+    if (word !== null) {
+      outputIndex = margs.length;
+      margs.push("'-o'", operandExpr(word));
+    }
+  };
   let i = 0;
   while (i < args.length) {
     const lit = literalOfWord(args[i]);
@@ -195,44 +207,29 @@ function mapWgetArgs(args: Word[]): WgetMap {
       if (m[1].length > 0) margs.push("'-s'");
       const rest = m[2];
       if (rest === '') {
-        if (i + 1 < args.length) {
-          const v = wordToString(args[i + 1]);
-          if (v === '-') {
-            sawOutput = true; // -O - → curl writes to stdout by default
-          } else {
-            margs.push("'-o'", operandExpr(args[i + 1]));
-            sawOutput = true;
-          }
-          i++;
+        if (i + 1 >= args.length) {
+          return { margs, sawOutput, urls, error: "option requires an argument -- 'O'" };
         }
-      } else if (rest === '-') {
-        sawOutput = true; // -O- → stdout passthrough (curl default)
+        const value = args[++i];
+        setOutput(wordToString(value) === '-' ? null : value);
       } else {
-        margs.push("'-o'", operandExpr(synthWord(rest)));
-        sawOutput = true;
+        setOutput(rest === '-' ? null : synthWord(rest));
       }
       i++;
       continue;
     }
-    if (lit === '--output-document' && i + 1 < args.length) {
-      const v = wordToString(args[i + 1]);
-      if (v === '-') {
-        sawOutput = true;
-      } else {
-        margs.push("'-o'", operandExpr(args[i + 1]));
-        sawOutput = true;
+    if (lit === '--output-document') {
+      if (i + 1 >= args.length) {
+        return { margs, sawOutput, urls, error: "option requires an argument -- 'output-document'" };
       }
+      const value = args[i + 1];
+      setOutput(wordToString(value) === '-' ? null : value);
       i += 2;
       continue;
     }
     const eq = /^--output-document=(.*)$/.exec(lit);
     if (eq) {
-      if (eq[1] === '') {
-        sawOutput = true;
-      } else {
-        margs.push("'-o'", operandExpr(synthWord(eq[1])));
-        sawOutput = true;
-      }
+      setOutput(eq[1] === '-' ? null : synthWord(eq[1]));
       i++;
       continue;
     }
@@ -259,7 +256,6 @@ function mapWgetArgs(args: Word[]): WgetMap {
 }
 
 const wget: Handler = (args) => {
-  const orig = args.map((w) => exprOfWord(w));
   const mapped = mapWgetArgs(args);
   return [
     PS_NETGUARD_FNS,
@@ -274,7 +270,7 @@ const wget: Handler = (args) => {
     '}',
     // otherwise map onto curl.exe
     'else {',
-    "  " + nativeCall('curl.exe', '$fx_margs'),
+    '  ' + (mapped.error ? psErr2('wget', mapped.error) : nativeCall('curl.exe', '$fx_margs')),
     '}',
   ].join('\n');
 };

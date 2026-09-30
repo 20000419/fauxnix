@@ -154,6 +154,8 @@ export interface WordArgs {
   flags: Set<string>;
   longs: Set<string>;
   values: Map<string, string>;
+  /** Every option value in argv order, including repeated options/aliases. */
+  valueEntries: Array<{ name: string; value: string }>;
   /** Options that take a value but were not followed by one. */
   missingValue: string[];
   operandWords: Word[];
@@ -173,6 +175,11 @@ export function parseWords(
   const flags = new Set<string>();
   const longs = new Set<string>();
   const values = new Map<string, string>();
+  const valueEntries: WordArgs['valueEntries'] = [];
+  const addValue = (name: string, value: string): void => {
+    values.set(name, value);
+    valueEntries.push({ name, value });
+  };
   const missingValue: string[] = [];
   const operandWords: Word[] = [];
   let i = 0;
@@ -185,11 +192,11 @@ export function parseWords(
       const eq = t.indexOf('=');
       if (eq >= 0) {
         longs.add(t.slice(0, eq));
-        values.set(t.slice(0, eq), t.slice(eq + 1));
+        addValue(t.slice(0, eq), t.slice(eq + 1));
       } else if (longValues.includes(t)) {
         longs.add(t);
         if (i + 1 < args.length) {
-          values.set(t, wordToString(args[i + 1]));
+          addValue(t, wordToString(args[i + 1]));
           i++;
         } else missingValue.push(t);
       } else {
@@ -204,9 +211,9 @@ export function parseWords(
           // value-taking options report via `values`, not `flags`
           const rest = body.slice(c + 1);
           if (rest) {
-            values.set('-' + ch, rest);
+            addValue('-' + ch, rest);
           } else if (i + 1 < args.length) {
-            values.set('-' + ch, wordToString(args[i + 1]));
+            addValue('-' + ch, wordToString(args[i + 1]));
             i++;
           } else missingValue.push('-' + ch);
           break;
@@ -218,7 +225,7 @@ export function parseWords(
     }
     i++;
   }
-  return { flags, longs, values, missingValue, operandWords };
+  return { flags, longs, values, valueEntries, missingValue, operandWords };
 }
 
 /* ------------------------------------------------------------------ */

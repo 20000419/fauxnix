@@ -20,7 +20,7 @@ function facadeProcess(args: string[], input?: string) {
   });
 }
 
-describe.skipIf(!onWindows)('facade entry (RFC #224 phase 1)', { timeout: 120_000, hookTimeout: 120_000 }, () => {
+describe.skipIf(!onWindows)('facade entry (RFC #224 phase 1)', { timeout: 120_000 }, () => {
   it('--version discloses the fauxnix identity', async () => {
     // pure string path: assert in-process to keep the spawn budget for contracts
     const out: string[] = [];

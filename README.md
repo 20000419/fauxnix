@@ -258,10 +258,22 @@ fauxnix optimizes for the commands agents actually run. Documented deviations:
   (as in Git Bash).
 - `ps aux` columns are approximations (no per-process CPU% accounting, USER shows `?`).
 - `gzip -c`/pipeline stdin is text-faithful, not byte-faithful; file-mode `gzip f` is byte-exact.
+- Gzip integrity checks use the selected .NET `GZipStream`; some runtimes can accept
+  premature EOF. Successful decompression or `gzip -t` is not a strict completeness
+  guarantee. Use `gunzip -k` to retain the compressed source when recovery matters.
+- `stat --printf` omits the implicit newline and interprets text escapes, including ASCII
+  octal/hex escapes. Numeric escapes producing bytes `0x80`–`0xFF` are rejected before output;
+  use literal Unicode text instead. NUL is preserved in direct output, text pipelines, and
+  redirected files; command substitution retains fauxnix's existing text behavior rather
+  than Bash's NUL-removal behavior.
 - A pipeline producing exactly one line, piped into `wc -l`, counts that line (bash would count 0
   if the producer omitted the trailing newline). `printf 'x' | md5sum` stays byte-exact.
 - `sed`/`awk` support the common subset; hold-space, labels, arrays, loops throw named
   "not supported" errors at translate time.
+  For `awk` programs using `printf`, terminal and file-redirect output streams per formatted
+  fragment. Pipeline and command-substitution output is coalesced into one text value to
+  preserve adjacent fragments without adding separators. That intermediate value requires
+  memory proportional to output size and is not capped by the caller's capture budget.
 - `curl`/`wget` refuse loopback/private/reserved addresses (localhost, 127.x, ::1, 10.x,
   172.16–31.x, 192.168.x, 169.254.x) as a safety default for agent-driven HTTP.
 - **Native-tool pipelines vs encoding**: PS 5.1 has a single console-encoding knob, so piping

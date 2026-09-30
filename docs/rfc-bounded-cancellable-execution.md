@@ -71,7 +71,7 @@ During migration, return both the current text content and versioned structured 
 - Normal shell nonzero exits stay command results (`isError` unset). Host startup failure, malformed frames, translate/parse throws, and a dead transport are infrastructure (`isError: true`).
 - Whitespace-only stdout is byte-faithful in `structuredContent.stdout`. The text view may still strip a single trailing newline for display; it must not `.trim()`.
 - Cancel uses exit **130** (`128+SIGINT`). Timeout stays **124**.
-- Default budgets: 8 MiB stdout, 1 MiB stderr. Crossing a budget sets `truncated: true` and must not close the MCP connection.
+- CLI/executor default budgets: 8 MiB stdout, 1 MiB stderr. MCP single-command and batch capture use 256 KiB stdout and 64 KiB stderr to account for duplicate text/structured output and worst-case JSON escaping within the SDK’s 10 MiB frame limit. Crossing a budget sets `truncated: true` and must not close the MCP connection. Redirect larger artifacts to files.
 - Explicit budgets are non-negative integers up to 2,147,483,643 bytes; invalid
   values fail before a host request is started.
 - Budgets are shared across every list segment. `capture` retains at most the
