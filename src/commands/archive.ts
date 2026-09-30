@@ -240,15 +240,21 @@ function gzBlock(args: Word[], ctx: PipelineCtx, forced: Partial<GzOpts>): strin
       '    continue',
     );
   } else if (p.decompress) {
+    // Suffixes determine a destination filename only. gunzip -c and zcat
+    // validate the stream itself and accept any source filename.
+    if (!p.stdout) {
+      fileLoop.push(
+        '    $fx_low = $fx_f.ToLower()',
+        "    if (-not ($fx_low.EndsWith('.gz') -or $fx_low.EndsWith('.tgz'))) {",
+        "      [Console]::Error.WriteLine('gzip: ' + $fx_f + ': unknown suffix -- ignored')",
+        '      $script:fx_exit = 2',
+        '      continue',
+        '    }',
+        '    $fx_out = $fx_f.Substring(0, $fx_f.Length - 3)',
+        "    if ($fx_low.EndsWith('.tgz')) { $fx_out = $fx_f.Substring(0, $fx_f.Length - 4) + '.tar' }",
+      );
+    }
     fileLoop.push(
-      '    $fx_low = $fx_f.ToLower()',
-      "    if (-not ($fx_low.EndsWith('.gz') -or $fx_low.EndsWith('.tgz'))) {",
-      "      [Console]::Error.WriteLine('gzip: ' + $fx_f + ': unknown suffix -- ignored')",
-      '      $script:fx_exit = 2',
-      '      continue',
-      '    }',
-      '    $fx_out = $fx_f.Substring(0, $fx_f.Length - 3)',
-      "    if ($fx_low.EndsWith('.tgz')) { $fx_out = $fx_f.Substring(0, $fx_f.Length - 4) + '.tar' }",
       '    try {',
       p.stdout
         ? '      fx-gz-stream-text $fx_f $false'
@@ -260,12 +266,16 @@ function gzBlock(args: Word[], ctx: PipelineCtx, forced: Partial<GzOpts>): strin
       "    } catch { [Console]::Error.WriteLine('gzip: ' + $fx_f + ': not in gzip format'); $script:fx_exit = 1 }",
     );
   } else {
+    if (!p.stdout) {
+      fileLoop.push(
+        '    $fx_low = $fx_f.ToLower()',
+        "    if ($fx_low.EndsWith('.gz') -or $fx_low.EndsWith('.tgz')) {",
+        "      [Console]::Error.WriteLine('gzip: ' + $fx_f + ': already has .gz suffix -- unchanged')",
+        '      continue',
+        '    }',
+      );
+    }
     fileLoop.push(
-      '    $fx_low = $fx_f.ToLower()',
-      "    if ($fx_low.EndsWith('.gz') -or $fx_low.EndsWith('.tgz')) {",
-      "      [Console]::Error.WriteLine('gzip: ' + $fx_f + ': already has .gz suffix -- unchanged')",
-      '      continue',
-      '    }',
       '    try {',
       p.stdout
         ? '      ' + emitBin('(fx-gz-cbytes ([IO.File]::ReadAllBytes($fx_f)) ' + p.level + ')')

@@ -438,9 +438,27 @@ const dirname: Handler = (args) => {
 /* stat / file                                                         */
 /* ------------------------------------------------------------------ */
 
+/** Expand the existing stat directives once; inserted metadata is literal. */
+function statFormatExpr(format: string): string {
+  const directives: Record<string, string> = {
+    '%%': psStr('%'),
+    '%s': '[string]$fx_size',
+    '%n': '$fx_g',
+    '%F': '$fx_ft',
+    '%a': "$fx_mode.TrimStart('0')",
+    '%Y': '[string]$fx_epoch',
+    '%y': "$fx_it.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss')",
+  };
+  // Only odd slots are recognized directives. Other text, including unknown
+  // directives, stays quoted rather than being mistaken for a lookup key.
+  return format.split(/(%[%snFaYy])/)
+    .map((part, index) => index % 2 ? directives[part] : psStr(part))
+    .join(' + ');
+}
+
 const stat: Handler = (args) => {
-  const { longs, values, operandWords } = parseWords(args, ['c'], ['--format', '--printf']);
-  const fmt = values.get('-c') ?? values.get('--format') ?? values.get('--printf') ?? null;
+  const { valueEntries, operandWords } = parseWords(args, ['c'], ['--format', '--printf']);
+  const fmt = valueEntries.at(-1)?.value ?? null;
   return [
     PS_FTIME_FN,
     PS_GLOB_FN,
@@ -456,10 +474,9 @@ const stat: Handler = (args) => {
       " { $fx_ft = 'symbolic link' }",
     "    $fx_ro = $fx_it.Attributes.ToString().Contains('ReadOnly')",
     "    $fx_mode = '0664'; if ($fx_it.PSIsContainer) { $fx_mode = '0775' } elseif ($fx_ro) { $fx_mode = '0444' }",
-    "    $fx_epoch = [int](($fx_it.LastWriteTime.ToUniversalTime() - [datetime]'1970-01-01').TotalSeconds)",
-    '    if (' + (fmt ? '$true' : '$false') + ') {',
-    '      $fx_o = ' + psStr(fmt ?? ''),
-    "      $fx_o = $fx_o.Replace('%s', [string]$fx_size).Replace('%n', $fx_g).Replace('%F', $fx_ft).Replace('%a', $fx_mode).Replace('%Y', [string]$fx_epoch).Replace('%y', $fx_it.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss')).Replace('%%', '%')",
+    "    $fx_epoch = [long][math]::Floor(($fx_it.LastWriteTime.ToUniversalTime() - [datetime]'1970-01-01').TotalSeconds)",
+    '    if (' + (fmt !== null ? '$true' : '$false') + ') {',
+    '      $fx_o = ' + statFormatExpr(fmt ?? ''),
     '      $fx_o',
     '    } else {',
     '      "  File: " + $fx_g',
