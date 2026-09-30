@@ -16,11 +16,24 @@ describe('awk/sort parity compilation', () => {
     expect(script).toContain('$fx_awk_out = New-Object System.Text.StringBuilder');
     expect(script).toContain('$fx_awk_buffered = $script:fx_csub -or -not $fx_term');
     expect(script).toContain('if ($fx_awk_buffered) { $fx_awk_out = New-Object System.Text.StringBuilder }');
-    expect(script).toContain('else { fx-write ([string]$s) $true }');
+    expect(script).toContain('else { [Console]::Out.Write([string]$s) }');
     expect(script).toContain(' + [string][char]10)');
     expect(script).toContain('fx-write ($fx_awk_out.ToString()) $fx_term');
     expect(body("awk '{print $1}' nums.txt")).not.toContain('$fx_awk_out');
     expect(body("awk 'BEGIN {printf \"literal\"}'")).toContain('-f @()');
+  });
+
+  it.each([
+    String.raw`awk '{printf "%s:", $1; printf "%s\n", $2}' nums.txt`,
+    String.raw`awk 'BEGIN {print "start"} {printf "%s", $1} END {print "end"}' nums.txt`,
+  ])('never mixes immediate and deferred direct writes for %s', (command) => {
+    const script = body(command);
+    const start = script.indexOf('function fx-awk-write($s) {');
+    const helper = script.slice(start, script.indexOf('\n}', start) + 2);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(helper).toContain('else { [Console]::Out.Write([string]$s) }');
+    expect(helper).not.toContain('fx-write ');
+    expect(helper).not.toContain('Write-Output');
   });
 
   it('keeps native case-fold sorting and orders only equal-fold runs for last-resort ties', () => {

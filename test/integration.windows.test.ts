@@ -1265,6 +1265,17 @@ describe.skipIf(!hasPs)(`integration (real ${selectedPowerShell.executable})`, {
     expect((await run('gzip -k ratio.txt')).exitCode).toBe(0);
     rmSync(join(dir, 'ratio.txt'));
     writeFileSync(join(dir, 'ratio.txt'), 'stale destination\n', 'utf8');
+    const archive = readFileSync(join(dir, 'ratio.txt.gz'));
+
+    // Default gunzip must not replace an existing file, even for a large
+    // successfully decoded stream. Then exercise extraction to an absent path.
+    const collision = await run('gzip -d ratio.txt.gz');
+    expect(collision.exitCode, JSON.stringify(collision)).toBe(2);
+    expect(collision.stderr).toContain('already exists; not overwritten');
+    expect(readFileSync(join(dir, 'ratio.txt'), 'utf8')).toBe('stale destination\n');
+    expect(readFileSync(join(dir, 'ratio.txt.gz'))).toEqual(archive);
+    expect(readdirSync(dir).filter((name) => name.startsWith('.fauxnix-gzip-'))).toEqual([]);
+    rmSync(join(dir, 'ratio.txt'));
 
     const unpack = await run('gzip -d ratio.txt.gz');
     expect(unpack.exitCode, JSON.stringify(unpack)).toBe(0);

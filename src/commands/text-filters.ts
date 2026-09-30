@@ -2066,7 +2066,10 @@ const awk: Handler = (args, ctx) => {
       'if ($fx_awk_buffered) { $fx_awk_out = New-Object System.Text.StringBuilder }',
       'function fx-awk-write($s) {',
       '  if ($fx_awk_buffered) { [void]$fx_awk_out.Append([string]$s) }',
-      '  else { fx-write ([string]$s) $true }',
+      // Console writes are immediate; emitted line objects may be collected
+      // later by the host. Use one write path for every direct fragment so
+      // printf tails cannot overtake newline-terminated printf/print output.
+      '  else { [Console]::Out.Write([string]$s) }',
       '}',
     );
   }
