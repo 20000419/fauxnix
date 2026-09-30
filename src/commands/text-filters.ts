@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { FauxnixParseError, Word, wordToString } from '../ast.js';
 import { CommandSpec, Handler, parseWords, psStr } from '../registry.js';
+import { PS_WRITE_FN, fxTermLine } from './text-output.js';
 import {
   argListExpr,
   exprOfWord,
@@ -1823,7 +1824,7 @@ function awkFmtToPs(fmt: string): { ps: string; kinds: AwkFmtKind[] } {
   return { ps, kinds };
 }
 
-const awk: Handler = (args) => {
+const awk: Handler = (args, ctx) => {
   const { values, operandWords } = parseWords(args, ['F', 'v']);
 
   // -v may repeat; collect all of them
@@ -1875,6 +1876,11 @@ const awk: Handler = (args) => {
   }
   const fileWords = operandWords.slice(1);
   const prog = new AwkParser(progLit).parse();
+  // A printf program produces one text stream, not one line per statement.
+  // Pipeline/substitution consumers require one object to avoid synthetic
+  // separators. Direct terminal/file-spool output can stream each fragment.
+  const exactOutput = [...prog.begin, ...prog.items.flatMap((item) => item.act ?? []), ...prog.end]
+    .some((statement) => statement.k === 'printf');
 
   // FS mode
   const fsRaw = values.get('-F') ?? ' ';
@@ -2003,11 +2009,12 @@ const awk: Handler = (args) => {
     const out: string[] = [];
     for (const st of stmts) {
       if (st.k === 'print') {
-        if (st.args.length === 0) {
-          out.push('$fx_line');
-        } else {
-          out.push('(' + st.args.map((a) => '(fx-str ' + gen(a).ps + ')').join(' + (fx-str $fxv_OFS) + ') + ')');
-        }
+        const text = st.args.length === 0
+          ? '$fx_line'
+          : '(' + st.args.map((a) => '(fx-str ' + gen(a).ps + ')').join(' + (fx-str $fxv_OFS) + ') + ')';
+        out.push(exactOutput
+          ? 'fx-awk-write (' + text + ' + [string][char]10)'
+          : text);
       } else if (st.k === 'printf') {
         const f = awkFmtToPs(st.fmt);
         const argExprs = f.kinds.map((kind, idx) => {
@@ -2022,8 +2029,8 @@ const awk: Handler = (args) => {
           }
           return '(fx-str ' + raw + ')';
         });
-        const argList = argExprs.length ? ' ' + argExprs.join(', ') : '';
-        out.push('(' + f.ps + ' -f' + argList + ')');
+        const argList = argExprs.length ? ' ' + argExprs.join(', ') : ' @()';
+        out.push('fx-awk-write (' + f.ps + ' -f' + argList + ')');
       } else if (st.k === 'fieldassign') {
         out.push('$fx_fieldValue = (fx-str ' + gen(st.e).ps + ')');
         out.push('if ($fx_flds.Count -lt ' + st.index + ") { $fx_flds += @('') * (" + st.index + ' - $fx_flds.Count) }');
@@ -2051,6 +2058,18 @@ const awk: Handler = (args) => {
   };
 
   const lines: string[] = [PS_READTEXT_FN, PS_SPLITLINES_FN];
+  if (exactOutput) {
+    lines.push(
+      PS_WRITE_FN,
+      fxTermLine(ctx.position),
+      '$fx_awk_buffered = $script:fx_csub -or -not $fx_term',
+      'if ($fx_awk_buffered) { $fx_awk_out = New-Object System.Text.StringBuilder }',
+      'function fx-awk-write($s) {',
+      '  if ($fx_awk_buffered) { [void]$fx_awk_out.Append([string]$s) }',
+      '  else { fx-write ([string]$s) $true }',
+      '}',
+    );
+  }
   if (fileWords.length > 0) lines.push(PS_GLOB_FN);
 
   lines.push(
@@ -2188,6 +2207,7 @@ const awk: Handler = (args) => {
   lines.push('}');
 
   if (prog.end.length > 0) lines.push(...genStmts(prog.end, false));
+  if (exactOutput) lines.push('if ($fx_awk_buffered) { fx-write ($fx_awk_out.ToString()) $fx_term }');
 
   lines.push('if ($fx_err) { $script:fx_exit = 2 }');
   return lines.join('\n');
@@ -2280,10 +2300,34 @@ const sort: Handler = (args) => {
   const fastPath = specs.length === 0 && !globalN && !globalB;
   if (fastPath) {
     const comparer = globalF ? 'OrdinalIgnoreCase' : 'Ordinal';
-    lines.push('$fx_arr = [string[]]$fx_lines');
+    if (globalF && uniqMode) {
+      // Native Array.Sort is unstable. Select the first input representative
+      // before sorting, as GNU -u disables the case-sensitive last resort.
+      lines.push(
+        '$fx_seen = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)',
+        '$fx_res = New-Object System.Collections.Generic.List[string]',
+        'foreach ($fx_l in $fx_lines) { if ($fx_seen.Add([string]$fx_l)) { $fx_res.Add([string]$fx_l) } }',
+        '$fx_arr = $fx_res.ToArray()',
+      );
+    } else {
+      lines.push('$fx_arr = [string[]]$fx_lines');
+    }
     lines.push('[array]::Sort($fx_arr, [System.StringComparer]::' + comparer + ')');
+    if (globalF && !uniqMode) {
+      // Retain native sorting, then order each equal-fold run by the original
+      // line. GNU's last-resort comparison ignores -f but still honors -r.
+      lines.push(
+        '$fx_start = 0',
+        'while ($fx_start -lt $fx_arr.Count) {',
+        '  $fx_end = $fx_start + 1',
+        '  while ($fx_end -lt $fx_arr.Count -and [System.StringComparer]::OrdinalIgnoreCase.Equals($fx_arr[$fx_start], $fx_arr[$fx_end])) { $fx_end++ }',
+        '  if (($fx_end - $fx_start) -gt 1) { [array]::Sort($fx_arr, $fx_start, ($fx_end - $fx_start), [System.StringComparer]::Ordinal) }',
+        '  $fx_start = $fx_end',
+        '}',
+      );
+    }
     if (globalR) lines.push('[array]::Reverse($fx_arr)');
-    if (uniqMode) {
+    if (uniqMode && !globalF) {
       lines.push('$fx_res = New-Object System.Collections.Generic.List[string]');
       lines.push('if ($fx_arr.Count -gt 0) { $fx_res.Add($fx_arr[0]) }');
       lines.push('for ($fx_i = 1; $fx_i -lt $fx_arr.Count; $fx_i++) {');

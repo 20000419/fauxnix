@@ -4,8 +4,6 @@
     "identity": 0.95,
     "knownMismatchIds": [
       "or-fallback",
-      "sort-ignore-case",
-      "awk-printf-fields",
       "bracket-leading-empty-alt"
     ],
     "note": "RFC 1.0 C-7 / #118. This corpus enforces ≥200 sourced, unique cases at ≥95% byte-identical. Release evidence still requires two consecutive green scheduled oracle runs after merge."

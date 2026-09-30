@@ -36,6 +36,19 @@ The four currently reviewed differences are listed by case ID in
 aggregate stays above 95%; removing an entry after its behavior is fixed is
 allowed. This prevents the percentage threshold from hiding regressions.
 
+`bracket-leading-empty-alt` is an explicit oracle-platform difference. In
+[Windows validation run 36671437509](https://github.com/20000419/fauxnix/actions/runs/36671437509/job/109747074932),
+Git Bash rejected `|x` with `empty (sub)expression`, producing status 2;
+fauxnix produced status 0. GNU Bash 5.2 on Linux accepts the same unchanged
+command and produces status 0. [Bash uses the host POSIX regex interfaces](https://www.gnu.org/software/bash/manual/html_node/Conditional-Constructs.html),
+and [empty alternatives are not portable](https://www.gnu.org/software/autoconf/manual/autoconf-2.64/autoconf.pdf).
+The case remains in the corpus and the reviewed baseline; it is not an identity
+pass. Fauxnix's translated .NET regex is not a full POSIX regex implementation:
+POSIX's [leftmost-longest alternatives](https://www.gnu.org/s/gnulib/manual/html_node/Alternation-Operator.html)
+can also differ from .NET's chosen captures. Matching this Git Bash rejection
+or implementing full POSIX capture semantics requires an explicit compatibility
+choice, rather than changing the reference case to improve the percentage.
+
 This change satisfies the corpus-size half of C-7. It does **not** satisfy the
 release-evidence half: two consecutive green **scheduled** oracle runs are
 still required after the change reaches the default branch. Local runs and
