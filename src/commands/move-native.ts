@@ -58,13 +58,16 @@ namespace Fauxnix {
           throw new IOException("cross-volume replacement is unsupported; both files retained");
         if (a.Low == b.Low && a.High == b.High)
           throw new IOException("source and destination are the same file");
-        // MOVEFILE_REPLACE_EXISTING only. No COPY_ALLOWED/predelete fallback.
-        if (!MoveFileExW(source, destination, 1)) {
-          int error = Marshal.GetLastWin32Error();
-          if (error == 17)
-            throw new IOException("cross-volume replacement is unsupported; both files retained");
-          throw new Win32Exception(error);
-        }
+      }
+      // Close identity handles before replacement: an open destination can
+      // prevent Windows replacement even when opened with delete sharing.
+      // This preflight is deliberately not represented as a namespace lock.
+      // MOVEFILE_REPLACE_EXISTING only. No COPY_ALLOWED/predelete fallback.
+      if (!MoveFileExW(source, destination, 1)) {
+        int error = Marshal.GetLastWin32Error();
+        if (error == 17)
+          throw new IOException("cross-volume replacement is unsupported; both files retained");
+        throw new Win32Exception(error);
       }
     }
   }
