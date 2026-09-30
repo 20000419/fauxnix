@@ -150,16 +150,15 @@ describe.skipIf(!runnable)('mv destination preservation on Windows', { timeout: 
     expect(readFileSync(join(directory, target), 'utf8')).toBe('replacement data');
   });
 
-  it.each([false, true])('still replaces an empty directory (populated source: %s)', async (populated) => {
+  it.each([false, true])('preserves an existing empty directory (populated source: %s)', async (populated) => {
     makeDirectory('source/item');
     makeDirectory('destination/item');
     if (populated) makeFile('source/item/source.txt', 'replacement data');
+    const before = snapshot();
     const result = await run('mv source/item destination');
-    expect(result.exitCode, result.stderr).toBe(0);
-    expect(result.stderr).toBe('');
-    expect(existsSync(join(directory, 'source/item'))).toBe(false);
-    expect(readdirSync(join(directory, 'destination/item'))).toEqual(populated ? ['source.txt'] : []);
-    if (populated) expect(readFileSync(join(directory, 'destination/item/source.txt'), 'utf8')).toBe('replacement data');
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('both directories retained');
+    expect(snapshot()).toEqual(before);
   });
 
   it.each([false, true])('still moves to an absent target (directory: %s)', async (isDirectory) => {

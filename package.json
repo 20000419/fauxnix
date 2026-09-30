@@ -44,7 +44,7 @@
     "utf8"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=22.20.0"
   },
   "license": "MIT",
   "repository": {

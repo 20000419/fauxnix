@@ -6,6 +6,16 @@ maintainers (humans and agents alike). The core principle:
 > **Individually reviewed PRs do not imply their combination is reviewed.**
 > The final tree that lands on `main` must itself carry evidence.
 
+## Node support
+
+Use Node.js 22.20.0 or newer; current Node 22 and 24 LTS are tested.
+The exact 22.20.0 minimum is a CI gate, including `npm ci --engine-strict`
+and source/packed installation. Vite requires 22.12+, while the optional
+Linux lzma development dependency needs 22.20+ (or 24.12+ on Node 24).
+The installed CLI has no lzma dependency. Use a current LTS patch for development.
+Node 18 and 20 are no longer supported; this is a breaking support-policy change
+for the next release, not a retroactive claim about published v1.0.0.
+
 ## PR review checklist
 
 1. **Fork PRs don't run Actions automatically** (`action_required`). Either

@@ -49,7 +49,9 @@ config files yourself.
 
 > npm package name is `fauxnix-cli` (the `fauxnix` name on npm belongs to an unrelated 2015
 > websocket library); the installed command is `fauxnix`. Requires Windows with PowerShell 5.1+
-> (built-in) and Node.js ≥ 18.
+> (built-in) and Node.js ≥ 22.20.0.
+> This is the next-release support policy for this checkout. Published v1.0.0
+> retains its original engine metadata. Current Node 22/24 LTS patches are tested.
 
 <details>
 <summary><b>Manual config per harness</b></summary>
@@ -258,9 +260,20 @@ fauxnix optimizes for the commands agents actually run. Documented deviations:
   (as in Git Bash).
 - `ps aux` columns are approximations (no per-process CPU% accounting, USER shows `?`).
 - `gzip -c`/pipeline stdin is text-faithful, not byte-faithful; file-mode `gzip f` is byte-exact.
-- Gzip integrity checks use the selected .NET `GZipStream`; some runtimes can accept
-  premature EOF. Successful decompression or `gzip -t` is not a strict completeness
-  guarantee. Use `gunzip -k` to retain the compressed source when recovery matters.
+- Gzip decompression and `gzip -t` use Node's strict streaming decoder, including
+  every concatenated member. Incomplete streams and checksum errors fail without
+  committing a destination or deleting the archive. Trailing non-gzip garbage is
+  an error rather than GNU's warning. Text stdout is validated before emission and
+  needs temporary disk space proportional to decoded size; `-t` discards output.
+  Standalone translated scripts require supported `node.exe` on PATH. See the
+  [strict gzip contract](docs/rfc-strict-gzip.md) for cancellation and spool limits.
+- `mv` replaces regular files only within one volume, without predeleting the
+  destination. Cross-volume replacement, leaf reparse-point replacement, and
+  replacing an existing empty directory fail explicitly with originals retained;
+  `-f` does not bypass these limits. Existing-target `-n` still skips. Ordinary
+  absent-target moves retain PowerShell behavior and are not transactional across
+  volumes. Identity checks and rename are separate operations, not a race-proof
+  transaction. See the [move contract](docs/rfc-safe-file-move.md).
 - `stat --printf` omits the implicit newline and interprets text escapes, including ASCII
   octal/hex escapes. Numeric escapes producing bytes `0x80`–`0xFF` are rejected before output;
   use literal Unicode text instead. NUL is preserved in direct output, text pipelines, and

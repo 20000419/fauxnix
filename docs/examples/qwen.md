@@ -5,7 +5,7 @@ fauxnix is a bash→PowerShell translation layer for AI agents on Windows — no
 ## Prerequisites
 
 - Windows
-- Node.js ≥ 18
+- Node.js ≥ 22.20.0
 - `npm i -g fauxnix-cli` (the installed command is still `fauxnix`)
 - PowerShell 5.1 (built-in)
 

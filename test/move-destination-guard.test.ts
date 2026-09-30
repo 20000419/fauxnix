@@ -10,12 +10,12 @@ function bodyOf(command: string): string {
 }
 
 describe('mv destination preflight in generated PowerShell', () => {
-  it('checks both entry types before either kind of destination removal', () => {
+  it('checks both entry types before destination replacement', () => {
     const body = bodyOf('mv source destination');
     const source = body.indexOf('$fx_sourceItem = Get-Item -LiteralPath $fx_g -Force -ErrorAction Stop');
     const target = body.indexOf('$fx_targetItem = Get-Item -LiteralPath $fx_target -Force -ErrorAction Stop');
-    const firstRemoval = body.indexOf('[IO.Directory]::Delete');
-    expect(source).toBeGreaterThan(body.indexOf('are the same file'));
+    const firstRemoval = body.indexOf('fx-move-replace-file $fx_sourcePath $fx_targetPath');
+    expect(source).toBeGreaterThan(body.indexOf('try {', body.indexOf('$fx_all =')));
     expect(target).toBeGreaterThan(source);
     expect(firstRemoval).toBeGreaterThan(target);
     const preflight = body.slice(target, firstRemoval);
@@ -33,22 +33,17 @@ describe('mv destination preflight in generated PowerShell', () => {
     const enumeration = body.indexOf('if (@(Get-ChildItem -LiteralPath $fx_target -Force -ErrorAction Stop).Count -gt 0)');
     expect(enumeration).toBeGreaterThan(body.indexOf('if ($fx_targetItem.PSIsContainer)'));
     expect(body.indexOf('Directory not empty')).toBeGreaterThan(enumeration);
-    expect(body.indexOf('[IO.Directory]::Delete')).toBeGreaterThan(body.indexOf('Directory not empty'));
+    expect(body.indexOf('replacement of an existing empty directory')).toBeGreaterThan(body.indexOf('Directory not empty'));
   });
 
-  it('removes only empty directories using a resolved path and never recurses', () => {
+  it('never predeletes a file or directory and uses no force fallback', () => {
     const body = bodyOf('mv source destination');
-    expect(body).toContain('[IO.Directory]::Delete($fx_targetPath, $false)');
-    expect(body).toContain([
-      '          [IO.Directory]::Delete($fx_targetPath, $false)',
-      '        } else {',
-      '          Remove-Item -LiteralPath $fx_target -Force -ErrorAction Stop',
-      '        }',
-    ].join('\n'));
-    expect(body).not.toContain('-Recurse');
-    expect(body.indexOf('Move-Item -LiteralPath')).toBeGreaterThan(body.indexOf('[IO.Directory]::Delete'));
-    expect(body).toContain('Move-Item -LiteralPath $fx_g -Destination $fx_target -Force -ErrorAction Stop');
-    expect(body).toContain('} catch { [Console]::Error.WriteLine("mv: cannot move');
+    expect(body).not.toContain('[IO.Directory]::Delete');
+    expect(body).not.toContain('Remove-Item -LiteralPath $fx_target');
+    expect(body).toContain('both directories retained');
+    expect(body).toContain('fx-move-replace-file $fx_sourcePath $fx_targetPath');
+    expect(body).toContain('Move-Item -LiteralPath $fx_g -Destination $fx_target -ErrorAction Stop');
+    expect(body).not.toContain('-Destination $fx_target -Force');
   });
 
   it.each(['-n', '--no-clobber'])('%s still skips an existing computed target before preflight', (flag) => {

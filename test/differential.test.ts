@@ -3,8 +3,9 @@
  *
  * Default `npm test` imports this file and runs the corpus-shape check, then
  * skipIf's the oracle unless FAUXNIX_DIFF_ORACLE is set and git-bash bash.exe
- * exists. Missing Git Bash never fails CI. The weekly schedule in
- * `.github/workflows/differential.yml` is skip-safe the same way.
+ * exists. The minimum-Node x64 PS5.1 CI lane requires Git Bash before running
+ * this suite; other developer/CI lanes and the weekly differential schedule
+ * remain skip-safe.
  */
 import { describe, expect, it } from 'vitest';
 import {

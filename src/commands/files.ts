@@ -9,6 +9,7 @@ import {
 } from '../registry.js';
 import { argListExpr, exprOfWord, operandExpr } from '../translator.js';
 import { PS_WRITE_FN, fxTermLine } from './text-output.js';
+import { PS_MOVE_REPLACE_FN } from './move-native.js';
 
 /* ------------------------------------------------------------------ */
 /* Shared PS snippets                                                  */
@@ -197,6 +198,7 @@ const mv: Handler = (args) => {
   const noclobber = flags.has('n') || longs.has('--no-clobber');
   return [
     PS_GLOB_FN,
+    PS_MOVE_REPLACE_FN,
     '$fx_all = ' + argListExpr(operandWords),
     "if ($fx_all.Count -lt 2) { $fx_srcs = @(); $fx_dst = '' } else { $fx_dst = [string]$fx_all[$fx_all.Count - 1]; $fx_srcs = @($fx_all[0..($fx_all.Count - 2)]) }",
     '$fx_srcs = @($fx_srcs | ForEach-Object { fx-glob $_ })',
@@ -228,15 +230,14 @@ const mv: Handler = (args) => {
     '          if (@(Get-ChildItem -LiteralPath $fx_target -Force -ErrorAction Stop).Count -gt 0) {',
     '            [Console]::Error.WriteLine("mv: cannot move \'" + $fx_g + "\' to \'" + $fx_target + "\': Directory not empty"); $script:fx_exit = 1; continue',
     '          }',
-    // Fail if contents appeared after the check; never recursively delete a
-    // directory or let Remove-Item prompt to do so. Use the resolved path
-    // because .NET and PowerShell need not share a current directory.
-    '          [IO.Directory]::Delete($fx_targetPath, $false)',
+    '          [Console]::Error.WriteLine("mv: replacement of an existing empty directory is unsupported; both directories retained"); $script:fx_exit = 1; continue',
     '        } else {',
-    '          Remove-Item -LiteralPath $fx_target -Force -ErrorAction Stop',
+    '          fx-move-replace-file $fx_sourcePath $fx_targetPath',
     '        }',
+    '      } else {',
+    // No force retry if a destination appears after the preflight.
+    '        Move-Item -LiteralPath $fx_g -Destination $fx_target -ErrorAction Stop',
     '      }',
-    '      Move-Item -LiteralPath $fx_g -Destination $fx_target -Force -ErrorAction Stop',
     '      if (' + (verbose ? '$true' : '$false') + ') { [Console]::Error.WriteLine("renamed \'" + $fx_g + "\' -> \'" + $fx_target + "\'") }',
     '    } catch { [Console]::Error.WriteLine("mv: cannot move \'" + $fx_g + "\': " + $_.Exception.Message); $script:fx_exit = 1 }',
     '  }',
@@ -1112,7 +1113,8 @@ function fileSpec(
 const INTERACTIVE: Partial<OptionSpec> = { reason: 'interactive prompt' };
 
 /** Destructive file commands migrated first (#130). Unspec'd handlers stay unchecked.
- *  cp/mv `-f`/`--force` is always-on overwrite (Copy-Item/Move-Item -Force); listed so `cp -rf` stays valid. */
+ *  cp `-f` is always-on overwrite. mv `-f` retains safe same-volume regular-file
+ *  replacement and never overrides preservation limits or permissions. */
 export const specs: CommandSpec[] = [
   fileSpec(
     ['cp'],

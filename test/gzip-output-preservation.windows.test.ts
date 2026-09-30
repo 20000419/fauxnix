@@ -203,22 +203,15 @@ describe.skipIf(!runnable)('gzip default output preservation on Windows', { time
     ['short-header', compressed.subarray(0, 5)],
     ['missing-footer', compressed.subarray(0, -4)],
     ['truncated-body', compressed.subarray(0, -9)],
-  ])('characterizes .NET truncation handling for %s without assuming validation parity', async (name, bytes) => {
+  ])('rejects retained truncation fixture %s and preserves its archive', async (name, bytes) => {
     const directory = fixture();
     const source = `${name}.gz`;
     writeFileSync(join(directory, source), bytes);
-    const result = await run(`gunzip -k ${source}`, directory);
+    const result = await run(`gunzip ${source}`, directory);
     const destination = join(directory, name);
-    // Some GZipStream versions accept premature EOF. Keep this observation
-    // separate from no-clobber guarantees; -k preserves our input either way.
-    console.log('gzip truncation characterization', JSON.stringify({
-      edition: selection.expectedEdition, fixture: name, exitCode: result.exitCode,
-      acceptedTruncatedInput: result.exitCode === 0,
-      outputBytes: existsSync(destination) ? readFileSync(destination).length : null,
-    }));
-    expect([0, 1]).toContain(result.exitCode);
+    expect(result.exitCode).toBe(1);
     expect(readFileSync(join(directory, source))).toEqual(bytes);
-    if (result.exitCode !== 0) expect(existsSync(destination)).toBe(false);
+    expect(existsSync(destination)).toBe(false);
     noStagingFiles(directory);
   });
 });

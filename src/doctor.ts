@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
+import { nodeEngineRange, supportsNode } from './runtime-support.js';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { resolveQwenLaunchTuple, sameQwenLaunchTuple } from './qwen-launch.js';
@@ -264,8 +265,7 @@ async function mcpLines(
   nodeVersion: string,
   loadMcp?: () => Promise<unknown>,
 ): Promise<{ lines: string[]; ok: boolean }> {
-  const major = nodeMajor(nodeVersion);
-  const nodeOk = major >= 18;
+  const nodeOk = supportsNode(nodeVersion);
   let moduleOk = false;
   let moduleDetail = '';
   try {
@@ -278,7 +278,7 @@ async function mcpLines(
   }
 
   const lines = [
-    field('node', `${nodeVersion.startsWith('v') ? nodeVersion : 'v' + nodeVersion}${nodeOk ? ' (>=18 required)' : '  FAILED (requires >=18)'}`),
+    field('node', `${nodeVersion.startsWith('v') ? nodeVersion : 'v' + nodeVersion}${nodeOk ? ` (${nodeEngineRange} required)` : `  FAILED (requires ${nodeEngineRange})`}`),
     field('mcp', moduleOk ? 'module loads' : `FAILED to load${moduleDetail ? ': ' + moduleDetail : ''}`),
     VALUE_INDENT + 'start with: fauxnix mcp',
   ];
@@ -287,11 +287,6 @@ async function mcpLines(
 
 async function defaultLoadMcp(): Promise<unknown> {
   return import('./mcp.js');
-}
-
-function nodeMajor(version: string): number {
-  const m = /^v?(\d+)/.exec(version);
-  return m ? Number(m[1]) : 0;
 }
 
 function stripBom(text: string): string {
