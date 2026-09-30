@@ -15,8 +15,12 @@ back output that looks like GNU/Linux: `ls -l` columns, bash-style error message
 codes, UTF-8/GBK handled automatically.
 
 One-command install for **Claude Code · Codex · OpenCode · Kimi Code · Qwen Code**, plus any MCP
-client. **109 translated commands · 400+ automated tests · 253-case differential corpus verified
-against real GNU coreutils · zero LLM calls at runtime.**
+client. **109 translated commands · 1,044 automated tests · 270-case Git Bash differential
+corpus plus 41 supplementary checks · zero LLM calls at runtime.**
+
+This checkout prepares **v2.0.0**. See [migration and release notes](docs/releases/v2.0.0.md)
+for the Node.js requirement, changed file-operation contracts and verification limits.
+The npm badge and `@latest` examples show the published version until publication completes.
 
 ## Try it now — no install
 
@@ -50,8 +54,8 @@ config files yourself.
 > npm package name is `fauxnix-cli` (the `fauxnix` name on npm belongs to an unrelated 2015
 > websocket library); the installed command is `fauxnix`. Requires Windows with PowerShell 5.1+
 > (built-in) and Node.js ≥ 22.20.0.
-> This is the next-release support policy for this checkout. Published v1.0.0
-> retains its original engine metadata. Current Node 22/24 LTS patches are tested.
+> Node 18/20 are unsupported in v2. Current Node 22/24 LTS patches are tested.
+> Published v1.0.0 retains its original metadata.
 
 <details>
 <summary><b>Manual config per harness</b></summary>
@@ -160,7 +164,7 @@ isn't curl, mojibake from codepage mismatches, inscrutable `CategoryInfo` error 
 | agent writes plain bash | ✓ | ✓ | ✓ | ✗ |
 | only needs Node (no bash toolchain / VM) | ✓ | ✗ | ✗ (VM, GBs) | ✓ |
 | native Windows filesystem & environment | ✓ | mostly | ✗ (9P bridge) | ✓ |
-| GNU-exact output, verified | ✓ 253-case differential | ✓ (is GNU) | ✓ | ✗ |
+| differential compatibility | 269/270 cases identical; limits below | GNU reference | GNU tools | different contracts |
 | CRLF / UTF-8 / GBK traps handled | ✓ | locale-dependent | ✓ | ✗ |
 
 **If Git Bash already works for you, keep it** — we literally use it as our differential-testing
@@ -305,10 +309,14 @@ npm run build
 npx tsx scratch/run.mjs "any bash command"   # quick live check
 ```
 
-Differential vs Git Bash is opt-in (`FAUXNIX_DIFF_ORACLE=1`; skips if unset or `bash.exe` is
-missing — Git Bash is not required). See [`test/differential/README.md`](test/differential/README.md).
-The 253-case corpus enforces the RFC C-7 minimum of 200 cases and a 95% identity gate; the weekly
-oracle runs from `.github/workflows/differential.yml`.
+Differential vs Git Bash is locally opt-in (`FAUXNIX_DIFF_ORACLE=1`). The minimum-runtime
+Windows x64 / PowerShell 5.1 CI lane requires Git Bash and runs the 270-case primary corpus
+plus a separate 41-case supplementary corpus. Other lanes may skip these checks.
+The primary corpus currently matches 269/270 cases (99.6%); the remaining observed mismatch
+is the documented Git Bash empty-regex-alternative behavior. The historical 253-case result
+is not a same-corpus comparison. See [`test/differential/README.md`](test/differential/README.md).
+The primary gate remains at least 200 cases and 95% identity; the weekly oracle also runs
+from `.github/workflows/differential.yml`.
 
 Architecture map: `src/parser.ts` (bash subset → AST) · `src/translator.ts` (AST → PowerShell +
 executor wrapper) · `src/executor.ts` (spawn, redirects, session persistence) ·

@@ -14,7 +14,7 @@ and source/packed installation. Vite requires 22.12+, while the optional
 Linux lzma development dependency needs 22.20+ (or 24.12+ on Node 24).
 The installed CLI has no lzma dependency. Use a current LTS patch for development.
 Node 18 and 20 are no longer supported; this is a breaking support-policy change
-for the next release, not a retroactive claim about published v1.0.0.
+in v2.0.0, not a retroactive claim about published v1.0.0.
 
 ## PR review checklist
 
