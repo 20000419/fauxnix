@@ -16,6 +16,11 @@ The **1.0.0 hard gate** is:
 size gate is enforced in the default test suite, and an opted-in oracle run
 must remain at or above 95% identity.
 
+The Unicode `wc -m` case sets `LC_ALL=C.UTF-8` for that command explicitly.
+The oracle otherwise runs under `LC_ALL=C`, where GNU `wc -m` counts each input
+byte rather than UTF-8 codepoints. This keeps the comparison locale-specific
+without changing the baseline locale of the rest of the corpus.
+
 The four currently reviewed differences are listed by case ID in
 `gate.knownMismatchIds`. The oracle rejects every new mismatch even while the
 aggregate stays above 95%; removing an entry after its behavior is fixed is

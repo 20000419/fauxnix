@@ -402,7 +402,8 @@ export function pathExpr(s: string): string {
 /**
  * Convert a Word to a PowerShell string expression.
  * Literal words become single-quoted strings; dynamic ones become
- * double-quoted strings with $(...) interpolation.
+ * double-quoted strings with $(...) interpolation, concatenating command
+ * substitutions outside those strings so their scriptblocks parse independently.
  */
 export function exprOfWord(w: Word, opts?: { preserveCmdSub?: boolean }): string {
   // tilde expansion (unquoted leading ~)
@@ -436,33 +437,57 @@ export function exprOfWord(w: Word, opts?: { preserveCmdSub?: boolean }): string
     return pathExpr(normalizeLiteralPath(text));
   }
 
-  // dynamic — build a PS double-quoted string with interpolation
-  let out = '"';
+  return interpolatedWordExpr(expanded, opts?.preserveCmdSub === true);
+}
+
+function containsCmdSub(parts: WordPart[]): boolean {
+  return parts.some((part) =>
+    part.kind === 'CmdSub' ||
+    ((part.kind === 'DoubleQuoted' || part.kind === 'Arith') && containsCmdSub(part.parts)),
+  );
+}
+
+/** Keep generated scriptblocks out of PowerShell's expandable-string lexer. */
+function interpolatedWordExpr(parts: WordPart[], preserveCmdSub: boolean): string {
+  const expressions: string[] = [];
+  let text = '';
+  const flushText = () => {
+    if (text) expressions.push('"' + text + '"');
+    text = '';
+  };
   const emitPart = (p: WordPart, quoted: boolean) => {
     switch (p.kind) {
       case 'Text':
-        out += escapeDq(p.text);
-        break;
       case 'SingleQuoted':
-        out += escapeDq(p.text);
+        text += escapeDq(p.text);
         break;
       case 'DoubleQuoted':
         for (const q of p.parts) emitPart(q, true);
         break;
       case 'Var':
-        out += '$(' + varExpr(p.name, p.index, p.param, p.length === true, varExtraOf(p)) + ')';
+        text += '$(' + varExpr(p.name, p.index, p.param, p.length === true, varExtraOf(p)) + ')';
         break;
       case 'CmdSub':
-        out += '$(' + translateCmdSub(p.cmd, quoted || opts?.preserveCmdSub === true) + ')';
+        flushText();
+        // fx-csub returns one string. Preserve an empty result and prevent '+'
+        // from acquiring array/numeric semantics when this starts a mixed word.
+        expressions.push('[string](' + translateCmdSub(p.cmd, quoted || preserveCmdSub) + ')');
         break;
       case 'Arith':
-        out += arithExpr(p.parts);
+        if (containsCmdSub(p.parts)) {
+          flushText();
+          expressions.push('[string](' + arithExpr(p.parts) + ')');
+        } else {
+          text += arithExpr(p.parts);
+        }
         break;
     }
   };
-  for (const p of expanded) emitPart(p, false);
-  out += '"';
-  return out;
+  for (const p of parts) emitPart(p, false);
+  flushText();
+  if (expressions.length === 0) return '""';
+  if (expressions.length === 1) return expressions[0];
+  return '(' + expressions.join(' + ') + ')';
 }
 
 let arithHelperPreamble = '';
@@ -496,30 +521,7 @@ function arithSourceExpr(parts: WordPart[]): string {
   if (parts.every((p) => p.kind === 'Text')) {
     return psStr(parts.map((p) => p.text).join(''));
   }
-  let out = '"';
-  const emit = (p: WordPart) => {
-    switch (p.kind) {
-      case 'Text':
-      case 'SingleQuoted':
-        out += escapeDq(p.text);
-        break;
-      case 'DoubleQuoted':
-        for (const q of p.parts) emit(q);
-        break;
-      case 'Var':
-        out += '$(' + varExpr(p.name, p.index, p.param, p.length === true, varExtraOf(p)) + ')';
-        break;
-      case 'CmdSub':
-        out += '$(' + translateCmdSub(p.cmd, true) + ')';
-        break;
-      case 'Arith':
-        out += arithExpr(p.parts);
-        break;
-    }
-  };
-  for (const p of parts) emit(p);
-  out += '"';
-  return out;
+  return interpolatedWordExpr(parts, true);
 }
 
 /** Literal text of a word when it contains no interpolation, else null. */

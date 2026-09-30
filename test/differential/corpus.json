@@ -1450,7 +1450,7 @@
     },
     {
       "id": "wc-unicode-scalars",
-      "cmd": "printf 'A😀é\\n' | wc -m",
+      "cmd": "printf 'A😀é\\n' | LC_ALL=C.UTF-8 wc -m",
       "source": "test/textio-system-correctness.windows.test.ts / quality audit"
     }
   ]

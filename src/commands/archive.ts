@@ -255,7 +255,7 @@ function gzBlock(args: Word[], ctx: PipelineCtx, forced: Partial<GzOpts>): strin
         : [
             '      fx-gz-stream-file $fx_f $fx_out',
             '      try { (Get-Item -LiteralPath $fx_out).LastWriteTime = (Get-Item -LiteralPath $fx_f).LastWriteTime } catch {}',
-            '      if (-not ' + b(p.keep) + ') { Remove-Item -LiteralPath $fx_f -Force }',
+            '      if (-not ' + b(p.keep) + ') { Remove-Item -LiteralPath $fx_f -Force -ErrorAction Stop }',
           ].join('\n'),
       "    } catch { [Console]::Error.WriteLine('gzip: ' + $fx_f + ': not in gzip format'); $script:fx_exit = 1 }",
     );
@@ -273,7 +273,7 @@ function gzBlock(args: Word[], ctx: PipelineCtx, forced: Partial<GzOpts>): strin
             '      $fx_o = fx-gz-cbytes ([IO.File]::ReadAllBytes($fx_f)) ' + p.level,
             "      [IO.File]::WriteAllBytes($fx_f + '.gz', $fx_o)",
             "      try { (Get-Item -LiteralPath ($fx_f + '.gz')).LastWriteTime = (Get-Item -LiteralPath $fx_f).LastWriteTime } catch {}",
-            '      if (-not ' + b(p.keep) + ') { Remove-Item -LiteralPath $fx_f -Force }',
+            '      if (-not ' + b(p.keep) + ') { Remove-Item -LiteralPath $fx_f -Force -ErrorAction Stop }',
           ].join('\n'),
       "    } catch { [Console]::Error.WriteLine('gzip: ' + $fx_f + ': ' + $_.Exception.Message); $script:fx_exit = 1 }",
     );
@@ -375,7 +375,7 @@ const zip: Handler = (args) => {
     '        }',
     '      }',
     '    } finally { $fx_z.Dispose() }',
-    '    if ($fx_rename) { Move-Item -LiteralPath $fx_dst -Destination $fx_arc -Force }',
+    '    if ($fx_rename) { Move-Item -LiteralPath $fx_dst -Destination $fx_arc -Force -ErrorAction Stop }',
     "  } catch { [Console]::Error.WriteLine('zip: fauxnix: ' + $_.Exception.Message); $script:fx_exit = 1 }",
     '}',
   ].join('\n');

@@ -75,6 +75,8 @@ jobs:
       - run: npm run typecheck:test
       - run: npm run build
       - run: npm test
+      - name: Measure bounded-output clipping (diagnostic)
+        run: node scripts/benchmark-output-clipping.mjs
       - run: npm run test:package
 
   portable:
