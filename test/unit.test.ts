@@ -2325,7 +2325,7 @@ describe('cli doctor', () => {
         home: dir,
         cwd: dir,
         env: {},
-        nodeVersion: 'v20.11.0',
+        nodeVersion: 'v22.20.0',
       });
       const text = report.lines.join('\n');
       expect(text).toContain('UTF-8 default');
@@ -2335,7 +2335,7 @@ describe('cli doctor', () => {
       expect(text).toMatch(/opencode\s+: not detected — see README/);
       expect(text).toContain('start with: fauxnix mcp');
       expect(text).toContain('module loads');
-      expect(text).toContain('v20.11.0');
+      expect(text).toContain('v22.20.0');
       expect(report.ok).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -2349,7 +2349,7 @@ describe('cli doctor', () => {
         home: dir,
         cwd: dir,
         env: { FAUXNIX_NATIVE_ENCODING: 'ansi' },
-        nodeVersion: 'v22.0.0',
+        nodeVersion: 'v22.20.0',
       });
       expect(ansi.lines.join('\n')).toContain('ansi → GBK-native admin tools');
       expect(ansi.ok).toBe(true);
@@ -2362,13 +2362,13 @@ describe('cli doctor', () => {
         loadMcp: async () => ({ startMcpServer: async () => {} }),
       });
       expect(oldNode.ok).toBe(false);
-      expect(oldNode.lines.join('\n')).toContain('FAILED (requires >=18)');
+      expect(oldNode.lines.join('\n')).toContain('FAILED (requires >=22.20.0)');
 
       const badMcp = await collectDoctorReport({
         home: dir,
         cwd: dir,
         env: {},
-        nodeVersion: 'v20.0.0',
+        nodeVersion: 'v22.20.0',
         loadMcp: async () => {
           throw new Error('boom');
         },
@@ -2383,7 +2383,7 @@ describe('cli doctor', () => {
   it('detects harness configs conservatively', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fauxnix-doctor-'));
     try {
-      const empty = await collectDoctorReport({ home: dir, cwd: dir, env: {}, nodeVersion: 'v20.0.0' });
+      const empty = await collectDoctorReport({ home: dir, cwd: dir, env: {}, nodeVersion: 'v22.20.0' });
       expect(empty.lines.join('\n')).toMatch(/claude\s+: not detected — see README/);
 
       writeFileSync(
@@ -2393,7 +2393,7 @@ describe('cli doctor', () => {
           projects: { 'C:\\repos\\fauxnix': { allowedTools: ['Bash'] } },
         }),
       );
-      const mention = await collectDoctorReport({ home: dir, cwd: dir, env: {}, nodeVersion: 'v20.0.0' });
+      const mention = await collectDoctorReport({ home: dir, cwd: dir, env: {}, nodeVersion: 'v22.20.0' });
       expect(mention.lines.join('\n')).toContain('fauxnix MCP not listed');
       expect(mention.lines.join('\n')).not.toContain('fauxnix MCP configured');
 
@@ -2405,14 +2405,14 @@ describe('cli doctor', () => {
           },
         }),
       );
-      const claudeLocal = await collectDoctorReport({ home: dir, cwd: dir, env: {}, nodeVersion: 'v20.0.0' });
+      const claudeLocal = await collectDoctorReport({ home: dir, cwd: dir, env: {}, nodeVersion: 'v22.20.0' });
       expect(claudeLocal.lines.join('\n')).toMatch(/claude\s+: fauxnix MCP configured/);
 
       writeFileSync(
         join(dir, '.claude.json'),
         JSON.stringify({ mcpServers: { fauxnix: { command: 'fauxnix', args: ['mcp'] } } }),
       );
-      const claude = await collectDoctorReport({ home: dir, cwd: dir, env: {}, nodeVersion: 'v20.0.0' });
+      const claude = await collectDoctorReport({ home: dir, cwd: dir, env: {}, nodeVersion: 'v22.20.0' });
       expect(claude.lines.join('\n')).toMatch(/claude\s+: fauxnix MCP configured/);
 
       const homeDir = join(dir, 'home');
@@ -2427,7 +2427,7 @@ describe('cli doctor', () => {
         home: homeDir,
         cwd: cwdDir,
         env: {},
-        nodeVersion: 'v20.0.0',
+        nodeVersion: 'v22.20.0',
       });
       expect(cwdClaude.lines.join('\n')).toMatch(/claude\s+: not detected — see README/);
 
@@ -2436,7 +2436,7 @@ describe('cli doctor', () => {
         join(dir, '.mcp.json'),
         JSON.stringify({ mcpServers: { fauxnix: { command: 'fauxnix', args: ['mcp'] } } }),
       );
-      const project = await collectDoctorReport({ home: dir, cwd: dir, env: {}, nodeVersion: 'v20.0.0' });
+      const project = await collectDoctorReport({ home: dir, cwd: dir, env: {}, nodeVersion: 'v22.20.0' });
       expect(project.lines.join('\n')).toMatch(/claude\s+: fauxnix MCP configured/);
       expect(project.lines.join('\n')).toContain('.mcp.json');
 
@@ -2445,20 +2445,20 @@ describe('cli doctor', () => {
         home: dir,
         cwd: dir,
         env: {},
-        nodeVersion: 'v20.0.0',
+        nodeVersion: 'v22.20.0',
       });
       expect(unrelatedMcp.lines.join('\n')).toMatch(/claude\s+: not detected — see README/);
 
       mkdirSync(join(dir, '.codex'));
       writeFileSync(join(dir, '.codex', 'config.toml'), '[model]\nmodel = "gpt-5"\n');
-      const codexBare = await collectDoctorReport({ home: dir, cwd: dir, env: {}, nodeVersion: 'v20.0.0' });
+      const codexBare = await collectDoctorReport({ home: dir, cwd: dir, env: {}, nodeVersion: 'v22.20.0' });
       expect(codexBare.lines.join('\n')).toContain('codex mcp add fauxnix');
 
       writeFileSync(
         join(dir, '.codex', 'config.toml'),
         '[mcp_servers.fauxnix]\ncommand = "fauxnix"\nargs = ["mcp"]\n',
       );
-      const codex = await collectDoctorReport({ home: dir, cwd: dir, env: {}, nodeVersion: 'v20.0.0' });
+      const codex = await collectDoctorReport({ home: dir, cwd: dir, env: {}, nodeVersion: 'v22.20.0' });
       expect(codex.lines.join('\n')).toMatch(/codex\s+: fauxnix MCP configured/);
 
       mkdirSync(join(dir, '.config', 'opencode'), { recursive: true });
@@ -2466,7 +2466,7 @@ describe('cli doctor', () => {
         join(dir, '.config', 'opencode', 'opencode.json'),
         JSON.stringify({ mcp: { fauxnix: { type: 'local', command: ['fauxnix', 'mcp'] } } }),
       );
-      const opencode = await collectDoctorReport({ home: dir, cwd: dir, env: {}, nodeVersion: 'v20.0.0' });
+      const opencode = await collectDoctorReport({ home: dir, cwd: dir, env: {}, nodeVersion: 'v22.20.0' });
       expect(opencode.lines.join('\n')).toMatch(/opencode\s+: fauxnix MCP configured/);
 
       writeFileSync(
@@ -2475,7 +2475,7 @@ describe('cli doctor', () => {
           mcp: { servers: { fauxnix: { type: 'local', command: ['fauxnix', 'mcp'] } } },
         }),
       );
-      const opencodeV2 = await collectDoctorReport({ home: dir, cwd: dir, env: {}, nodeVersion: 'v20.0.0' });
+      const opencodeV2 = await collectDoctorReport({ home: dir, cwd: dir, env: {}, nodeVersion: 'v22.20.0' });
       expect(opencodeV2.lines.join('\n')).toMatch(/opencode\s+: fauxnix MCP configured/);
 
       rmSync(join(dir, '.config'), { recursive: true, force: true });
@@ -2483,7 +2483,7 @@ describe('cli doctor', () => {
         join(dir, 'opencode.json'),
         JSON.stringify({ mcp: { fauxnix: { type: 'local', command: ['fauxnix', 'mcp'] } } }),
       );
-      const cwdOnly = await collectDoctorReport({ home: dir, cwd: dir, env: {}, nodeVersion: 'v20.0.0' });
+      const cwdOnly = await collectDoctorReport({ home: dir, cwd: dir, env: {}, nodeVersion: 'v22.20.0' });
       expect(cwdOnly.lines.join('\n')).toMatch(/opencode\s+: not detected — see README/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -2543,7 +2543,7 @@ describe('install harness config', () => {
       home: dir,
       cwd: dir,
       env,
-      nodeVersion: 'v20.0.0',
+      nodeVersion: 'v22.20.0',
     });
     return report.lines.join('\n');
   }

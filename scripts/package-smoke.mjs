@@ -89,7 +89,7 @@ try {
   cpSync(join(packageRoot, 'src'), join(sourceDirectory, 'src'), { recursive: true });
 
   const cleanEnvironment = npmChildEnvironment(packageRoot);
-  runNpm(['ci', '--no-audit', '--no-fund'], {
+  runNpm(['ci', '--engine-strict', '--no-audit', '--no-fund'], {
     cwd: sourceDirectory,
     env: cleanEnvironment,
   });
@@ -99,6 +99,7 @@ try {
   runNpm(
     [
       'install',
+      '--engine-strict',
       '--global',
       '--prefix',
       sourceInstallDirectory,
@@ -141,7 +142,7 @@ try {
 
   const tarball = join(packDirectory, tarballs[0]);
   runNpm(
-    ['install', '--prefix', installDirectory, '--no-audit', '--no-fund', tarball],
+    ['install', '--engine-strict', '--prefix', installDirectory, '--no-audit', '--no-fund', tarball],
     { cwd: temporaryRoot, env: cleanEnvironment },
   );
 

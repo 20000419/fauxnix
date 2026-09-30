@@ -49,7 +49,9 @@ config files yourself.
 
 > npm package name is `fauxnix-cli` (the `fauxnix` name on npm belongs to an unrelated 2015
 > websocket library); the installed command is `fauxnix`. Requires Windows with PowerShell 5.1+
-> (built-in) and Node.js ≥ 18.
+> (built-in) and Node.js ≥ 22.20.0.
+> This is the next-release support policy for this checkout. Published v1.0.0
+> retains its original engine metadata. Current Node 22/24 LTS patches are tested.
 
 <details>
 <summary><b>Manual config per harness</b></summary>
