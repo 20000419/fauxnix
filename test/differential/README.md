@@ -21,6 +21,16 @@ The oracle otherwise runs under `LC_ALL=C`, where GNU `wc -m` counts each input
 byte rather than UTF-8 codepoints. This keeps the comparison locale-specific
 without changing the baseline locale of the rest of the corpus.
 
+The identity corpus uses a BMP-only character-count fixture. The separate
+`wc-astral-unicode-oracle` diagnostic retains `A😀é` plus newline: GNU on Linux
+returns **5** under `C.UTF-8`, while Git for Windows returned **6** in
+[validation run 36668228094](https://github.com/20000419/fauxnix/actions/runs/36668228094/job/109737417502).
+Fauxnix must return **5**; the diagnostic and real-Windows golden tests assert
+that result. The Git Bash observation is logged separately, not counted as an
+identity pass or added to the mismatch allowlist. Replacing the newly added
+astral identity fixture with the BMP fixture changes this corpus: do not
+claim a same-case percentage improvement over the previous 270-case run.
+
 The four currently reviewed differences are listed by case ID in
 `gate.knownMismatchIds`. The oracle rejects every new mismatch even while the
 aggregate stays above 95%; removing an entry after its behavior is fixed is

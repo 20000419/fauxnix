@@ -1449,8 +1449,8 @@
       "source": "test/textio-system-correctness.windows.test.ts / quality audit"
     },
     {
-      "id": "wc-unicode-scalars",
-      "cmd": "printf 'A😀é\\n' | LC_ALL=C.UTF-8 wc -m",
+      "id": "wc-bmp-unicode-scalars",
+      "cmd": "printf 'A你é\\n' | LC_ALL=C.UTF-8 wc -m",
       "source": "test/textio-system-correctness.windows.test.ts / quality audit"
     }
   ]

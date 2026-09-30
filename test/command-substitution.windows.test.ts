@@ -25,6 +25,8 @@ const cases: [string, string][] = [
   [String.raw`printf '%s' "$(printf '%s' \()$(printf '%s' \))"`, '()'],
   [String.raw`printf '%s' "$(printf '%s' "$(printf '%s' \))")"`, ')'],
   [String.raw`printf '<%s>' "$(false)"`, '<>'],
+  [String.raw`printf '<%s>' "$(false)"; printf ':%s' "$?"`, '<>:0'],
+  [String.raw`ASSIGNED="$(false)"; printf '%s' "$?"`, '1'],
   [String.raw`printf '<%s>' "$(printf 'a\nb\n\n')"`, '<a\nb>'],
   // Preserve the existing unquoted IFS approximation: one space-joined argument.
   [String.raw`printf '<%s>' left$(printf 'a\nb\n')right`, '<lefta bright>'],

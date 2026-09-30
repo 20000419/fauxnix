@@ -4,7 +4,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { FauxnixSession } from '../src/executor.js';
 import { parseCommand } from '../src/parser.js';
 import { resolvePowerShell } from '../src/powershell.js';
@@ -72,11 +72,19 @@ const collisions: Fixture[] = [
 // No live/user paths, link identity, or cross-volume behavior are exercised.
 describe.skipIf(!runnable)('mv destination preservation on Windows', { timeout: 30000 }, () => {
   let directory: string;
+  const directories: string[] = [];
   let session: FauxnixSession;
   beforeAll(() => { session = new FauxnixSession(); });
-  beforeEach(() => { directory = mkdtempSync(join(tmpdir(), 'fauxnix-mv-destination-')); });
-  afterEach(() => { if (directory) rmSync(directory, { recursive: true, force: true }); });
-  afterAll(async () => { await session?.dispose(); });
+  beforeEach(() => {
+    directory = mkdtempSync(join(tmpdir(), 'fauxnix-mv-destination-'));
+    directories.push(directory);
+  });
+  afterAll(async () => {
+    // Windows holds a process's current directory open. Keep isolated fixtures
+    // until the persistent host has exited, rather than masking EBUSY errors.
+    await session?.dispose();
+    for (const root of directories) rmSync(root, { recursive: true, force: true });
+  });
 
   const run = (command: string) =>
     session.run(translateCommandList(parseCommand(command)), { cwd: directory });

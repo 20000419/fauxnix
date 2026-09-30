@@ -370,6 +370,9 @@ const printf: Handler = (args, ctx) => {
     fxTermLine(ctx.position),
     '$fx_fmt = ' + exprOfWord(ops[0]),
     '$fx_av = ' + psArray(ops.slice(1), exprOfWord),
+    // A substitution can fail while producing an argument. printf's status
+    // belongs to printf itself; later formatting/write exceptions still fail.
+    '$script:fx_exit = 0',
     'fx-write (fx-printf $fx_fmt $fx_av) $fx_term',
   ].join('\n');
 };
