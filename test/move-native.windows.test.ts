@@ -25,7 +25,10 @@ describe.skipIf(!runnable)('native move replacement preserves disposable fixture
   let root: string;
   let directory: string;
   let session: FauxnixSession;
-  beforeAll(() => { root = mkdtempSync(join(tmpdir(), 'fauxnix-move-native-')); session = new FauxnixSession(); });
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), 'fauxnix-move-native-')); session = new FauxnixSession();
+    console.log('mv cross-volume fixture availability', JSON.stringify({ available: !!crossVolumeDirectory }));
+  });
   beforeEach(() => { directory = mkdtempSync(join(root, 'case-')); });
   afterAll(async () => { await session?.dispose(); if (root) rmSync(root, { recursive: true, force: true }); });
   const run = (command: string) => session.run(translateCommandList(parseCommand(command)), { cwd: directory });
@@ -83,6 +86,7 @@ describe.skipIf(!runnable)('native move replacement preserves disposable fixture
     try { symlinkSync(join(directory, side === 'source' ? 'source.txt' : 'target.txt'), join(directory, 'alias.txt'), 'file'); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'EPERM') {
+        console.log(`mv ${side} symlink fixture skipped: host did not permit symlink creation`);
         context.skip(); // Symlink privilege is not enabled or changed by tests.
         return;
       }

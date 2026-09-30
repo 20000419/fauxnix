@@ -40,6 +40,7 @@ jobs:
     env:
       FAUXNIX_PS: ${{ matrix.fauxnix_ps }}
       FAUXNIX_HOST_READY_TIMEOUT_MS: '90000'
+      FAUXNIX_DIFF_ORACLE: ${{ matrix.name == 'windows-x64-desktop' && matrix.node == '22.20.0' && '1' || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -67,6 +68,13 @@ jobs:
       - run: npm run typecheck
       - run: npm run typecheck:test
       - run: npm run build
+      - name: Require Git Bash for minimum-runtime compatibility gate
+        if: matrix.name == 'windows-x64-desktop' && matrix.node == '22.20.0'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'C:\Program Files\Git\bin\bash.exe')) {
+            throw 'The minimum-runtime lane requires Git Bash for the 270-case and supplementary compatibility gates'
+          }
       - run: npm test
       - run: npm run test:package
 

@@ -1,9 +1,10 @@
 import { Word, wordToString } from '../ast.js';
 import { CommandSpec, Handler, OptionSpec, PipelineCtx, parseWords } from '../registry.js';
 import { argListExpr, exprOfWord, operandExpr } from '../translator.js';
+import { gzipNodeFunctions } from './gzip-node.js';
 
 /* ------------------------------------------------------------------ */
-/* gzip family — .NET GZipStream helpers                               */
+/* gzip family — .NET compression and strict Node decoding             */
 /* ------------------------------------------------------------------ */
 
 const PS_GZ_FNS = [
@@ -58,56 +59,38 @@ const PS_GZ_FNS = [
   '    finally { if ($fx_owned -and [IO.File]::Exists($dst)) { [IO.File]::Delete($dst) } }',
   '  }',
   '}',
-  'function fx-gz-open($src, $isBytes) {',
-  '  if ($isBytes) { $fx_raw = New-Object System.IO.MemoryStream(,$src) }',
-  '  else { $fx_raw = [IO.File]::OpenRead($src) }',
-  '  try {',
-  '    return (New-Object System.IO.Compression.GZipStream($fx_raw, [System.IO.Compression.CompressionMode]::Decompress))',
-  '  } catch {',
-  '    $fx_raw.Dispose()',
-  '    throw',
-  '  }',
-  '}',
-  // Drain the complete stream before producing stdout. Besides keeping -t
-  // bounded, this preserves the old all-or-nothing behavior for malformed
-  // inputs while remembering which text decoder the second pass should use.
   'function fx-gz-validate($src, $isBytes) {',
+  '  fx-gz-decode $src $isBytes ([IO.Stream]::Null) $true',
+  '  return $true',
+  '}',
+  'function fx-gz-stream-text($src, $isBytes) {',
   '  $fx_gz = fx-gz-open $src $isBytes',
-  '  $fx_buf = New-Object byte[] 65536',
-  '  $fx_dec = (New-Object System.Text.UTF8Encoding($false, $true)).GetDecoder()',
-  '  $fx_utf8 = $true',
+  '  $fx_sr = $null',
   '  try {',
+  '    $fx_buf = New-Object byte[] 65536',
+  '    $fx_dec = (New-Object System.Text.UTF8Encoding($false, $true)).GetDecoder()',
+  '    $fx_utf8 = $true',
   '    while ($true) {',
   '      $fx_n = $fx_gz.Read($fx_buf, 0, $fx_buf.Length)',
   '      if ($fx_n -le 0) { break }',
-  '      if ($fx_utf8) {',
-  '        try { [void]$fx_dec.GetCharCount($fx_buf, 0, $fx_n, $false) }',
-  '        catch [System.Text.DecoderFallbackException] { $fx_utf8 = $false }',
-  '      }',
+  '      try { [void]$fx_dec.GetCharCount($fx_buf, 0, $fx_n, $false) }',
+  '      catch [System.Text.DecoderFallbackException] { $fx_utf8 = $false; break }',
   '    }',
   '    if ($fx_utf8) {',
   '      try { [void]$fx_dec.GetCharCount($fx_buf, 0, 0, $true) }',
   '      catch [System.Text.DecoderFallbackException] { $fx_utf8 = $false }',
   '    }',
-  '    return $fx_utf8',
-  '  } finally {',
-  '    $fx_gz.Dispose()',
-  '  }',
-  '}',
-  'function fx-gz-stream-text($src, $isBytes) {',
-  '  $fx_utf8 = fx-gz-validate $src $isBytes',
-  '  if ($fx_utf8) { $fx_enc = New-Object System.Text.UTF8Encoding($false, $true) }',
-  '  else { try { $fx_enc = [System.Text.Encoding]::GetEncoding(936) } catch { $fx_enc = [System.Text.Encoding]::ASCII } }',
-  '  $fx_gz = fx-gz-open $src $isBytes',
-  '  $fx_sr = New-Object System.IO.StreamReader($fx_gz, $fx_enc, $false, 65536)',
-  '  try {',
+  '    $fx_gz.Position = 0',
+  '    if ($fx_utf8) { $fx_enc = New-Object System.Text.UTF8Encoding($false, $true) }',
+  '    else { try { $fx_enc = [System.Text.Encoding]::GetEncoding(936) } catch { $fx_enc = [System.Text.Encoding]::ASCII } }',
+  '    $fx_sr = New-Object System.IO.StreamReader($fx_gz, $fx_enc, $false, 65536)',
   '    while ($true) {',
   '      $fx_line = $fx_sr.ReadLine()',
   '      if ($null -eq $fx_line) { break }',
   '      Write-Output -NoEnumerate $fx_line',
   '    }',
   '  } finally {',
-  '    $fx_sr.Dispose()',
+  '    if ($null -ne $fx_sr) { $fx_sr.Dispose() } else { $fx_gz.Dispose() }',
   '  }',
   '}',
   // File output is streamed into a sibling temporary file. The destination
@@ -117,24 +100,15 @@ const PS_GZ_FNS = [
   '  $fx_full = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($dst)',
   '  $fx_parent = [IO.Path]::GetDirectoryName($fx_full)',
   "  $fx_tmp = [IO.Path]::Combine($fx_parent, '.fauxnix-gzip-' + [Guid]::NewGuid().ToString('N') + '.tmp')",
-  '  $fx_gz = $null',
   '  $fx_os = $null',
   '  $fx_tmpOwned = $false',
   '  $fx_outputPhase = $false',
   '  try {',
-  '    $fx_gz = fx-gz-open $src $false',
   '    $fx_outputPhase = $true',
   '    $fx_os = [IO.File]::Open($fx_tmp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)',
   '    $fx_tmpOwned = $true',
-  '    $fx_buf = New-Object byte[] 65536',
-  '    while ($true) {',
-  '      $fx_outputPhase = $false',
-  '      $fx_n = $fx_gz.Read($fx_buf, 0, $fx_buf.Length)',
-  '      if ($fx_n -le 0) { break }',
-  '      $fx_outputPhase = $true',
-  '      $fx_os.Write($fx_buf, 0, $fx_n)',
-  '    }',
-  '    $fx_gz.Dispose(); $fx_gz = $null',
+  '    $fx_outputPhase = $false',
+  '    fx-gz-decode $src $false $fx_os $false',
   '    $fx_outputPhase = $true',
   '    $fx_os.Dispose(); $fx_os = $null',
   '    try { [IO.File]::Move($fx_tmp, $fx_full); $fx_tmpOwned = $false }',
@@ -152,10 +126,7 @@ const PS_GZ_FNS = [
   '    throw',
   '  } finally {',
   '    try { if ($null -ne $fx_os) { $fx_os.Dispose() } }',
-  '    finally {',
-  '      try { if ($null -ne $fx_gz) { $fx_gz.Dispose() } }',
-  '      finally { if ($fx_tmpOwned -and [IO.File]::Exists($fx_tmp)) { [IO.File]::Delete($fx_tmp) } }',
-  '    }',
+  '    finally { if ($fx_tmpOwned -and [IO.File]::Exists($fx_tmp)) { [IO.File]::Delete($fx_tmp) } }',
   '  }',
   '}',
 ].join('\n');
@@ -251,7 +222,7 @@ function gzBlock(args: Word[], ctx: PipelineCtx, forced: Partial<GzOpts>): strin
           '  try {',
           p.test ? '    [void](fx-gz-validate $fx_in $true)' : '    fx-gz-stream-text $fx_in $true',
           '  } catch {',
-          "    [Console]::Error.WriteLine('gzip: stdin: not in gzip format')",
+          "    [Console]::Error.WriteLine('gzip: stdin: ' + $_.Exception.Message)",
           '    $script:fx_exit = 1',
           '  }',
         ].join('\n')
@@ -280,7 +251,7 @@ function gzBlock(args: Word[], ctx: PipelineCtx, forced: Partial<GzOpts>): strin
   if (p.test) {
     fileLoop.push(
       '    try { [void](fx-gz-validate $fx_f $false) }',
-      "    catch { [Console]::Error.WriteLine('gzip: ' + $fx_f + ': not in gzip format'); $script:fx_exit = 1 }",
+      "    catch { [Console]::Error.WriteLine('gzip: ' + $fx_f + ': ' + $_.Exception.Message); $script:fx_exit = 1 }",
       '    continue',
     );
   } else if (p.decompress) {
@@ -307,7 +278,7 @@ function gzBlock(args: Word[], ctx: PipelineCtx, forced: Partial<GzOpts>): strin
             '      try { (Get-Item -LiteralPath $fx_out).LastWriteTime = (Get-Item -LiteralPath $fx_f).LastWriteTime } catch {}',
             '      if (-not ' + b(p.keep) + ') { Remove-Item -LiteralPath $fx_f -Force -ErrorAction Stop }',
           ].join('\n'),
-      "    } catch { [Console]::Error.WriteLine('gzip: ' + $fx_f + ': not in gzip format'); $script:fx_exit = 1 }",
+      "    } catch { [Console]::Error.WriteLine('gzip: ' + $fx_f + ': ' + $_.Exception.Message); $script:fx_exit = 1 }",
     );
   } else {
     if (!p.stdout) {
@@ -335,6 +306,7 @@ function gzBlock(args: Word[], ctx: PipelineCtx, forced: Partial<GzOpts>): strin
   fileLoop.push('  }');
 
   return [
+    gzipNodeFunctions(ctx.translationMode === 'pure'),
     PS_GZ_FNS,
     '$fx_files = ' + (p.files.length ? argListExpr(p.files, operandExpr) : '@()'),
     'if ($fx_files.Count -eq 0) {',
