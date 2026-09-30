@@ -1,5 +1,59 @@
 # Changelog
 
+## v2.0.0 — 2026-09-30
+
+**Unreleased; prepared 2026-09-30.** The heading date is the preparation date, not a
+publication claim. This major version raises the Node
+baseline and makes file replacement and archive validation contracts explicit.
+
+### Breaking changes and migration
+
+- **Node.js >=22.20.0 required.** Node 18/20 fail early with a clear diagnostic. Upgrade
+  Node before installing v2; use a current Node 22/24 LTS patch for development. The exact
+  22.20.0 floor and engine-strict source/packed installation are CI gates.
+- **Safe `mv` replacement:** existing regular files are replaced on the same volume using
+  the Windows rename API without predeleting the destination. Same-file hardlink aliases,
+  leaf reparse-point replacement, cross-volume replacement and replacing an existing empty
+  directory are explicitly refused with originals retained. `-f` does not bypass these
+  limits; `-n` still skips existing targets. Absent-target cross-volume moves retain
+  PowerShell behavior and are not transactional. See [the move RFC](docs/rfc-safe-file-move.md).
+- **Strict gzip decoding:** truncation, checksum errors and trailing non-gzip garbage now
+  fail before decoded stdout or destination commit. Concatenated members are supported.
+  This intentionally rejects some archives previously accepted by the .NET decoder and
+  treats trailing garbage more strictly than GNU gzip. Text stdout needs decoded-size
+  temporary disk space; standalone translated scripts need supported `node.exe` on PATH.
+  See [the gzip RFC](docs/rfc-strict-gzip.md).
+
+### Correctness and robustness
+
+- Preserve existing destinations on failed file/archive operations; retain file identity
+  checks and source metadata for supported replacements. Validate gzip output before
+  deleting its archive and terminate its read-only decoder when its PowerShell owner exits.
+- Correct supported option-value parsing, shell quoting/newline continuation and command
+  substitution, Unicode character counting, text option ordering, `stat --printf` text
+  escapes/newlines, stable sort ties and adjacent awk `printf` output fragments.
+- Respect cold-start cancellation and invocation deadlines, clean up failed sessions and
+  MCP startup, preserve CLI output drainage and improve byte-aware output clipping.
+- Add the experimental native shell facade from #226, retain batch host-timeout configuration,
+  and clean build output before packaging so removed modules cannot leak into tarballs.
+- Add test TypeScript checks, package installation checks and the six-lane Windows matrix
+  (x64 PS5.1, x64 PS7, ARM64 PS5.1; Node 22.20.0/current 24), with portable current-LTS
+  tests and real unsupported-Node rejection checks.
+
+### Verification and limits
+
+The pre-version implementation at `5c3f746` passed all 11 [main CI jobs](https://github.com/20000419/fauxnix/actions/runs/36709275811):
+1,044 tests passed with no skips on Windows x64 PS5.1 / Node 22.20.0. Other x64 lanes
+passed 1,041 with three oracle skips; ARM64 passed 1,040 with those skips plus unavailable
+second-volume coverage. Portable Linux passed 577 with 467 platform/oracle skips.
+Versioned release-candidate CI is a separate gate; these figures do not claim publication.
+
+The unchanged 270-case primary corpus matches 269 cases; 41 supplementary cases pass
+separately. Historical 253-case percentages are not directly comparable. No new soak,
+network-filesystem, race-proof transaction or arbitrary binary text-pipeline guarantee is
+claimed. Native helper compilation and Node decoder startup add cost; no blanket speedup
+claim. Full migration guidance: [v2.0.0 notes](docs/releases/v2.0.0.md).
+
 ## v1.0.0 — 2026-09-21
 
 **The stability release.** 1.0 means: interfaces (CLI, MCP tools, session semantics) are
