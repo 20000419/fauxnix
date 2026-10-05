@@ -31,7 +31,13 @@ describe.skipIf(!onWindows || !enabled || !existsSync(bundle))(
         expect(v.status).toBe(0);
         expect(v.stdout).toMatch(/\(fauxnix facade [\d.]+\)/);
       } finally {
-        rmSync(dir, { recursive: true, force: true });
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // Windows can hold the fresh 85 MB exe locked briefly after the
+          // child exits (AV scan); best-effort cleanup, the OS temp cleaner
+          // takes whatever remains.
+        }
       }
     });
   },
