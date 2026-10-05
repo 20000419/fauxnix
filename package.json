@@ -14,7 +14,7 @@
   "scripts": {
     "prebuild": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "tsc",
-    "postbuild": "node scripts/build-facade-sea.mjs",
+    "postbuild": "node -e \"const fs=require('node:fs');if(fs.existsSync('scripts/build-facade-sea.mjs'))require('node:child_process').execFileSync(process.execPath,['scripts/build-facade-sea.mjs'],{stdio:'inherit'})\"",
     "prepare": "npm run build",
     "prepublishOnly": "npm run release:check -- --require-tag && npm run typecheck && npm run typecheck:test && npm test && npm run test:package",
     "release:check": "node scripts/release-check.mjs",
