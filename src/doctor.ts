@@ -3,6 +3,7 @@ import { nodeEngineRange, supportsNode } from './runtime-support.js';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { resolveQwenLaunchTuple, sameQwenLaunchTuple } from './qwen-launch.js';
+import { launcherStatus } from './facade-launch.js';
 
 export type DoctorOptions = {
   home?: string;
@@ -33,6 +34,7 @@ export async function collectDoctorReport(opts: DoctorOptions = {}): Promise<Doc
   lines.push(field('codex', detectCodex(home, env)));
   lines.push(field('opencode', detectOpenCode(home, env)));
   lines.push(field('qwen', detectQwen(home)));
+  lines.push(field('facade', detectFacade(env)));
   lines.push('');
 
   const mcp = await mcpLines(nodeVersion, opts.loadMcp);
@@ -42,6 +44,14 @@ export async function collectDoctorReport(opts: DoctorOptions = {}): Promise<Doc
 
 function field(label: string, value: string): string {
   return `${label.padEnd(10)} : ${value}`;
+}
+
+function detectFacade(env: NodeJS.ProcessEnv): string {
+  const status = launcherStatus(env);
+  const pointed =
+    env['CLAUDE_CODE_GIT_BASH_PATH'] === status.exePath ? ', CLAUDE_CODE_GIT_BASH_PATH points at it' : '';
+  if (!status.installed) return 'not installed (experimental: fauxnix install --claude-shell)';
+  return `${status.upToDate ? 'up to date' : 'stale'} at ${status.exePath}${pointed}`;
 }
 
 function encodingLines(env: NodeJS.ProcessEnv): string[] {

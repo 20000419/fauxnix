@@ -28,8 +28,10 @@ function filesUnder(directory, prefix = '') {
 }
 
 const expectedDistFiles = filesUnder(join(packageRoot, 'src'))
-  .filter((filename) => filename.endsWith('.ts'))
+  .filter((filename) => filename.endsWith('.ts') && !filename.endsWith('.d.ts'))
   .flatMap((filename) => [filename.slice(0, -3) + '.js', filename.slice(0, -3) + '.d.ts'])
+  // postbuild artifact: the SEA facade bundle ships prebuilt (RFC #224)
+  .concat(['facade-sea.cjs'])
   .sort();
 
 
