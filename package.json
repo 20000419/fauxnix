@@ -14,6 +14,7 @@
   "scripts": {
     "prebuild": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "tsc",
+    "postbuild": "node scripts/build-facade-sea.mjs",
     "prepare": "npm run build",
     "prepublishOnly": "npm run release:check -- --require-tag && npm run typecheck && npm run typecheck:test && npm test && npm run test:package",
     "release:check": "node scripts/release-check.mjs",
@@ -54,6 +55,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
     "iconv-lite": "^0.6.3",
+    "postject": "^1.0.0-alpha.6",
     "zod": "^3.24.0"
   },
   "devDependencies": {

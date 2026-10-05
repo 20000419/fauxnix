@@ -131,11 +131,23 @@ and preflight semantics.
 
 ### Experimental: native shell facade
 
-`fauxnix facade` (experimental) implements the bash **process** contract — `facade -c "<cmd>"`
-one-shots with bash argv semantics (`$0`/`$1` from trailing operands) and a persistent stdin
-session with `<bash-input>` markers — so a harness can eventually point its built-in Bash tool
-at a fauxnix-backed `bash.exe` instead of an MCP sidecar, with zero protocol round trips.
-Status, launcher strategy, and security rules: [RFC — native shell facade](docs/rfc-bash-facade.md).
+Point Claude Code's **built-in Bash tool** at fauxnix — no MCP sidecar, zero protocol round
+trips per command:
+
+```bash
+fauxnix install --claude-shell     # builds a fauxnix-backed bash.exe (~85 MB) and sets
+                                   # CLAUDE_CODE_GIT_BASH_PATH; restart Claude Code after
+fauxnix doctor                     # reports the launcher status
+fauxnix install --claude-shell-off # restores the previous setting
+```
+
+The launcher is a copy of your own node.exe with the facade bundle injected via Node SEA
+(experimental trade-off; the GA plan is a small prebuilt stub). It implements the bash argv
+contract (`bash -c`/`-lc`, `$0`/`$1` from trailing operands), adapts the harness's private
+command scaffolding (captured from a live session — payload execution, cwd markers, snapshot
+stubs), and always identifies itself via `--version`. The harness's own Bash approval flow
+governs runs. `fauxnix facade` also runs standalone. Details, security rules, and the protocol
+findings: [RFC — native shell facade](docs/rfc-bash-facade.md).
 
 ## Measured: your model is probably worse at PowerShell than you think
 

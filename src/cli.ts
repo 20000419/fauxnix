@@ -11,6 +11,7 @@ import { encodeCommand } from './encoding.js';
 import { startMcpServer } from './mcp.js';
 import { collectDoctorReport } from './doctor.js';
 import { runFacade } from './facade.js';
+import { installClaudeShell, uninstallClaudeShell } from './facade-launch.js';
 import { runInstall } from './install.js';
 import { packageVersion } from './version.js';
 import {
@@ -80,6 +81,15 @@ export async function runCli(argv: string[]): Promise<void> {
   }
 
   if (verb === 'install') {
+    if (rest.includes('--claude-shell')) {
+      // Experimental: bash.exe facade launcher (RFC: docs/rfc-bash-facade.md)
+      for (const line of await installClaudeShell()) console.log(line);
+      return;
+    }
+    if (rest.includes('--claude-shell-off')) {
+      for (const line of await uninstallClaudeShell()) console.log(line);
+      return;
+    }
     const result = runInstall(rest);
     for (const line of result.lines) console.log(line);
     if (!result.ok) process.exitCode = 1;

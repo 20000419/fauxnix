@@ -148,6 +148,27 @@ An executable impersonating `bash.exe` raises the trust stakes; the rules:
 - **Forking MSYS2/busybox-w32:** an emulation tree to maintain; violates translate-don't-emulate
   and forfeits our differential-testing leverage.
 
+## Protocol findings from a live harness (2026-10-05)
+
+Captured with `FAUXNIX_FACADE_TRACE` while Claude Code's built-in Bash tool ran against the
+launcher (three sessions; the full transcripts are reproducible with the same trace):
+
+1. **Every tool call is a one-shot `bash -c`, not a persistent stdin session.** The
+   `<bash-input>` markers seen in the harness binary are UI presentation, not the shell
+   protocol. The facade's stdin marker session remains available for other harnesses.
+2. **Flags appear between `-c` and the script**: `bash -c env`, `bash -lc 'echo "$PATH"'`,
+   `bash -c -l '<script>'` were all observed. Login/interactive flags are accepted.
+3. **Commands ride in private scaffolding**: `source <snapshot> 2>/dev/null || true &&
+   export TEMP=… && shopt -u extglob … || true && { \builtin unalias … } … && eval 'PAYLOAD'
+   < /dev/null && pwd -P >| <cwd-marker>` — plus a heredoc-built shell-snapshot bootstrap.
+   The facade adapter executes the export prefix, runs the payload, and writes the POSIX cwd
+   marker exactly like bash's `&&` chain (marker only on success; payload exit code
+   propagates). Snapshot bootstraps get a valid stub — shell state lives in the facade
+   session. Pattern drift falls through to plain translation and fails loud.
+4. **End-to-end proof**: a live `claude -p` session ran `echo … && ls src | head -2` through
+   the fauxnix bash.exe and reported the correct output; the launcher is a Node SEA build of
+   the facade bundle (install-time node.exe copy + postject, ~85 MB — Option A).
+
 ## Appendix — spike evidence (2026-09-10)
 
 `scratch/facade-spike/bash-facade.mjs` (gitignored; reproduced here for review) implements the
