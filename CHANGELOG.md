@@ -1,10 +1,9 @@
 # Changelog
 
-## v2.0.0 — 2026-09-30
+## v2.0.0 — 2026-10-05
 
-**Unreleased; prepared 2026-09-30.** The heading date is the preparation date, not a
-publication claim. This major version raises the Node
-baseline and makes file replacement and archive validation contracts explicit.
+This major version raises the Node baseline and makes file replacement and archive
+validation contracts explicit. Migration guide: [docs/releases/v2.0.0.md](docs/releases/v2.0.0.md).
 
 ### Breaking changes and migration
 
