@@ -68,13 +68,13 @@ describe('real Node gzip decoder', () => {
     child.stderr.on('data', (chunk) => { diagnostics = (diagnostics + chunk.toString()).slice(-8192); });
     try {
       await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('decoder did not produce output: ' + diagnostics)), 5000);
+        const timer = setTimeout(() => reject(new Error('decoder did not produce output: ' + diagnostics)), 20_000);
         child.once('error', (error) => { clearTimeout(timer); reject(error); });
         child.stdout.once('readable', () => { clearTimeout(timer); resolve(); });
       });
       expect(child.stdout.readableLength).toBeGreaterThan(0);
       const exited = new Promise<number | null>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('decoder did not stop: ' + diagnostics)), 8000);
+        const timer = setTimeout(() => reject(new Error('decoder did not stop: ' + diagnostics)), 30_000);
         child.once('error', (error) => { clearTimeout(timer); reject(error); });
         child.once('exit', (code) => { clearTimeout(timer); resolve(code); });
       });
@@ -85,7 +85,10 @@ describe('real Node gzip decoder', () => {
       child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy();
       if (child.exitCode === null) child.kill();
     }
-  }, 15000);
+    // 5s/8s/15s budgets were tuned on idle machines; a loaded dev box (agent
+    // harnesses building an 85 MB launcher, concurrent suites) makes the child
+    // spawn + 4 MB decode blow through them with the logic intact (CI green).
+  }, 60_000);
   it('pins executable plans and renders an explicit pure-script Node dependency', () => {
     expect(gzipNodeFunctions(false)).toContain(process.execPath.replaceAll("'", "''"));
     expect(gzipNodeFunctions(true)).toContain('Get-Command node.exe -CommandType Application -ErrorAction Stop');
