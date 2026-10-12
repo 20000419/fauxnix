@@ -78,7 +78,12 @@ describe('real Node gzip decoder', () => {
         child.once('error', (error) => { clearTimeout(timer); reject(error); });
         child.once('exit', (code) => { clearTimeout(timer); resolve(code); });
       });
+      // destroy() after end(): on Windows pipes, end() with no prior write
+      // can fail to deliver EOF to the child (intermittent, ~1-2%; #240) —
+      // the child's lease mode also treats stdin 'error' as the ownership
+      // signal, so forcing the handle close is the reliable lease release.
       child.stdin.end();
+      child.stdin.destroy();
       expect(await exited, diagnostics).toBe(1);
       expect(readFileSync(path)).toEqual(archive);
     } finally {
