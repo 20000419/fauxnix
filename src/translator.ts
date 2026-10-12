@@ -1220,11 +1220,13 @@ function translateFor(cmd: ForCommand, translation: TranslationContext): string 
     // exit status is still the last command of the final iteration.
     '  $script:fx_exit = 0',
   ];
+  lines.push('  try {');
   for (const l of withLoopBody(() => translateListInline(cmd.body, translation)).split('\n'))
-    lines.push(l ? '  ' + l : l);
-  // First entry inherits the caller's snapshot; later entries see the body's
-  // completed status before the next iteration resets its execution state.
-  lines.push('  $fx_prev = [string]$script:fx_exit');
+    lines.push(l ? '    ' + l : l);
+  // Continue exits nested command script blocks before reaching the ordinary
+  // body epilogue. Finally still snapshots its successful status for the next
+  // iteration; the first iteration inherits the caller's snapshot.
+  lines.push('  } finally {', '    $fx_prev = [string]$script:fx_exit', '  }');
   lines.push('}');
   return lines.join('\n');
 }
@@ -1246,12 +1248,18 @@ function translateWhile(cmd: WhileCommand, translation: TranslationContext): str
   // failing until test), then each iteration's chain starts fresh.
   lines.push('  $fx_prev = [string]$script:fx_exit');
   lines.push('  $script:fx_exit = 0');
+  lines.push('  try {');
   for (const l of withLoopBody(() => translateListInline(cmd.body, translation)).split('\n'))
-    lines.push(l ? '  ' + l : l);
-  lines.push('  $fx_wst = $script:fx_exit');
-  // The next condition sees the completed body through $?, but starts a new
-  // execution status even when its first command is a no-op such as true.
-  lines.push('  $fx_prev = [string]$script:fx_exit');
+    lines.push(l ? '    ' + l : l);
+  // Continue skips the ordinary body epilogue, including from nested if/case
+  // blocks. Finally records the completed body's status on every exit path,
+  // so the terminating test and the next condition's $? both see it.
+  lines.push(
+    '  } finally {',
+    '    $fx_wst = $script:fx_exit',
+    '    $fx_prev = [string]$script:fx_exit',
+    '  }',
+  );
   lines.push('} while ($true)');
   return lines.join('\n');
 }
