@@ -126,6 +126,13 @@ An executable impersonating `bash.exe` raises the trust stakes; the rules:
 - **Phase 3 (GA, v1.1):** Option B launchers (x64 + ARM64), provenance/checksums, uninstall
   hygiene, SECURITY.md facade section.
 
+Status 2026-10-12: Phase 1 complete — loop control (`break`/`continue`) lands with fresh-chain
+per-iteration test resets; the differential corpus runs through real `facade -c` processes on one
+CI lane (58-case strided+control-flow sample, 100% identical at introduction); the launcher is
+stub-first (`FAUXNIX_FACADE_STUB` + routing config, #242 tracks the build/sign pipeline) with the
+Node SEA copy as the fallback. GA additionally requires the #242 stub binaries and the benchmark
+gate below.
+
 ## Success metrics
 
 - T7 (minimax-m3) completes under the built-in Bash tool with no timeout where MCP timed out.

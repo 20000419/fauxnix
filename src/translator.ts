@@ -1203,7 +1203,8 @@ function translateFor(cmd: ForCommand, translation: TranslationContext): string 
     // exit status is still the last command of the final iteration.
     '  $script:fx_exit = 0',
   ];
-  for (const l of translateListInline(cmd.body, translation).split('\n')) lines.push(l ? '  ' + l : l);
+  for (const l of withLoopBody(() => translateListInline(cmd.body, translation)).split('\n'))
+    lines.push(l ? '  ' + l : l);
   lines.push('}');
   return lines.join('\n');
 }
@@ -1214,13 +1215,19 @@ function translateWhile(cmd: WhileCommand, translation: TranslationContext): str
   // exit 0. Save the body status and restore it on the failing test.
   const fail = cmd.until ? '$script:fx_exit -eq 0' : '$script:fx_exit -ne 0';
   const lines = ['$fx_wst = 0', 'do {'];
-  for (const l of translateListInline(cmd.test, translation).split('\n')) lines.push(l ? '  ' + l : l);
+  // The test list re-runs every iteration: start its chain fresh too, or a
+  // failing body status leaks into the next fail-check through handlers that
+  // legitimately emit nothing on success (`true`).
+  lines.push('  $script:fx_exit = 0');
+  for (const l of withLoopBody(() => translateListInline(cmd.test, translation)).split('\n'))
+    lines.push(l ? '  ' + l : l);
   lines.push('  if (' + fail + ') { $script:fx_exit = $fx_wst; break }');
   // Body-entry $? reads the test's status (bash: the passing while test / the
   // failing until test), then each iteration's chain starts fresh.
   lines.push('  $fx_prev = [string]$script:fx_exit');
   lines.push('  $script:fx_exit = 0');
-  for (const l of translateListInline(cmd.body, translation).split('\n')) lines.push(l ? '  ' + l : l);
+  for (const l of withLoopBody(() => translateListInline(cmd.body, translation)).split('\n'))
+    lines.push(l ? '  ' + l : l);
   lines.push('  $fx_wst = $script:fx_exit');
   lines.push('} while ($true)');
   return lines.join('\n');
@@ -1274,6 +1281,52 @@ function rejectNonLastFdRedirects(commands: ShellCommand[]): void {
   }
 }
 
+/** Loop-control translation depth: >0 while translating for/while bodies. */
+let loopDepth = 0;
+
+function withLoopBody<T>(emit: () => T): T {
+  loopDepth++;
+  try {
+    return emit();
+  } finally {
+    loopDepth--;
+  }
+}
+
+function isLoopControl(c: SimpleCommand): boolean {
+  if (c.assignments.length > 0 || c.redirects.length > 0 || c.name === null) return false;
+  const n = wordToString(c.name);
+  return n === 'break' || n === 'continue';
+}
+
+/**
+ * `break` / `continue` map to PowerShell loop flow with bash's status-0
+ * semantics (`false; break` leaves the loop at 0). Bare and `break 1` are
+ * supported; deeper N, pipelines, and top-level use fail loud — bash's own
+ * top-level message is a non-fatal diagnostic, but silently aborting the
+ * whole PowerShell script would be worse.
+ */
+function translateLoopControl(c: SimpleCommand, inPipeline: boolean): string {
+  const name = wordToString(c.name!);
+  const argText = c.args.length === 0 ? '' : wordToString(c.args[0]!);
+  if (c.args.length > 1 || (c.args.length === 1 && argText !== '1')) {
+    throw new FauxnixParseError(
+      `fauxnix: ${name} ${argText}: breaking more than one loop level is not supported yet`,
+    );
+  }
+  if (inPipeline) {
+    throw new FauxnixParseError(`fauxnix: ${name} in a pipeline is not supported yet`);
+  }
+  if (loopDepth === 0) {
+    return (
+      "[Console]::Error.WriteLine('bash: " +
+      name +
+      ": only meaningful in a for, while, or until loop'); $script:fx_exit = 0"
+    );
+  }
+  return '$script:fx_exit = 0\n' + name;
+}
+
 export function translatePipelineBody(p: {
   commands: Array<SimpleCommand | IfCommand | ForCommand | WhileCommand | CaseCommand>;
 }, translation: TranslationContext = EXECUTE_TRANSLATION): PipelineParts {
@@ -1300,6 +1353,7 @@ export function translatePipelineBody(p: {
     else if (c.kind === 'For') bodies.push(translateFor(c, translation));
     else if (c.kind === 'While') bodies.push(translateWhile(c, translation));
     else if (c.kind === 'Case') bodies.push(translateCase(c, translation));
+    else if (isLoopControl(c)) bodies.push(translateLoopControl(c, p.commands.length > 1));
     else bodies.push(translateSimple(c, position, hasStdin, translation));
   }
 

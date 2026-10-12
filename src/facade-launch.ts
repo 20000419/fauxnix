@@ -79,9 +79,28 @@ export async function buildLauncher(env: NodeJS.ProcessEnv = process.env): Promi
 
   const { mkdirSync } = await import('node:fs');
   mkdirSync(dir, { recursive: true });
+  const exePath = join(dir, 'bash.exe');
+
+  // GA path (RFC #224 Option B): a small prebuilt stub that forwards argv to
+  // this installation's node + bundle. Its build/signing pipeline is tracked
+  // separately; when FAUXNIX_FACADE_STUB points at a stub binary, install it
+  // with a routing config instead of the ~85 MB SEA copy.
+  const stubSource = env['FAUXNIX_FACADE_STUB'];
+  if (stubSource && existsSync(stubSource)) {
+    const node = process.execPath;
+    const bundlePath = decodeURIComponent(bundle.pathname.replace(/^\/([A-Za-z]):/, '$1:'));
+    rmSync(exePath, { force: true });
+    copyFileSync(stubSource, exePath);
+    writeFileSync(
+      join(dir, 'fauxnix-launch.json'),
+      JSON.stringify({ node, bundle: bundlePath }, null, 2),
+    );
+    writeFileSync(markerPath(dir), JSON.stringify({ packageVersion, nodeVersion: process.version }));
+    return exePath;
+  }
+
   const configPath = join(dir, 'sea-config.json');
   const blobPath = join(dir, 'sea-prep.blob');
-  const exePath = join(dir, 'bash.exe');
   writeFileSync(
     configPath,
     JSON.stringify({
