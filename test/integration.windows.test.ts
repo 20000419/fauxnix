@@ -2930,9 +2930,13 @@ describe.skipIf(!hasPs)(
         const ms = Date.now() - t0;
         expect(r.exitCode).toBe(0);
         expect(r.stdout.trim()).toBe('hi');
-        // RFC <400ms. Local ~160ms; GH windows-latest whole-test
-        // (prewarm+frame+dispose) is 470-500ms, so the frame fits.
-        expect(ms).toBeLessThan(400);
+        // RFC U-8. The guard exists to catch a silent spawn fallback (~10x
+        // regression, seconds per frame) — not to police runner jitter.
+        // Local ~160ms; loaded x64 lanes ~470-500ms; ARM64 under a full
+        // parallel suite has measured 877ms. 1500ms still fails any fallback
+        // hard while letting legitimate slow-pool frames through. The warm
+        // p50 <50ms assertion below is the strict regression catcher.
+        expect(ms).toBeLessThan(1500);
       } finally {
         await extra.dispose();
       }
