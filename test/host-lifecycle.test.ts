@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -162,4 +162,92 @@ describe('host startup cancellation and deadline', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+});
+
+// Stdout and stderr are separate OS pipes. The end frame can be delivered
+// before the stderr completion marker although the host writes the marker first.
+describe('version-two native stderr completion boundary', () => {
+  it('reports cancellation after the end frame while the marker is pending', async () => {
+    const { host, child } = fixture();
+    const controller = new AbortController();
+    child.stdin.on('data', (chunk) => {
+      const request = JSON.parse(String(chunk));
+      child.stdout.write(JSON.stringify({ v: 2, type: 'end', id: request.id, exitCode: 0 }) + '\n');
+    });
+    const pending = host.invoke('fixture', {}, 1000, controller.signal);
+    await vi.advanceTimersByTimeAsync(0);
+    child.stdout.write('{"v":2,"type":"ready"}\n');
+    await vi.advanceTimersByTimeAsync(20);
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    const result = await pending;
+    await host.stop();
+    expect(result).toMatchObject({ cancelled: true, timedOut: false, exitCode: 130 });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('keeps native marker collection inside the original invocation deadline', async () => {
+    const { host, child } = fixture();
+    child.stdin.on('data', (chunk) => {
+      const request = JSON.parse(String(chunk));
+      child.stdout.write(JSON.stringify({ v: 2, type: 'end', id: request.id, exitCode: 0 }) + '\n');
+      setTimeout(() => child.stderr.write('FAUXNIX_ERR_END:' + request.id + '\n'), 200);
+    });
+    const started = Date.now();
+    let settledAt: number | undefined;
+    const pending = host.invoke('fixture', {}, 100).then((result) => {
+      settledAt = Date.now() - started;
+      return result;
+    });
+    await vi.advanceTimersByTimeAsync(20);
+    child.stdout.write('{"v":2,"type":"ready"}\n');
+    await vi.advanceTimersByTimeAsync(200);
+    const result = await pending;
+    await host.stop();
+    expect(result).toMatchObject({ cancelled: false, timedOut: true, exitCode: 124 });
+    expect(settledAt).toBe(100);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('fails and removes native stderr spools when the marker never arrives', async () => {
+    const { host, child } = fixture();
+    child.stdin.on('data', (chunk) => {
+      const request = JSON.parse(String(chunk));
+      child.stderr.write('ordinary diagnostic '.repeat(8));
+      child.stdout.write(JSON.stringify({ v: 2, type: 'end', id: request.id, exitCode: 0 }) + '\n');
+    });
+    const pending = host.invoke('fixture', {}, 100);
+    await vi.advanceTimersByTimeAsync(0);
+    child.stdout.write('{"v":2,"type":"ready"}\n');
+    await vi.advanceTimersByTimeAsync(2100);
+    const result = await pending;
+    await host.stop();
+    expect(result).toMatchObject({ cancelled: false, timedOut: true, exitCode: 124 });
+    expect(readdirSync(roots[roots.length - 1]).filter((name) => name.endsWith('.native-stderr'))).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('reports a closed host promptly when native completion is still pending', async () => {
+    const { host, child } = fixture();
+    child.stdin.on('data', (chunk) => {
+      const request = JSON.parse(String(chunk));
+      child.stdout.write(JSON.stringify({ v: 2, type: 'end', id: request.id, exitCode: 0 }) + '\n');
+    });
+    const started = Date.now();
+    let settledAt: number | undefined;
+    const pending = host.invoke('fixture', {}, 5000).then((result) => {
+      settledAt = Date.now() - started;
+      return result;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    child.stdout.write('{"v":2,"type":"ready"}\n');
+    await vi.advanceTimersByTimeAsync(20);
+    child.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(5000);
+    const result = await pending;
+    await host.stop();
+    expect(result).toMatchObject({ infrastructureError: true, cancelled: false, timedOut: false, exitCode: 1 });
+    expect(settledAt).toBe(20);
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });
