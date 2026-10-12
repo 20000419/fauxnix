@@ -3025,3 +3025,53 @@ describe.skipIf(!hasPs)(
     });
   },
 );
+
+describe.skipIf(!hasPs)(
+  'fresh chain state inside control-flow bodies (#238)',
+  { timeout: 120_000 },
+  () => {
+    let session: InstanceType<typeof FauxnixSession>;
+    beforeAll(async () => {
+      session = new FauxnixSession();
+      await session.prewarm();
+    });
+    afterAll(async () => {
+      await session.dispose();
+    });
+    const run = (cmd: string) => session.run(translateCommandList(parseCommand(cmd)));
+
+    // Every case below is byte-verified against real bash (Git Bash) on the
+    // same machine: stdout and exit code must match exactly.
+    const cases: Array<[string, string, number]> = [
+      // the reported repros
+      ['for i in 1 2; do false; echo $i && echo ok; done', '1\nok\n2\nok\n', 0],
+      ['if true; then false; echo a; fi', 'a\n', 0],
+      ['case x in x) false; echo c && echo d;; esac', 'c\nd\n', 0],
+      // $? inside bodies: the last completed command, including entries
+      ['for i in 1; do false; echo $?; done', '1\n', 0],
+      ['if false; then :; else echo $?; fi', '1\n', 0],
+      ['x=0; until [ "$x" = 1 ]; do echo u=$?; x=1; done', 'u=1\n', 0],
+      ['x=0; while [ "$x" != 1 ]; do echo w=$?; x=1; done', 'w=0\n', 0],
+      ['false; if true; then echo entry=$?; fi', 'entry=0\n', 0],
+      // chain semantics across ; && || boundaries
+      ['false || echo ok && echo more', 'ok\nmore\n', 0],
+      ['if false; true; then echo yes; fi', 'yes\n', 0],
+      // compound exit status: the body's last command owns it — bash prints
+      // a=0 and exits 0 (verified against Git Bash)
+      ['x=0; until [ "$x" = 1 ]; do false; x=1; done; echo a=$?', 'a=0\n', 0],
+      ['for i in 1 2; do false; done', '', 1],
+      // never-entered loops stay 0
+      ['while false; do echo never; done', '', 0],
+      // top-level cross-segment $? unchanged
+      ['false; echo rc=$?', 'rc=1\n', 0],
+    ];
+
+    for (const [cmd, stdout, exitCode] of cases) {
+      it(`${cmd}`, async () => {
+        const r = await run(cmd);
+        expect(r.exitCode).toBe(exitCode);
+        expect(r.stdout).toBe(stdout);
+      });
+    }
+  },
+);
