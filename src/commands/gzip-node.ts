@@ -3,7 +3,7 @@ import { nodeEngineRange } from '../runtime-support.js';
 
 /** Trusted program, no user text interpolation. It only reads input and emits bytes. */
 export const GZIP_DECODER_SOURCE = String.raw`
-const { createReadStream } = require('node:fs');
+const { createReadStream, createWriteStream } = require('node:fs');
 const { createGunzip } = require('node:zlib');
 const { Writable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
@@ -17,7 +17,13 @@ const { pipeline } = require('node:stream/promises');
     controller.abort();
     // A stalled output pipe can retain native writes after stream destruction.
     // The owner has gone, so bound only this read-only decoder's shutdown.
-    setTimeout(() => process.exit(1), 1000).unref();
+    setTimeout(() => {
+      // On Windows an asynchronous fs write can still occupy a libuv worker.
+      // process.exit waits for that worker during cleanup; SIGTERM terminates
+      // this owned helper directly (Windows exit code 1).
+      if (process.platform === 'win32') process.kill(process.pid, 'SIGTERM');
+      else process.exit(1);
+    }, 1000).unref();
   };
   const leased = process.argv[4] === 'lease';
   if (leased) {
@@ -50,7 +56,14 @@ const { pipeline } = require('node:stream/promises');
     const path = Buffer.from(process.argv[1], 'base64').toString('utf8');
     const mode = process.argv[2];
     if (mode !== 'test' && mode !== 'stream') throw new Error('invalid decoder mode');
-    const sink = mode === 'test' ? new Writable({ write(chunk, encoding, next) { next(); } }) : process.stdout;
+    // Node makes Windows stdout pipe writes synchronous, so a full pipe can
+    // block the same event loop that must observe lease EOF and run the abort
+    // timer. Use fs's asynchronous write path there; keep POSIX's async socket.
+    const sink = mode === 'test'
+      ? new Writable({ write(chunk, encoding, next) { next(); } })
+      : process.platform === 'win32'
+        ? createWriteStream(null, { fd: 1, autoClose: false })
+        : process.stdout;
     await pipeline(createReadStream(path), createGunzip(), sink, { signal: controller.signal });
   } catch (error) {
     process.stderr.write('gzip decoder: ' + String(error.message).slice(0, 2048) + '\n');

@@ -1,6 +1,8 @@
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { inject as postjectInject } from 'postject';
 import { packageVersion } from './version.js';
@@ -38,7 +40,42 @@ function markerPath(dir: string): string {
   return join(dir, 'bash.exe.launcher.json');
 }
 
-function readMarker(dir: string): { packageVersion?: string; nodeVersion?: string } | null {
+interface LauncherInputs {
+  formatVersion: number;
+  packageVersion: string;
+  nodeVersion: string;
+  mode: 'sea' | 'stub';
+  nodePath: string;
+  bundlePath: string;
+  bundleHash: string;
+  stubPath: string | null;
+  stubHash: string | null;
+}
+
+function launcherInputs(env: NodeJS.ProcessEnv): LauncherInputs {
+  // src/ and dist/ are both one level below the package root.
+  const bundle = new URL('../dist/facade-sea.cjs', import.meta.url);
+  if (!existsSync(bundle)) {
+    throw new Error('fauxnix: dist/facade-sea.cjs is missing — run npm run build first');
+  }
+  const stubPath = env['FAUXNIX_FACADE_STUB'] ? resolve(env['FAUXNIX_FACADE_STUB']) : null;
+  if (stubPath && !existsSync(stubPath)) {
+    throw new Error(`fauxnix: FAUXNIX_FACADE_STUB does not exist: ${stubPath}`);
+  }
+  return {
+    formatVersion: 1,
+    packageVersion,
+    nodeVersion: process.version,
+    mode: stubPath ? 'stub' : 'sea',
+    nodePath: process.execPath,
+    bundlePath: fileURLToPath(bundle),
+    bundleHash: createHash('sha256').update(readFileSync(bundle)).digest('hex'),
+    stubPath,
+    stubHash: stubPath ? createHash('sha256').update(readFileSync(stubPath)).digest('hex') : null,
+  };
+}
+
+function readMarker(dir: string): Record<string, unknown> | null {
   try {
     return JSON.parse(readFileSync(markerPath(dir), 'utf8'));
   } catch {
@@ -46,19 +83,35 @@ function readMarker(dir: string): { packageVersion?: string; nodeVersion?: strin
   }
 }
 
+function launcherMatches(dir: string, inputs: LauncherInputs): boolean {
+  const marker = readMarker(dir);
+  // Version-only markers predate input tracking and must be rebuilt once.
+  if (!Object.entries(inputs).every(([key, value]) => marker?.[key] === value)) return false;
+  if (inputs.mode === 'sea') return true;
+  try {
+    const routing = JSON.parse(readFileSync(join(dir, 'fauxnix-launch.json'), 'utf8'));
+    return routing?.node === inputs.nodePath && routing?.bundle === inputs.bundlePath;
+  } catch {
+    return false;
+  }
+}
+
 export function launcherStatus(env: NodeJS.ProcessEnv = process.env): LauncherStatus {
   const dir = launcherDir(env);
   const exePath = join(dir, 'bash.exe');
-  const marker = readMarker(dir);
   const installed = existsSync(exePath);
+  let upToDate = false;
+  try {
+    upToDate = installed && launcherMatches(dir, launcherInputs(env));
+  } catch {
+    // Doctor reports stale for missing/unreadable inputs; buildLauncher gives
+    // the actionable error rather than silently reusing or changing modes.
+  }
   return {
     dir,
     exePath,
     installed,
-    upToDate:
-      installed &&
-      marker?.packageVersion === packageVersion &&
-      marker?.nodeVersion === process.version,
+    upToDate,
     packageVersion,
     nodeVersion: process.version,
   };
@@ -67,35 +120,28 @@ export function launcherStatus(env: NodeJS.ProcessEnv = process.env): LauncherSt
 /** Build (or rebuild when stale) the launcher; returns the bash.exe path. */
 export async function buildLauncher(env: NodeJS.ProcessEnv = process.env): Promise<string> {
   const dir = launcherDir(env);
-  const status = launcherStatus(env);
-  if (status.upToDate) return status.exePath;
-
-  // dist/facade-sea.cjs ships in the package; src/ and dist/ are both one
-  // level below the package root, so the relative lookup holds in dev too.
-  const bundle = new URL('../dist/facade-sea.cjs', import.meta.url);
-  if (!existsSync(bundle)) {
-    throw new Error('fauxnix: dist/facade-sea.cjs is missing — run npm run build first');
-  }
+  const exePath = join(dir, 'bash.exe');
+  const inputs = launcherInputs(env);
+  if (existsSync(exePath) && launcherMatches(dir, inputs)) return exePath;
 
   const { mkdirSync } = await import('node:fs');
   mkdirSync(dir, { recursive: true });
-  const exePath = join(dir, 'bash.exe');
+  // A failed rebuild can replace bash.exe. Never leave the previous marker
+  // claiming that partially replaced launcher is still current.
+  rmSync(markerPath(dir), { force: true });
 
   // GA path (RFC #224 Option B): a small prebuilt stub that forwards argv to
   // this installation's node + bundle. Its build/signing pipeline is tracked
   // separately; when FAUXNIX_FACADE_STUB points at a stub binary, install it
   // with a routing config instead of the ~85 MB SEA copy.
-  const stubSource = env['FAUXNIX_FACADE_STUB'];
-  if (stubSource && existsSync(stubSource)) {
-    const node = process.execPath;
-    const bundlePath = decodeURIComponent(bundle.pathname.replace(/^\/([A-Za-z]):/, '$1:'));
+  if (inputs.stubPath) {
     rmSync(exePath, { force: true });
-    copyFileSync(stubSource, exePath);
+    copyFileSync(inputs.stubPath, exePath);
     writeFileSync(
       join(dir, 'fauxnix-launch.json'),
-      JSON.stringify({ node, bundle: bundlePath }, null, 2),
+      JSON.stringify({ node: inputs.nodePath, bundle: inputs.bundlePath }, null, 2),
     );
-    writeFileSync(markerPath(dir), JSON.stringify({ packageVersion, nodeVersion: process.version }));
+    writeFileSync(markerPath(dir), JSON.stringify(inputs));
     return exePath;
   }
 
@@ -104,15 +150,15 @@ export async function buildLauncher(env: NodeJS.ProcessEnv = process.env): Promi
   writeFileSync(
     configPath,
     JSON.stringify({
-      main: decodeURIComponent(bundle.pathname.replace(/^\/([A-Za-z]):/, '$1:')),
+      main: inputs.bundlePath,
       output: blobPath,
       disableExperimentalSEAWarning: true,
     }),
   );
   try {
-    await execFileAsync(process.execPath, ['--experimental-sea-config', configPath]);
+    await execFileAsync(inputs.nodePath, ['--experimental-sea-config', configPath]);
     rmSync(exePath, { force: true });
-    copyFileSync(process.execPath, exePath);
+    copyFileSync(inputs.nodePath, exePath);
     // postject rewrites the PE resource section; any original Authenticode
     // signature is invalidated, which is expected for a local build.
     await postjectInject(exePath, 'NODE_SEA_BLOB', readFileSync(blobPath), {
@@ -122,7 +168,7 @@ export async function buildLauncher(env: NodeJS.ProcessEnv = process.env): Promi
     rmSync(configPath, { force: true });
     rmSync(blobPath, { force: true });
   }
-  writeFileSync(markerPath(dir), JSON.stringify({ packageVersion, nodeVersion: process.version }));
+  writeFileSync(markerPath(dir), JSON.stringify(inputs));
   return exePath;
 }
 
