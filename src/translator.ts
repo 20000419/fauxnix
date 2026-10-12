@@ -408,7 +408,7 @@ export function pathExpr(s: string): string {
 export function exprOfWord(w: Word, opts?: { preserveCmdSub?: boolean }): string {
   // tilde expansion (unquoted leading ~)
   const expanded: WordPart[] = [];
-  if (w.length > 0 && w[0].kind === 'Text' && w[0].text.startsWith('~')) {
+  if (w.length > 0 && w[0].kind === 'Text' && !w[0].escaped && w[0].text.startsWith('~')) {
     expanded.push({ kind: 'Var', name: 'HOME' });
     const rest = w[0].text.slice(1);
     if (rest) expanded.push({ kind: 'Text', text: rest });
@@ -528,7 +528,7 @@ function arithSourceExpr(parts: WordPart[]): string {
 export function literalOfWord(w: Word): string | null {
   if (!w.every((p) => p.kind === 'Text' || p.kind === 'SingleQuoted')) return null;
   const text = w.map((p) => (p as { text: string }).text).join('');
-  if (w.length > 0 && w[0].kind === 'Text' && w[0].text.startsWith('~')) return null; // needs $HOME
+  if (w.length > 0 && w[0].kind === 'Text' && !w[0].escaped && w[0].text.startsWith('~')) return null; // needs $HOME
   return text;
 }
 
