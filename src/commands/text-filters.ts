@@ -2510,14 +2510,17 @@ const uniq: Handler = (args) => {
   }
   lines.push('}');
   lines.push('function fx-uemit($l, $c) {');
-  if (dupOnly) {
-    lines.push('  if ($c -gt 1) { $fx_res.Add($l) }');
+  // Selection and formatting are independent: -cd/-cu retain counts,
+  // while -du selects no groups regardless of option order.
+  const emit = count ? "$fx_res.Add(('{0,7} {1}' -f $c, $l))" : '$fx_res.Add($l)';
+  if (dupOnly && uniqOnly) {
+    lines.push('  return');
+  } else if (dupOnly) {
+    lines.push('  if ($c -gt 1) { ' + emit + ' }');
   } else if (uniqOnly) {
-    lines.push('  if ($c -eq 1) { $fx_res.Add($l) }');
-  } else if (count) {
-    lines.push("  $fx_res.Add(('{0,7} {1}' -f $c, $l))");
+    lines.push('  if ($c -eq 1) { ' + emit + ' }');
   } else {
-    lines.push('  $fx_res.Add($l)');
+    lines.push('  ' + emit);
   }
   lines.push('}');
   lines.push('$fx_res = New-Object System.Collections.Generic.List[string]');

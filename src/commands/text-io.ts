@@ -974,12 +974,11 @@ const tac: Handler = (args) => {
       (g) => qErr('tac', g, 'No such file or directory', 'failed to open '),
       (g) => sErr('tac', g, 'read error: Is a directory'),
     ),
-    '$fx_all = @()',
     'foreach ($fx_g in $fx_srcs) {',
-    "  if ($fx_g -eq '-') { $fx_all += @($fx_in) }",
-    '  else { $fx_all += @(fx-splitlines (fx-read $fx_g)) }',
+    "  if ($fx_g -eq '-') { $fx_ls = @($fx_in) }",
+    '  else { $fx_ls = @(fx-splitlines (fx-read $fx_g)) }',
+    '  for ($fx_i = $fx_ls.Count - 1; $fx_i -ge 0; $fx_i--) { $fx_ls[$fx_i] }',
     '}',
-    'for ($fx_i = $fx_all.Count - 1; $fx_i -ge 0; $fx_i--) { $fx_all[$fx_i] }',
   ].join('\n');
 };
 
