@@ -2,13 +2,12 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
 
 it('contains an asynchronous stdin pipe error and starts a fresh host for the next request', () => {
   const root = mkdtempSync(join(tmpdir(), 'fauxnix-host-pipe-'));
   const hostModule = new URL('../src/ps-host.ts', import.meta.url).href;
-  const loader = fileURLToPath(new URL('../node_modules/tsx/dist/loader.mjs', import.meta.url));
+  const loader = new URL('../node_modules/tsx/dist/loader.mjs', import.meta.url).href;
   // Keep the host class and real OS pipes in a subprocess: an unhandled pipe
   // error must fail this test rather than terminate the Vitest worker itself.
   const brokenHost = `
