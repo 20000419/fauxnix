@@ -1114,17 +1114,28 @@ function translateListInline(
   translation: TranslationContext = EXECUTE_TRANSLATION,
 ): string {
   const chunks: string[] = [];
-  for (const seg of list.segments) {
+  list.segments.forEach((seg, i) => {
     const { defs, call } = translatePipelineBody(seg.pipeline, translation);
     const body = (defs ? defs + '\n' : '') + call;
-    if (seg.op === '&&') {
-      chunks.push('if ($script:fx_exit -eq 0) {\n' + body + '\n}');
-    } else if (seg.op === '||') {
-      chunks.push('if ($script:fx_exit -ne 0) {\n' + body + '\n}');
-    } else {
+    if (i === 0) {
       chunks.push(body);
+      return;
     }
-  }
+    // Bash: every completed command updates $?, and the next element's own
+    // &&/|| chain starts fresh (#238). Snapshot the running status into
+    // $fx_prev (the $? source inside a segment — this also preserves the
+    // pre-compound status a body-entry $? reads), then reset the chain
+    // state inside the element's guard so a skipped element cannot clobber
+    // it.
+    const snapshot = '$fx_prev = [string]$script:fx_exit';
+    if (seg.op === '&&') {
+      chunks.push(snapshot + '\nif ($script:fx_exit -eq 0) {\n$script:fx_exit = 0\n' + body + '\n}');
+    } else if (seg.op === '||') {
+      chunks.push(snapshot + '\nif ($script:fx_exit -ne 0) {\n$script:fx_exit = 0\n' + body + '\n}');
+    } else {
+      chunks.push(snapshot + '\n$script:fx_exit = 0\n' + body);
+    }
+  });
   return chunks.join('\n');
 }
 
@@ -1132,9 +1143,15 @@ function translateIf(cmd: IfCommand, translation: TranslationContext): string {
   // Branch bodies reset fx_exit first: the compound's exit status must come
   // from the taken branch's last command (bash semantics), not leak the test's
   // failure — `if false; then A; else B; fi` exits 0 in bash.
-  const lines = [translateListInline(cmd.test, translation), 'if ($script:fx_exit -eq 0) {', '  $script:fx_exit = 0'];
+  const lines = [
+    translateListInline(cmd.test, translation),
+    'if ($script:fx_exit -eq 0) {',
+    // Body-entry $? reads the test's status (bash); then reset the chain.
+    '  $fx_prev = [string]$script:fx_exit',
+    '  $script:fx_exit = 0',
+  ];
   for (const l of translateListInline(cmd.then, translation).split('\n')) lines.push(l ? '  ' + l : l);
-  lines.push('} else {', '  $script:fx_exit = 0');
+  lines.push('} else {', '  $fx_prev = [string]$script:fx_exit', '  $script:fx_exit = 0');
   if (cmd.else) {
     for (const l of translateListInline(cmd.else, translation).split('\n')) lines.push(l ? '  ' + l : l);
   }
@@ -1151,6 +1168,9 @@ function translateCase(cmd: CaseCommand, translation: TranslationContext): strin
     lines.push(head + ' (fx-casematch $fx_cw @(' + pats + ')) {');
     const body = translateListInline(arm.body, translation);
     if (body) {
+      // Arm entry starts the body's own chain fresh (#238); an empty arm
+      // keeps the top-of-case 0, matching bash's empty-body case status.
+      lines.push('  $script:fx_exit = 0');
       for (const l of body.split('\n')) lines.push(l ? '  ' + l : l);
     }
     lines.push('}');
@@ -1179,6 +1199,9 @@ function translateFor(cmd: ForCommand, translation: TranslationContext): string 
     "  $fx_sv += ('" +
       n +
       "' + [string][char]61 + (fx-svenc ([string]$fx_it))); $env:FAUXNIX_SETVALS = ($fx_sv -join [string][char]10)",
+    // Each iteration starts the body's own chain fresh (#238); the loop's
+    // exit status is still the last command of the final iteration.
+    '  $script:fx_exit = 0',
   ];
   for (const l of translateListInline(cmd.body, translation).split('\n')) lines.push(l ? '  ' + l : l);
   lines.push('}');
@@ -1193,6 +1216,9 @@ function translateWhile(cmd: WhileCommand, translation: TranslationContext): str
   const lines = ['$fx_wst = 0', 'do {'];
   for (const l of translateListInline(cmd.test, translation).split('\n')) lines.push(l ? '  ' + l : l);
   lines.push('  if (' + fail + ') { $script:fx_exit = $fx_wst; break }');
+  // Body-entry $? reads the test's status (bash: the passing while test / the
+  // failing until test), then each iteration's chain starts fresh.
+  lines.push('  $fx_prev = [string]$script:fx_exit');
   lines.push('  $script:fx_exit = 0');
   for (const l of translateListInline(cmd.body, translation).split('\n')) lines.push(l ? '  ' + l : l);
   lines.push('  $fx_wst = $script:fx_exit');
