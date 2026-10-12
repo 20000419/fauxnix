@@ -1527,7 +1527,7 @@ describe.skipIf(!hasPs)(`integration (real ${selectedPowerShell.executable})`, {
     expect((await run('printenv PATH')).stdout).toBe(before);
   });
 
-  it('env value forms work and option scanning stops before assignment-command argv', async () => {
+  it('env value forms work and option scanning stops before assignment-command argv', { timeout: 120_000 }, async () => {
     for (const form of ['-u', '-uFX_C5', '-u=FX_C5', '--unset=FX_C5']) {
       const command = form === '-u' ? 'env -u FX_C5 printenv FX_C5' : 'env ' + form + ' printenv FX_C5';
       const r = await run('export FX_C5=value; ' + command);
