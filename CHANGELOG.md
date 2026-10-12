@@ -25,6 +25,11 @@ The native-shell facade ships (RFC #224), and two correctness fixes land.
 - **gzip lease race (#240):** ending a Windows pipe with no prior write intermittently never
   delivered EOF; the lease release now force-destroys the handle (production leases close via
   process death and were unaffected).
+- **Command-substitution and iteration-boundary status isolation (#241):** `$(…)` no longer
+  leaks its execution status into the outer command (assignment-only commands commit the last
+  substitution's status; others keep their own); while/until conditions start each iteration's
+  execution state fresh while the next condition sees the completed body through `$?`; for-loop
+  bodies carry their final status into the next iteration's `$?`.
 - U-8 first-frame guard widened to 1500ms (its job is catching 10x spawn fallbacks; ARM lanes
   measured 877ms under full parallel load). Warm p50 <50ms stays strict.
 
