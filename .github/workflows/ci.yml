@@ -42,6 +42,7 @@ jobs:
       FAUXNIX_HOST_READY_TIMEOUT_MS: '90000'
       FAUXNIX_FACADE_E2E: '1'
       FAUXNIX_DIFF_ORACLE: ${{ matrix.name == 'windows-x64-desktop' && matrix.node == '22.20.0' && '1' || '' }}
+      FAUXNIX_FACADE_DIFF: ${{ matrix.name == 'windows-x64-desktop' && matrix.node == '22.20.0' && '1' || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

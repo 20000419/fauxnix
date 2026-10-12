@@ -3064,6 +3064,13 @@ describe.skipIf(!hasPs)(
       ['while false; do echo never; done', '', 0],
       // top-level cross-segment $? unchanged
       ['false; echo rc=$?', 'rc=1\n', 0],
+      // loop control maps to PowerShell flow with bash status-0 semantics
+      ['x=0; while true; do x=1; break; done; echo x=$x', 'x=1\n', 0],
+      ['while true; do false; break; done; echo rc=$?', 'rc=0\n', 0],
+      ['for i in 1 2 3; do [ $i = 2 ] && continue; echo $i; done', '1\n3\n', 0],
+      ['i=0; while [ $i -lt 3 ]; do i=$((i+1)); done; echo i=$i', 'i=3\n', 0],
+      ['for i in 1 2 3; do continue; echo never; done; echo done', 'done\n', 0],
+      ['while true; do case y in y) break;; esac; done; echo out', 'out\n', 0],
     ];
 
     for (const [cmd, stdout, exitCode] of cases) {

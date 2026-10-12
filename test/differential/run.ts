@@ -132,7 +132,7 @@ export function sameIdentity(a: Streams, b: Streams): boolean {
   );
 }
 
-function writeTree(root: string, files: Record<string, string>): void {
+export function writeTree(root: string, files: Record<string, string>): void {
   for (const [rel, body] of Object.entries(files)) {
     const dest = join(root, rel);
     mkdirSync(dirname(dest), { recursive: true });
@@ -140,7 +140,7 @@ function writeTree(root: string, files: Record<string, string>): void {
   }
 }
 
-function bashEnv(bashPath: string): NodeJS.ProcessEnv {
+export function bashEnv(bashPath: string): NodeJS.ProcessEnv {
   const gitRoot = dirname(dirname(bashPath));
   const extra = [join(gitRoot, 'usr', 'bin'), dirname(bashPath)];
   const pathKey = Object.keys(process.env).find((k) => k.toLowerCase() === 'path') ?? 'PATH';
@@ -152,7 +152,7 @@ function bashEnv(bashPath: string): NodeJS.ProcessEnv {
   };
 }
 
-function runBash(bashPath: string, cwd: string, cmd: string): Streams {
+export function runBash(bashPath: string, cwd: string, cmd: string): Streams {
   const r = spawnSync(bashPath, ['--noprofile', '--norc', '-c', cmd], {
     cwd,
     env: bashEnv(bashPath),
