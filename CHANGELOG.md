@@ -1,5 +1,35 @@
 # Changelog
 
+## v2.1.0 — 2026-10-12
+
+The native-shell facade ships (RFC #224), and two correctness fixes land.
+
+- **`fauxnix install --claude-shell` (experimental):** build a fauxnix-backed `bash.exe` and
+  point `CLAUDE_CODE_GIT_BASH_PATH` at it — Claude Code's **built-in Bash tool** then runs on
+  fauxnix with zero MCP round trips. Verified end-to-end against a live Claude Code session
+  (protocol captured and adapted: one-shot `bash -c` shapes, harness command scaffolding,
+  cwd markers, snapshot stubs; `--version` discloses the fauxnix identity). `--claude-shell-off`
+  restores the previous setting; `fauxnix doctor` reports launcher status. The launcher is
+  stub-first (#242 tracks the GA prebuilt stub); the fallback is a Node SEA copy (~85 MB).
+- **`break` / `continue`** translate to loop control with bash status-0 semantics — bare,
+  guarded (`cmd && break`), and inside case arms; multi-level N, pipelines, and top-level use
+  fail loud. while/until tests now start each iteration's chain fresh (a `true`-only test no
+  longer inherits the previous body's failure — loops terminated an iteration early).
+- **Fresh chain state inside control-flow bodies (#238, first external bug report, by
+  vishalhabib99):** every completed command updates `$?` and each element's own `&&`/`||`
+  chain starts fresh — resets live inside the guards, and body-entry `$?` reads the test's
+  status. Differential corpus: **269/270 identical (99.6%)**.
+- **Differential corpus through the facade entry:** a strided + control-flow sample (58 cases)
+  runs through real `facade -c` processes vs the Git Bash oracle on one CI lane —
+  100% identical at introduction.
+- **gzip lease race (#240):** ending a Windows pipe with no prior write intermittently never
+  delivered EOF; the lease release now force-destroys the handle (production leases close via
+  process death and were unaffected).
+- U-8 first-frame guard widened to 1500ms (its job is catching 10x spawn fallbacks; ARM lanes
+  measured 877ms under full parallel load). Warm p50 <50ms stays strict.
+
+1062 tests. npm: `npm i -g fauxnix-cli`
+
 ## v2.0.0 — 2026-10-05
 
 This major version raises the Node baseline and makes file replacement and archive
