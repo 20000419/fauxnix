@@ -639,7 +639,14 @@ export function translateCmdSub(
   translation: TranslationContext = EXECUTE_TRANSLATION,
 ): string {
   const inner = translateListInline(parseCommand(cmdText), translation);
-  const collected = '(fx-csub { ' + inner + ' })';
+  // Isolate the substitution's execution status in its generated block, so
+  // pipeline stage-slot rewriting also covers save/restore. The caller sees
+  // its last result through a separate accumulator: assignment-only commands
+  // commit it, while commands such as echo retain their own execution status.
+  const collected = '$( $fx_cs_output = fx-csub { ' +
+    '$fx_cs_saved = $script:fx_exit; $script:fx_exit = 0; try {\n' + inner +
+    '\n} finally { $script:fx_csub_exit = $script:fx_exit; $script:fx_exit = $fx_cs_saved }' +
+    ' }; $fx_prev = [string]$script:fx_csub_exit; $fx_cs_output )';
   if (keepNl) return collected;
   return (
     '((' +
@@ -675,7 +682,9 @@ export function translateSimple(
   // deviation: shell var vs exported var are indistinguishable here).
   if (cmd.name === null) {
     const exportHandler = lookup('export');
-    const chunks: string[] = [];
+    // Reset once for the whole assignment list: a later literal assignment
+    // must not erase an earlier substitution's status (x=$(false) y=plain).
+    const chunks: string[] = ['$script:fx_csub_exit = 0'];
     for (const a of cmd.assignments) {
       if (a.values) {
         chunks.push(
@@ -691,6 +700,9 @@ export function translateSimple(
         }
       }
     }
+    // Preserve expansion failures; otherwise the last substitution owns the
+    // status of a command with no command word. No substitutions means 0.
+    chunks.push('if ($script:fx_exit -eq 0) { $script:fx_exit = $script:fx_csub_exit }');
     return chunks.join('\n');
   }
 
@@ -785,7 +797,7 @@ export function translateSimple(
         else persistWords.push(w);
       }
     }
-    body = wrapTempEnv(cmd.assignments, body, { persistNames, persistWords });
+    body = wrapTempEnv(cmd.assignments, body, { persistNames, persistWords, preserveArgumentStatus: true });
   }
   return body;
 }
@@ -827,7 +839,7 @@ export function encodeSetValExpr(srcExpr: string): string {
 export function wrapTempEnv(
   sets: Assignment[],
   body: string,
-  extra?: { unsets?: string[]; persistNames?: Set<string>; persistWords?: Word[] },
+  extra?: { unsets?: string[]; persistNames?: Set<string>; persistWords?: Word[]; preserveArgumentStatus?: boolean },
 ): string {
   const unsets = extra?.unsets ?? [];
   const persistNames = extra?.persistNames ?? new Set<string>();
@@ -854,6 +866,7 @@ export function wrapTempEnv(
   const arrSave = '$fx_ar' + id;
   const keep = persistWords && persistWords.length > 0 ? '$fx_ek' + id : '';
   const lines: string[] = [
+    ...(extra?.preserveArgumentStatus ? ['$fx_eprev' + id + ' = $fx_prev'] : []),
     save + ' = @{}',
     arrSave + ' = @{}',
     '$fx_sv0' + id + ' = $env:FAUXNIX_SETVARS',
@@ -891,6 +904,10 @@ export function wrapTempEnv(
       lines.push(vn + ' = ' + exprOfWord(sets[i].value, { preserveCmdSub: true }));
     }
   }
+  // Prefix substitutions may advance $? for later prefix assignments, but
+  // their snapshots must not replace the command arguments' incoming status.
+  // `env X=... cmd` passes ordinary argv and must keep those updates instead.
+  if (extra?.preserveArgumentStatus) lines.push('$fx_prev = $fx_eprev' + id);
   lines.push('try {');
   for (const u of unsets) {
     const uq = u.replace(/'/g, "''");
@@ -1204,6 +1221,9 @@ function translateFor(cmd: ForCommand, translation: TranslationContext): string 
     '  $script:fx_exit = 0',
   ];
   for (const l of translateListInline(cmd.body, translation).split('\n')) lines.push(l ? '  ' + l : l);
+  // First entry inherits the caller's snapshot; later entries see the body's
+  // completed status before the next iteration resets its execution state.
+  lines.push('  $fx_prev = [string]$script:fx_exit');
   lines.push('}');
   return lines.join('\n');
 }
@@ -1213,7 +1233,7 @@ function translateWhile(cmd: WhileCommand, translation: TranslationContext): str
   // Never-entered loops (`while false; do …; done`, `until true; do …; done`)
   // exit 0. Save the body status and restore it on the failing test.
   const fail = cmd.until ? '$script:fx_exit -eq 0' : '$script:fx_exit -ne 0';
-  const lines = ['$fx_wst = 0', 'do {'];
+  const lines = ['$fx_wst = 0', 'do {', '  $script:fx_exit = 0'];
   for (const l of translateListInline(cmd.test, translation).split('\n')) lines.push(l ? '  ' + l : l);
   lines.push('  if (' + fail + ') { $script:fx_exit = $fx_wst; break }');
   // Body-entry $? reads the test's status (bash: the passing while test / the
@@ -1222,6 +1242,9 @@ function translateWhile(cmd: WhileCommand, translation: TranslationContext): str
   lines.push('  $script:fx_exit = 0');
   for (const l of translateListInline(cmd.body, translation).split('\n')) lines.push(l ? '  ' + l : l);
   lines.push('  $fx_wst = $script:fx_exit');
+  // The next condition sees the completed body through $?, but starts a new
+  // execution status even when its first command is a no-op such as true.
+  lines.push('  $fx_prev = [string]$script:fx_exit');
   lines.push('} while ($true)');
   return lines.join('\n');
 }

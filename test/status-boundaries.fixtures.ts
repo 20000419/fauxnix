@@ -27,5 +27,11 @@ export const statusBoundaryCases: Array<[string, string, number]> = [
   ['true; true | x=$(false); echo $?', '1\n', 0],
   ['false; echo "$(true):$?"; echo $?', ':0\n0\n', 0],
   ['false; echo "$(echo "$?"):$(echo "$?"):$?"; echo $?', '1:0:0\n0\n', 0],
+  ['true; x=$(false) echo $?; echo $?', '0\n0\n', 0],
+  ['false; x=$(true) echo $?; echo $?', '1\n0\n', 0],
+  ['true; x=$(false) y=$? printenv y; echo $?', '1\n0\n', 0],
+  ['true; x=$(false) y=$(echo $?) printenv y; echo $?', '1\n0\n', 0],
+  ['true; env x=$(false) echo $?; echo $?', '1\n0\n', 0],
+  ['false; env x=$(true) echo $?; echo $?', '0\n0\n', 0],
   ['echo input | echo "$(false)"; echo $?', '\n0\n', 0],
 ];

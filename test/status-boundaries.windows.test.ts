@@ -1,4 +1,7 @@
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { FauxnixSession } from '../src/executor.js';
 import { parseCommand } from '../src/parser.js';
@@ -13,8 +16,15 @@ const runnable = process.platform === 'win32' && !selection.error &&
 
 describe.skipIf(!runnable)('status boundaries on Windows', { timeout: 30000 }, () => {
   let session: FauxnixSession;
-  beforeAll(() => { session = new FauxnixSession(); });
-  afterAll(async () => { await session?.dispose(); });
+  let directory: string;
+  beforeAll(() => {
+    directory = mkdtempSync(join(tmpdir(), 'fauxnix-status-boundaries-'));
+    session = new FauxnixSession();
+  });
+  afterAll(async () => {
+    await session?.dispose();
+    if (directory) rmSync(directory, { recursive: true, force: true });
+  });
 
   it.each(statusBoundaryCases)('matches Bash through the resident host: %s', async (command, stdout, exitCode) => {
     const result = await session.run(translateCommandList(parseCommand(command)), { timeoutMs: 10000 });
@@ -28,7 +38,9 @@ describe.skipIf(!runnable)('status boundaries on Windows', { timeout: 30000 }, (
     // An enclosing compound keeps the whole list in one generated script,
     // independently exercising inline boundaries instead of host segments.
     const [plan] = translateCommandList(parseCommand(`if true; then ${command}; fi`));
-    const result = spawnSync(selection.executable, [...POWERSHELL_ARGS, '-Command', plan.script], {
+    const script = join(directory, 'status-boundary.ps1');
+    writeFileSync(script, '\uFEFF' + plan.script);
+    const result = spawnSync(selection.executable, [...POWERSHELL_ARGS, '-File', script], {
       encoding: 'utf8', timeout: 10000,
     });
     expect(result.error).toBeUndefined();
