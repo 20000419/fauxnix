@@ -509,6 +509,16 @@ export class PowerShellHost {
       windowsHide: true,
     });
     this.proc = child;
+    child.stdin!.on('error', (e) => {
+      // A closed host input pipe reports EPIPE asynchronously; write()'s
+      // try/catch cannot contain it. Fail this request through the normal
+      // dead-host path and leave the next invocation free to start again.
+      if (this.proc !== child) return;
+      this.closeErr = e;
+      this.closed = true;
+      this.failWaiters(e);
+      this.cancelNativeCapture();
+    });
     child.stdout!.on('data', (d: Buffer) => {
       if (this.proc !== child) return;
       this.onStdout(d);
@@ -522,6 +532,7 @@ export class PowerShellHost {
       this.closeErr = e;
       this.closed = true;
       this.failWaiters(e);
+      this.cancelNativeCapture();
     });
     child.on('close', (c) => {
       if (this.proc !== child) return;
@@ -529,6 +540,7 @@ export class PowerShellHost {
       this.closed = true;
       this.proc = null;
       this.failWaiters(new Error('fauxnix: powershell host closed'));
+      this.cancelNativeCapture();
     });
     try {
       const readyLine = await this.nextReadyLine(READY_TIMEOUT_MS);
@@ -638,7 +650,7 @@ export class PowerShellHost {
       limits?.stderrMode ?? 'capture',
       limits?.stderrLimit ?? DEFAULT_STDERR_LIMIT,
       limits?.nativeStderrSpoolPath,
-      timeoutMs + 2000,
+      timeoutMs,
     );
     // collectV2 can leave through a frame timeout before it reaches the await
     // below. Attach a handler immediately so teardown never reports a stray
@@ -667,25 +679,11 @@ export class PowerShellHost {
         end = f;
       }
     }
-    let nativeBytes = 0;
-    let markerTimer: NodeJS.Timeout | undefined;
-    try {
-      const captured = await Promise.race([
-        nativePromise,
-        new Promise<never>((_, reject) => {
-          markerTimer = setTimeout(
-            () => reject(new Error('fauxnix: native stderr marker missing')),
-            2000,
-          );
-        }),
-      ]);
-      nativeBytes = captured.bytesSeen;
-    } catch (e) {
-      this.cancelNativeCapture();
-      if (e instanceof NativeStderrSpoolError) throw e;
-    } finally {
-      if (markerTimer) clearTimeout(markerTimer);
-    }
+    // The end frame and native marker arrive on independent pipes. Finishing
+    // stdout does not complete the request: cancellation, pipe failure and
+    // the original deadline still apply while native stderr is pending.
+    // Let invokeSerial handle failures so it also removes partial spools.
+    const { bytesSeen: nativeBytes } = await nativePromise;
     const capturedErr = Buffer.from(Buffer.concat(err));
     let native = Buffer.alloc(0);
     let nativeTruncated = false;
@@ -730,7 +728,10 @@ export class PowerShellHost {
       const timer = setTimeout(() => {
         if (this.nativeCapture?.id !== id) return;
         const state = this.nativeCapture;
-        const failure = state.ioError ?? new Error('fauxnix: native stderr marker missing');
+        const failure = state.ioError ?? Object.assign(
+          new Error('fauxnix: native stderr marker timed out'),
+          { timedOut: true },
+        );
         this.closeNativeSpool(state);
         this.nativeCapture = null;
         reject(failure);

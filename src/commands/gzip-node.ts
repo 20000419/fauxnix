@@ -1,9 +1,23 @@
 import { psStr } from '../registry.js';
 import { nodeEngineRange } from '../runtime-support.js';
 
-/** Trusted program, no user text interpolation. It only reads input and emits bytes. */
+/**
+ * Trusted program, no user text interpolation. It only reads input and emits bytes.
+ *
+ * A leased stdin is an ownership signal, not archive data or host RPC. PowerShell
+ * holds it open; EOF/error aborts decoding. The parent PID check is best effort.
+ *
+ * Windows pipe stdout writes are synchronous and can block the event loop that
+ * observes ownership loss. Its fs writer instead keeps those writes off-thread.
+ * An abandoned write can still retain a libuv worker during process.exit cleanup,
+ * so the existing one-second shutdown fallback directly terminates this Windows
+ * helper (exit code 1). POSIX retains its asynchronous stdout socket and exit path.
+ *
+ * Keep commentary outside the embedded program: its base64 is nested inside
+ * generated PowerShell, where avoidable size can exceed Windows argv limits.
+ */
 export const GZIP_DECODER_SOURCE = String.raw`
-const { createReadStream } = require('node:fs');
+const { createReadStream, createWriteStream } = require('node:fs');
 const { createGunzip } = require('node:zlib');
 const { Writable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
@@ -15,14 +29,13 @@ const { pipeline } = require('node:stream/promises');
     if (finished || stopping) return;
     stopping = true;
     controller.abort();
-    // A stalled output pipe can retain native writes after stream destruction.
-    // The owner has gone, so bound only this read-only decoder's shutdown.
-    setTimeout(() => process.exit(1), 1000).unref();
+    setTimeout(() => {
+      if (process.platform === 'win32') process.kill(process.pid, 'SIGTERM');
+      else process.exit(1);
+    }, 1000).unref();
   };
   const leased = process.argv[4] === 'lease';
   if (leased) {
-    // PowerShell keeps this private input pipe open without writing to it.
-    // EOF is an ownership signal, not compressed input or a host RPC message.
     process.stdin.on('end', stopDecoder);
     process.stdin.on('error', stopDecoder);
     process.stdin.resume();
@@ -50,7 +63,11 @@ const { pipeline } = require('node:stream/promises');
     const path = Buffer.from(process.argv[1], 'base64').toString('utf8');
     const mode = process.argv[2];
     if (mode !== 'test' && mode !== 'stream') throw new Error('invalid decoder mode');
-    const sink = mode === 'test' ? new Writable({ write(chunk, encoding, next) { next(); } }) : process.stdout;
+    const sink = mode === 'test'
+      ? new Writable({ write(chunk, encoding, next) { next(); } })
+      : process.platform === 'win32'
+        ? createWriteStream(null, { fd: 1, autoClose: false })
+        : process.stdout;
     await pipeline(createReadStream(path), createGunzip(), sink, { signal: controller.signal });
   } catch (error) {
     process.stderr.write('gzip decoder: ' + String(error.message).slice(0, 2048) + '\n');

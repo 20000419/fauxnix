@@ -30,10 +30,22 @@ The native-shell facade ships (RFC #224), and two correctness fixes land.
   substitution's status; others keep their own); while/until conditions start each iteration's
   execution state fresh while the next condition sees the completed body through `$?`; for-loop
   bodies carry their final status into the next iteration's `$?`.
+- **Loop snapshots survive `continue` (#244):** body status snapshots live in `finally` blocks,
+  and the facade launcher fingerprints mode/stub/bundle inputs with content hashes — stale
+  launchers rebuild, missing selected stubs fail loudly.
+- **gzip lease shutdown under backpressure (#245):** the Windows decoder writes stdout through
+  an off-thread fs writer so the lifetime-pipe EOF is never starved by blocked pipe writes, and
+  the abandoned-helper fallback terminates the owned helper directly (the production-grade
+  resolution of the #240 race; the test-side lease release remains as belt-and-suspenders).
+- **Shell lexical boundaries in `for` lists (#247):** reserved words are ordinary list elements
+  before the header separator (`for x in do; do …` iterates the literal `do`), and quoting
+  anywhere in `NAME=value` makes it a command word rather than an assignment.
+- **Output semantics restored (#248):** `ls` human-readable sizes, `uniq -d`/`-u` selection and
+  formatting independence, and `tac` byte order — all oracle-verified.
 - U-8 first-frame guard widened to 1500ms (its job is catching 10x spawn fallbacks; ARM lanes
   measured 877ms under full parallel load). Warm p50 <50ms stays strict.
 
-1062 tests. npm: `npm i -g fauxnix-cli`
+1346 tests. npm: `npm i -g fauxnix-cli`
 
 ## v2.0.0 — 2026-10-05
 

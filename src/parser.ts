@@ -1075,9 +1075,9 @@ export function parseCommand(input: string): CommandList {
     next();
     expectKw('in');
     const words: Word[] = [];
-    for (;;) {
-      while (peek().type === 'OP' && (peek().op === ';' || peek().op === '\n')) next();
-      if (peekKw() === 'do') break;
+    // Reserved words are ordinary list elements until the header's separator:
+    // `for x in do; do ...` iterates over the literal word "do".
+    while (!(peek().type === 'OP' && isListSep(peek().op))) {
       const t = peek();
       if (t.type !== 'WORD' || !t.parts) {
         throw new FauxnixParseError("fauxnix: `for` expected `do`");
@@ -1085,6 +1085,10 @@ export function parseCommand(input: string): CommandList {
       words.push(t.parts);
       next();
     }
+    // A semicolon may be followed by newlines, but another semicolon (or
+    // more words before `do`) is not another part of the word list.
+    next();
+    while (peek().type === 'OP' && peek().op === '\n') next();
     expectKw('do');
     const body = parseListUntil(['done']);
     expectKw('done');
@@ -1472,33 +1476,24 @@ export function parseCommand(input: string): CommandList {
    * is not a valid assignment.
    */
   function splitAssignment(w: Word): Assignment | null {
-    // merge adjacent Text parts first — the tokenizer emits per-char parts
-    const merged: WordPart[] = [];
-    for (const p of w) {
-      const last = merged[merged.length - 1];
-      if (p.kind === 'Text' && last && last.kind === 'Text') {
-        (last as { text: string }).text += p.text;
-      } else if (p.kind === 'SingleQuoted' && last && last.kind === 'SingleQuoted') {
-        (last as { text: string }).text += p.text;
-      } else {
-        merged.push({ ...p });
-      }
-    }
-    for (let idx = 0; idx < merged.length; idx++) {
-      const p = merged[idx];
-      if (p.kind !== 'Text') continue;
+    let name = '';
+    for (let idx = 0; idx < w.length; idx++) {
+      const p = w[idx];
+      // Quoting/escaping anywhere in NAME= makes this a command word.
+      // Do not merge parts here: the value's escapes also distinguish
+      // literal tildes/parentheses from home expansion/array assignment.
+      if (p.kind !== 'Text' || p.escaped) return null;
       const eq = p.text.indexOf('=');
-      if (eq <= 0) continue;
-      const name =
-        merged
-          .slice(0, idx)
-          .map((q) => (q.kind === 'Text' || q.kind === 'SingleQuoted' ? q.text : ''))
-          .join('') + p.text.slice(0, eq);
-      if (!isNameStart(name[0]) || !name.split('').every(isNameChar)) continue;
+      if (eq < 0) {
+        name += p.text;
+        continue;
+      }
+      name += p.text.slice(0, eq);
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return null;
       const value: Word = [];
       const tail = p.text.slice(eq + 1);
-      if (tail) value.push({ kind: 'Text', text: tail });
-      value.push(...merged.slice(idx + 1));
+      if (tail) value.push({ ...p, text: tail });
+      value.push(...w.slice(idx + 1));
       return { name, value };
     }
     return null;

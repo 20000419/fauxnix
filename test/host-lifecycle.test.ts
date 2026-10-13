@@ -167,6 +167,54 @@ describe('host startup cancellation and deadline', () => {
 // Stdout and stderr are separate OS pipes. The end frame can be delivered
 // before the stderr completion marker although the host writes the marker first.
 describe('version-two native stderr completion boundary', () => {
+  it('contains a host stdin stream error and starts a fresh host without replaying the failed request', async () => {
+    const { host, child, requests } = fixture();
+    child.stdin.on('data', (chunk) => {
+      const request = JSON.parse(String(chunk));
+      child.stdout.write(JSON.stringify({ v: 2, type: 'end', id: request.id, exitCode: 0 }) + '\n');
+    });
+    const pending = host.invoke('fixture', {}, 1000);
+    await vi.advanceTimersByTimeAsync(0);
+    child.stdout.write('{"v":2,"type":"ready"}\n');
+    await vi.advanceTimersByTimeAsync(0);
+    let unhandled: unknown;
+    try {
+      child.stdin.emit('error', Object.assign(new Error('fixture broken pipe'), { code: 'EPIPE' }));
+    } catch (error) {
+      unhandled = error;
+    }
+    await vi.advanceTimersByTimeAsync(0);
+    if (unhandled) await host.stop();
+    const result = await pending;
+    await host.stop();
+    expect(unhandled).toBeUndefined();
+    expect(result).toMatchObject({ infrastructureError: true, cancelled: false, timedOut: false, exitCode: 1 });
+    expect(requests).toHaveLength(1);
+
+    const { child: freshChild, requests: freshRequests } = fixture();
+    freshChild.stdin.on('data', (chunk) => {
+      const request = JSON.parse(String(chunk));
+      freshChild.stdout.write(JSON.stringify({ v: 2, type: 'stdout', id: request.id, seq: 0, dataB64: 'b2s=' }) + '\n');
+      freshChild.stdout.write(JSON.stringify({ v: 2, type: 'end', id: request.id, exitCode: 0 }) + '\n');
+      queueMicrotask(() => freshChild.stderr.write('FAUXNIX_ERR_END:' + request.id + '\n'));
+    });
+    const recovered = host.invoke('next request', {}, 1000);
+    await vi.advanceTimersByTimeAsync(0);
+    // Late errors from the retired child must not poison its replacement.
+    child.stdin.emit('error', Object.assign(new Error('retired pipe'), { code: 'EPIPE' }));
+    freshChild.stdout.write('{"v":2,"type":"ready"}\n');
+    await vi.advanceTimersByTimeAsync(0);
+    const nextResult = await recovered;
+    expect(nextResult).toMatchObject({ exitCode: 0, timedOut: false, cancelled: false });
+    expect(nextResult.infrastructureError).not.toBe(true);
+    expect(nextResult.stdout.toString()).toBe('ok');
+    expect(requests).toHaveLength(1);
+    expect(freshRequests).toHaveLength(1);
+    expect(Buffer.from(JSON.parse(freshRequests[0]).scriptB64, 'base64').toString()).toBe('next request');
+    await host.stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('reports cancellation after the end frame while the marker is pending', async () => {
     const { host, child } = fixture();
     const controller = new AbortController();

@@ -89,6 +89,7 @@ const ls: Handler = (args) => {
   return [
     PS_GLOB_FN,
     PS_FTIME_FN,
+    PS_HSIZE_FN,
     'function fx-mode($it) {',
     "  $t = '-'; if ($it.PSIsContainer) { $t = 'd' } elseif " + psIsLink('$it') + " { $t = 'l' }",
     "  if ($it.PSIsContainer) { return ($t + 'rwxr-xr-x') }",
