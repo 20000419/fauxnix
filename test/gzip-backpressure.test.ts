@@ -55,6 +55,6 @@ process.stdin.on('end', () => probeWrite(2, 'lease:end\n'));
   } finally {
     child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy();
     if (child.exitCode === null) child.kill();
-    rmSync(directory, { recursive: true, force: true });
+    try { rmSync(directory, { recursive: true, force: true }); } catch { /* AV lock race */ }
   }
 }, 30_000);

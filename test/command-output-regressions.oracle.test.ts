@@ -14,7 +14,10 @@ describe.skipIf(bash.status !== 0)('command output Bash oracle', () => {
       writeFileSync(join(directory, name), contents);
     }
   });
-  afterAll(() => { if (directory) rmSync(directory, { recursive: true, force: true }); });
+  afterAll(() => {
+    // best-effort: spawned-bash files can stay AV-locked briefly after exit
+    try { if (directory) rmSync(directory, { recursive: true, force: true }); } catch { /* temp cleaner owns it */ }
+  });
   it.each(commandOutputCases)('%s', (command, stdout) => {
     const result = spawnSync('bash', ['-c', command], {
       cwd: directory, encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' },

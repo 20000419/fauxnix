@@ -23,7 +23,7 @@ describe.skipIf(!runnable)('shell lexical execution on Windows', { timeout: 3000
   });
   afterAll(async () => {
     await session?.dispose();
-    if (directory) rmSync(directory, { recursive: true, force: true });
+    try { if (directory) rmSync(directory, { recursive: true, force: true }); } catch { /* AV lock race */ }
   });
 
   it.each(lexicalCases)('matches Bash through the resident host: %s', async (command, stdout, exitCode, stderrFragment) => {

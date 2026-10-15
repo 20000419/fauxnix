@@ -28,7 +28,7 @@ describe.skipIf(!runnable)('command output regressions on Windows', { timeout: 3
   });
   afterAll(async () => {
     await session?.dispose();
-    if (directory) rmSync(directory, { recursive: true, force: true });
+    try { if (directory) rmSync(directory, { recursive: true, force: true }); } catch { /* AV lock race */ }
   });
   const run = (command: string) =>
     session.run(translateCommandList(parseCommand(command)), { cwd: directory });
