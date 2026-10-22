@@ -123,6 +123,67 @@ describe('parser', () => {
     expect(command.args.map(wordToString)).toEqual(['file2']);
     expect(command.redirects).toEqual([{ op: '>>', target: 'out.txt' }]);
     expect(() => parse('echo 12>>out.txt')).toThrow(FauxnixParseError);
+    expect(() => parse('echo 12>>out.txt')).toThrow(/^fauxnix: unsupported redirect: 12>>$/);
+  });
+
+  it('treats 1>, 1>>, and >&2 as the supported stdout forms', () => {
+    expect(firstSimpleCommand(parse('echo done 1>/dev/null')).redirects).toEqual([
+      { op: '>', target: '/dev/null' },
+    ]);
+    expect(firstSimpleCommand(parse('echo x 1>>log.txt')).redirects).toEqual([
+      { op: '>>', target: 'log.txt' },
+    ]);
+    expect(firstSimpleCommand(parse('echo err >&2')).redirects).toEqual([
+      { op: '1>&2', target: '' },
+    ]);
+    expect(firstSimpleCommand(parse('echo x >&2')).redirects).toEqual(
+      firstSimpleCommand(parse('echo x 1>&2')).redirects,
+    );
+
+    const stdout = translateCommandList(parse('echo done 1>/dev/null'))[0];
+    expect(stdout.script).toBe(translateCommandList(parse('echo done >/dev/null'))[0].script);
+    const append = translateCommandList(parse('echo x 1>>log.txt'))[0];
+    expect(append.script).toBe(translateCommandList(parse('echo x >>log.txt'))[0].script);
+    const toStderr = translateCommandList(parse('echo err >&2'))[0];
+    expect(toStderr.outputRedirects).toEqual([{ op: '1>&2', target: '' }]);
+    expect(toStderr.script).toBe(translateCommandList(parse('echo err 1>&2'))[0].script);
+  });
+
+  it('names unsupported file descriptors', () => {
+    expect(() => parse('cmd 3>f')).toThrow(FauxnixParseError);
+    expect(() => parse('cmd 3>f')).toThrow(/^fauxnix: unsupported redirect: 3>$/);
+    expect(() => parse('cmd 4>>f')).toThrow(/^fauxnix: unsupported redirect: 4>>$/);
+    expect(() => parse('cmd 4>&1')).toThrow(/^fauxnix: unsupported redirect: 4>&1$/);
+    expect(() => parse('cmd 3>&2')).toThrow(/^fauxnix: unsupported redirect: 3>&2$/);
+  });
+
+  it('keeps adjacent words and quoted digits out of fd redirects', () => {
+    const adjacent = firstSimpleCommand(parse('echo file1>out.txt'));
+    expect(adjacent.args.map(wordToString)).toEqual(['file1']);
+    expect(adjacent.redirects).toEqual([{ op: '>', target: 'out.txt' }]);
+
+    const adjacentAppend = firstSimpleCommand(parse('echo file1>>log.txt'));
+    expect(adjacentAppend.args.map(wordToString)).toEqual(['file1']);
+    expect(adjacentAppend.redirects).toEqual([{ op: '>>', target: 'log.txt' }]);
+
+    const single = firstSimpleCommand(parse("echo '1'>out.txt"));
+    expect(single.args.map(wordToString)).toEqual(['1']);
+    expect(single.redirects).toEqual([{ op: '>', target: 'out.txt' }]);
+
+    const double = firstSimpleCommand(parse('echo "1">>log.txt'));
+    expect(double.args.map(wordToString)).toEqual(['1']);
+    expect(double.redirects).toEqual([{ op: '>>', target: 'log.txt' }]);
+
+    const quotedStderr = firstSimpleCommand(parse('echo "2">err.txt'));
+    expect(quotedStderr.args.map(wordToString)).toEqual(['2']);
+    expect(quotedStderr.redirects).toEqual([{ op: '>', target: 'err.txt' }]);
+
+    const glued = firstSimpleCommand(parse('echo err>&2'));
+    expect(glued.args.map(wordToString)).toEqual(['err']);
+    expect(glued.redirects).toEqual([{ op: '1>&2', target: '' }]);
+
+    expect(() => parse('echo x >&20')).toThrow('fauxnix: redirect target expected');
+    expect(() => parse('echo x >&2foo')).toThrow('fauxnix: redirect target expected');
   });
 
   it('parses stdin redirects', () => {
@@ -1002,6 +1063,8 @@ describe('translator', () => {
       'echo hi &>>f | cat',
       'echo hi >/dev/null | cat',
       'echo hi | cat >mid | wc -l',
+      'echo hi 1>f | cat',
+      'echo hi 1>>f | cat',
     ];
     for (const cmd of bad) {
       expect(() => translateCommandList(parse(cmd)), cmd).toThrow(FauxnixParseError);
@@ -1026,6 +1089,10 @@ describe('translator', () => {
       'echo x | echo hi 1>&2 | cat',
       'fauxnix: 1>&2 on a non-last pipeline stage is not supported yet; run the stage separately (cmd 1>&2; next </dev/null) or wait for per-stage fds (#157)',
     ],
+    [
+      'echo x | echo hi >&2 | cat',
+      'fauxnix: 1>&2 on a non-last pipeline stage is not supported yet; run the stage separately (cmd 1>&2; next </dev/null) or wait for per-stage fds (#157)',
+    ],
   ])('rejects non-last-stage fd redirect in %s', (command, message) => {
     expect(() => translateCommandList(parse(command))).toThrow(FauxnixParseError);
     expect(() => translateCommandList(parse(command))).toThrow(message);
@@ -1043,6 +1110,9 @@ describe('translator', () => {
       'echo hi | cat missing.txt 2>>e',
       'echo hi | cat missing.txt 2>&1',
       'echo hi | echo last 1>&2',
+      'echo hi | echo last >&2',
+      'echo hi | echo done 1>/dev/null',
+      'echo hi | echo x 1>>log.txt',
     ]) {
       expect(() => translateCommandList(parse(command)), command).not.toThrow();
     }
