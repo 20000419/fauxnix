@@ -138,7 +138,18 @@ export function tokenize(input: string): Token[] {
         }
         // the fd digits were consumed earlier; advance past the operator tail only
         advance = matched.length - fdDigits.length;
+        // fd 1 is stdout: `1>f` / `1>>f` are the same redirects as `>f` / `>>f`
+        if (matched === '1>') matched = '>';
+        else if (matched === '1>>') matched = '>>';
         fdDigits = '';
+      } else if (
+        matched === '>' &&
+        input.startsWith('&2', i + 1) &&
+        !/[^\s;|&<>()]/.test(input[i + 3] ?? ' ')
+      ) {
+        // `>&2` is shorthand for `1>&2`
+        matched = '1>&2';
+        advance = 3;
       }
       if (matched === '<<') {
         throw new FauxnixParseError(
@@ -1297,6 +1308,9 @@ export function parseCommand(input: string): CommandList {
         continue;
       }
 
+      if (t.type === 'OP' && /^\d+[<>]/.test(t.op!) && !isRedirectOp(t.op!)) {
+        normalizeRedirect(t.op!);
+      }
       if (t.type === 'OP' && isRedirectOp(t.op!)) {
         const op = t.op!;
         next();
