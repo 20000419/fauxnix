@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.1.1 — 2026-10-22
+
+Correctness patch.
+
+- **`1>`, `1>>`, and `>&2` now work** (#250, first contribution by notlakshitha, #251): `1>f`/`1>>f`
+  are exactly `>f`/`>>f`, bare `>&2` is `1>&2` — all byte-verified against the Git Bash oracle.
+  Genuinely unsupported descriptors fail with a named, actionable error
+  (`fauxnix: unsupported redirect: 3>`) instead of misleading parse noise. Adjacent-word
+  (`file1>out`), quoted digits, and the non-last-stage redirect restriction are unchanged.
+- **Host pipe failures are contained** (#246): a resident host closing stdin after handshake now
+  surfaces as a controlled `infrastructureError` result and the next invocation transparently
+  starts a fresh host; protocol stdout and native stderr must both complete before a request ends.
+
+1363 tests. npm: `npm i -g fauxnix-cli`
+
 ## v2.1.0 — 2026-10-12
 
 The native-shell facade ships (RFC #224), and two correctness fixes land.
