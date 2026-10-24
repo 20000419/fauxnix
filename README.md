@@ -60,6 +60,12 @@ config files yourself.
 <details>
 <summary><b>Manual config per harness</b></summary>
 
+`fauxnix install --<harness>` writes the **spawn-safe** form shown below: the absolute Node
+executable plus this installation's absolute entry. A bare `command: "fauxnix"` is an
+extension-less npm shim on Windows — MCP clients that spawn the server directly (CreateProcess)
+cannot execute it (#252). Shell-wrapping clients like Claude Code accept either form; the
+absolute form works everywhere.
+
 **Claude Code**
 ```bash
 claude mcp add fauxnix -- fauxnix mcp
@@ -68,8 +74,8 @@ claude mcp add fauxnix -- fauxnix mcp
 **Codex** (`~/.codex/config.toml` or `codex mcp add fauxnix -- fauxnix mcp`)
 ```toml
 [mcp_servers.fauxnix]
-command = "fauxnix"
-args = ["mcp"]
+command = 'C:\Program Files\nodejs\node.exe'
+args = ['C:\Users\<you>\AppData\Roaming\npm\node_modules\fauxnix-cli\dist\index.js', 'mcp']
 ```
 Note: in non-interactive `codex exec` mode, MCP tool calls are auto-denied by the approval
 layer; pass `--dangerously-bypass-approvals-and-sandbox` (or run interactively and approve
@@ -79,7 +85,10 @@ once).
 ```json
 {
   "mcp": {
-    "fauxnix": { "type": "local", "command": ["fauxnix", "mcp"] }
+    "fauxnix": {
+      "type": "local",
+      "command": ["C:\\Program Files\\nodejs\\node.exe", "C:\\Users\\<you>\\AppData\\Roaming\\npm\\node_modules\\fauxnix-cli\\dist\\index.js", "mcp"]
+    }
   }
 }
 ```
@@ -88,7 +97,10 @@ once).
 ```json
 {
   "mcpServers": {
-    "fauxnix": { "command": "fauxnix", "args": ["mcp"] }
+    "fauxnix": {
+      "command": "C:\\Program Files\\nodejs\\node.exe",
+      "args": ["C:\\Users\\<you>\\AppData\\Roaming\\npm\\node_modules\\fauxnix-cli\\dist\\index.js", "mcp"]
+    }
   }
 }
 ```
@@ -97,9 +109,8 @@ once).
 ```bash
 fauxnix install --qwen
 ```
-The installer preserves the rest of `settings.json` and writes an absolute Node + package-entry
-launcher so Qwen startup does not depend on its working directory or `PATH` order. See
-[the Qwen example](docs/examples/qwen.md) for the generated JSON shape.
+The installer preserves the rest of `settings.json` and writes the same absolute launcher.
+See [the Qwen example](docs/examples/qwen.md) for the generated JSON shape.
 
 **Any MCP client** — stdio server: `fauxnix mcp`. The tool name is `bash` (override with
 `FAUXNIX_TOOL_NAME`). The tool description already teaches the model the supported subset, so no
