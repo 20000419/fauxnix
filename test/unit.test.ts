@@ -2608,6 +2608,22 @@ describe('install harness config', () => {
     return { home: dir, cwd: dir, env };
   }
 
+  /**
+   * The #252 spawn-safety property: every config the installer writes must
+   * carry the absolute Node executable plus this installation's absolute
+   * built entry — no bare command a direct-spawn MCP client cannot resolve.
+   */
+  function expectSpawnSafe(value: unknown) {
+    const server = value as { command: string; args: string[] };
+    expect(server.command).toBe(process.execPath);
+    expect(isAbsolute(server.command)).toBe(true);
+    expect(existsSync(server.command)).toBe(true);
+    expect(server.args[0]).toBe(join(process.cwd(), 'dist', 'index.js'));
+    expect(isAbsolute(server.args[0])).toBe(true);
+    expect(existsSync(server.args[0])).toBe(true);
+    expect(server.args[1]).toBe('mcp');
+  }
+
   async function doctorText(dir: string, env: NodeJS.ProcessEnv = {}): Promise<string> {
     const report = await collectDoctorReport({
       home: dir,
@@ -2665,7 +2681,7 @@ describe('install harness config', () => {
       expect(data.theme).toBe('dark');
       expect(data.projects).toEqual({ 'C:\\work\\app': { allowedTools: ['Bash'] } });
       expect(data.mcpServers.github).toEqual({ command: 'npx' });
-      expect(data.mcpServers.fauxnix).toEqual({ command: 'fauxnix', args: ['mcp'] });
+      expectSpawnSafe(data.mcpServers.fauxnix);
       expect(await doctorText(dir)).toMatch(/claude\s+: fauxnix MCP configured/);
 
       const before = readFileSync(claudePath, 'utf8');
@@ -2684,9 +2700,10 @@ describe('install harness config', () => {
       const created = runInstall(['--claude'], opts(dir));
       expect(created.ok).toBe(true);
       expect(created.lines[0]).toContain('created');
-      expect(JSON.parse(readFileSync(join(dir, '.claude.json'), 'utf8'))).toEqual({
-        mcpServers: { fauxnix: { command: 'fauxnix', args: ['mcp'] } },
-      });
+      const createdData = JSON.parse(readFileSync(join(dir, '.claude.json'), 'utf8')) as {
+        mcpServers: Record<string, unknown>;
+      };
+      expectSpawnSafe(createdData.mcpServers.fauxnix);
 
       const cfgDir = join(dir, 'custom-claude');
       const env = { CLAUDE_CONFIG_DIR: cfgDir };
@@ -2748,8 +2765,8 @@ describe('install harness config', () => {
       expect(out).toContain('[model]');
       expect(out).toContain('model = "gpt-5"');
       expect(out).toContain('[mcp_servers.fauxnix]');
-      expect(out).toContain('command = "fauxnix"');
-      expect(out).toContain('args = ["mcp"]');
+      expect(out).toContain(`command = '${process.execPath}'`);
+      expect(out).toContain(`'${join(process.cwd(), 'dist', 'index.js')}', 'mcp']`);
       expect(await doctorText(dir)).toMatch(/codex\s+: fauxnix MCP configured/);
 
       const before = readFileSync(path, 'utf8');
@@ -2806,7 +2823,11 @@ describe('install harness config', () => {
       expect(data.$schema).toBe('https://opencode.ai/config.json');
       expect(data.model).toBe('x');
       expect(data.mcp.github).toEqual({ type: 'remote', url: 'https://example' });
-      expect(data.mcp.fauxnix).toEqual({ type: 'local', command: ['fauxnix', 'mcp'] });
+      const oc = data.mcp.fauxnix as { type: string; command: string[] };
+      expect(oc.type).toBe('local');
+      expect(oc.command[0]).toBe(process.execPath);
+      expect(oc.command[1]).toBe(join(process.cwd(), 'dist', 'index.js'));
+      expect(oc.command[2]).toBe('mcp');
       expect(await doctorText(dir)).toMatch(/opencode\s+: fauxnix MCP configured/);
 
       const nestedDir = join(dir, 'xdg');
@@ -2825,10 +2846,13 @@ describe('install harness config', () => {
         mcp: { servers: Record<string, unknown> };
       };
       expect(nestedData.mcp.servers.github).toEqual({ type: 'local', command: ['npx'] });
-      expect(nestedData.mcp.servers.fauxnix).toEqual({
-        type: 'local',
-        command: ['fauxnix', 'mcp'],
-      });
+      const nestedServer = nestedData.mcp.servers.fauxnix as { type: string; command: string[] };
+      expect(nestedServer.type).toBe('local');
+      expect(nestedServer.command).toEqual([
+        process.execPath,
+        join(process.cwd(), 'dist', 'index.js'),
+        'mcp',
+      ]);
       expect(await doctorText(dir, env)).toMatch(/opencode\s+: fauxnix MCP configured/);
 
       writeFileSync(join(dir, 'opencode.json'), JSON.stringify({ keep: true }));
@@ -2856,7 +2880,7 @@ describe('install harness config', () => {
         mcpServers: Record<string, unknown>;
       };
       expect(kimiData.mcpServers.other).toEqual({ command: 'npx' });
-      expect(kimiData.mcpServers.fauxnix).toEqual({ command: 'fauxnix', args: ['mcp'] });
+      expectSpawnSafe(kimiData.mcpServers.fauxnix);
 
       const qwenPath = qwenConfigPath(dir, {});
       mkdirSync(join(dir, '.qwen'));
@@ -2929,7 +2953,7 @@ describe('install harness config', () => {
       expect(await doctorText(dir)).toMatch(/qwen\s+: .*launcher does not match this installation/);
       const installed = runInstall(['--qwen'], opts(dir));
       expect(installed.ok).toBe(true);
-      expect(installed.lines[0]).toContain('updated mcpServers.fauxnix launcher');
+      expect(installed.lines[0]).toContain('upgraded mcpServers.fauxnix to the absolute launcher');
 
       const data = JSON.parse(readFileSync(qwenPath, 'utf8')) as {
         theme: string;
@@ -3032,6 +3056,87 @@ describe('install harness config', () => {
       expect(text).toMatch(/claude\s+: fauxnix MCP configured/);
       expect(text).toMatch(/codex\s+: fauxnix MCP configured/);
       expect(text).toMatch(/opencode\s+: fauxnix MCP configured/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('upgrades the legacy command:"fauxnix" form to the spawn-safe launcher (#252)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fauxnix-install-'));
+    try {
+      // Kimi (representative of the mcpServers JSON family) with the
+      // pre-#252 form that direct-spawn clients cannot execute on Windows.
+      const kimiPath = kimiConfigPath(dir, {});
+      mkdirSync(join(dir, '.kimi-code'));
+      writeFileSync(
+        kimiPath,
+        JSON.stringify(
+          {
+            mcpServers: {
+              fauxnix: { command: 'fauxnix', args: ['mcp'], timeout: 30_000 },
+            },
+          },
+          null,
+          2,
+        ),
+      );
+      const kimi = runInstall(['--kimi'], opts(dir));
+      expect(kimi.ok).toBe(true);
+      expect(kimi.lines[0]).toContain('upgraded mcpServers.fauxnix to the spawn-safe');
+      const kimiServer = (JSON.parse(readFileSync(kimiPath, 'utf8')) as {
+        mcpServers: Record<string, unknown>;
+      }).mcpServers.fauxnix as { command: string; args: string[]; timeout: number };
+      expect(kimiServer.timeout).toBe(30_000); // unrelated fields preserved
+      expectSpawnSafe(kimiServer);
+
+      // Idempotent afterwards.
+      const before = readFileSync(kimiPath, 'utf8');
+      const again = runInstall(['--kimi'], opts(dir));
+      expect(again.lines[0]).toContain('already configured with an absolute launcher');
+      expect(readFileSync(kimiPath, 'utf8')).toBe(before);
+
+      // Codex TOML with the exact legacy table our installer wrote.
+      const codexPath = join(dir, '.codex', 'config.toml');
+      mkdirSync(join(dir, '.codex'));
+      writeFileSync(codexPath, '[mcp_servers.fauxnix]\ncommand = "fauxnix"\nargs = ["mcp"]\n');
+      const codex = runInstall(['--codex'], opts(dir));
+      expect(codex.ok).toBe(true);
+      expect(codex.lines[0]).toContain('upgraded mcp_servers.fauxnix to the spawn-safe');
+      const toml = readFileSync(codexPath, 'utf8');
+      expect(toml).toContain(`command = '${process.execPath}'`);
+      expect(toml).toContain(`args = ['${join(process.cwd(), 'dist', 'index.js')}', 'mcp']`);
+      expect(toml).not.toContain('"fauxnix"');
+
+      // OpenCode with the legacy array form.
+      const ocPath = join(dir, '.config', 'opencode', 'opencode.json');
+      mkdirSync(join(dir, '.config', 'opencode'), { recursive: true });
+      writeFileSync(
+        ocPath,
+        JSON.stringify({ mcp: { fauxnix: { type: 'local', command: ['fauxnix', 'mcp'] } } }),
+      );
+      const oc = runInstall(['--opencode'], opts(dir));
+      expect(oc.ok).toBe(true);
+      const ocServer = (JSON.parse(readFileSync(ocPath, 'utf8')) as {
+        mcp: Record<string, unknown>;
+      }).mcp.fauxnix as { command: string[] };
+      expect(ocServer.command).toEqual([
+        process.execPath,
+        join(process.cwd(), 'dist', 'index.js'),
+        'mcp',
+      ]);
+
+      // A hand-written launcher is left untouched.
+      const claudePath = join(dir, '.claude.json');
+      const custom = JSON.stringify(
+        { mcpServers: { fauxnix: { command: 'my-wrapper.cmd', args: ['fauxnix', 'mcp'] } } },
+        null,
+        2,
+      );
+      writeFileSync(claudePath, custom);
+      const claude = runInstall(['--claude'], opts(dir));
+      expect(claude.ok).toBe(true);
+      expect(claude.lines[0]).toContain('already configured');
+      expect(readFileSync(claudePath, 'utf8')).toBe(custom);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
