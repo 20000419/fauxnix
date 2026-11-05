@@ -246,26 +246,78 @@ const mv: Handler = (args) => {
   ].join('\n');
 };
 
+/**
+ * GNU rm's preserve-root failsafe. The last of --preserve-root /
+ * --no-preserve-root wins; preserving is the default. (`--preserve-root=all`
+ * is rejected by the spec layer: its cross-device check is not implemented.)
+ */
+function rmPreservesRoot(args: Word[]): boolean {
+  let preserve = true;
+  for (const w of args) {
+    const t = wordToString(w);
+    if (t === '--') break;
+    if (t === '--preserve-root') preserve = true;
+    else if (t === '--no-preserve-root') preserve = false;
+  }
+  return preserve;
+}
+
 const rm: Handler = (args) => {
   const { flags, longs, operandWords } = parseWords(args);
   const recurse = flags.has('r') || flags.has('R') || longs.has('--recursive');
   const force = flags.has('f') || longs.has('--force');
   const verbose = flags.has('v') || longs.has('--verbose');
+  const guardRoot = recurse && rmPreservesRoot(args);
+  const b = (v: boolean) => (v ? '$true' : '$false');
+  const danger = (operand: string) =>
+    "if (" + operand + " -eq '/') { [Console]::Error.WriteLine(\"rm: it is dangerous to operate recursively on '/'\") } " +
+    "else { [Console]::Error.WriteLine(\"rm: it is dangerous to operate recursively on '\" + " + operand + " + \"' (same as '/')\") }; " +
+    "[Console]::Error.WriteLine('rm: use --no-preserve-root to override this failsafe'); $script:fx_exit = 1; continue";
   return [
     PS_GLOB_FN,
     '$fx_files = ' + psArray(operandWords),
-    'if ($fx_files.Count -eq 0 -and ' + (force ? '$false' : '$true') + ') { [Console]::Error.WriteLine(\'rm: missing operand\'); $script:fx_exit = 1 }',
+    'if ($fx_files.Count -eq 0 -and ' + b(!force) + ") { [Console]::Error.WriteLine('rm: missing operand'); $script:fx_exit = 1 }",
+    '$fx_guardroot = ' + b(guardRoot),
     'foreach ($fx_f in $fx_files) {',
+    '  $fx_s = [string]$fx_f',
+    // GNU always refuses a last component of "." or ".."; on Windows a drive
+    // prefix ("C:..", drive-relative) is also a component boundary.
+    "  $fx_leaf = ($fx_s -replace '^[A-Za-z]:', '').TrimEnd([char[]]@('/', '\\'))",
+    "  $fx_leaf = $fx_leaf.Substring($fx_leaf.LastIndexOfAny([char[]]@('/', '\\')) + 1)",
+    "  if ($fx_leaf -eq '.' -or $fx_leaf -eq '..') { [Console]::Error.WriteLine(\"rm: refusing to remove '.' or '..' directory: skipping '\" + $fx_s + \"'\"); $script:fx_exit = 1; continue }",
+    // "/", "//", "///" all name the root; refuse before Test-Path, which may
+    // treat "//"-prefixed text as a (malformed) UNC path and report it absent.
+    "  if ($fx_guardroot -and $fx_s -match '^[/\\\\]+$') { " + danger('$fx_s') + ' }',
     '  foreach ($fx_g in (fx-glob $fx_f)) {',
     '    if (-not (Test-Path -LiteralPath $fx_g)) {',
-    '      if (' + (force ? '$false' : '$true') + ') { [Console]::Error.WriteLine("rm: cannot remove \'" + $fx_g + "\': No such file or directory"); $script:fx_exit = 1 }',
+    '      if (' + b(!force) + ') { [Console]::Error.WriteLine("rm: cannot remove \'" + $fx_g + "\': No such file or directory"); $script:fx_exit = 1 }',
     '      continue',
     '    }',
     '    $fx_isdir = (Test-Path -LiteralPath $fx_g -PathType Container)',
-    '    if ($fx_isdir -and ' + (recurse ? '$false' : '$true') + ') { [Console]::Error.WriteLine("rm: cannot remove \'" + $fx_g + "\': Is a directory"); $script:fx_exit = 1; continue }',
+    '    if ($fx_isdir -and ' + b(!recurse) + ') { [Console]::Error.WriteLine("rm: cannot remove \'" + $fx_g + "\': Is a directory"); $script:fx_exit = 1; continue }',
+    '    if ($fx_isdir -and $fx_guardroot) {',
+    // Fail closed: if the path cannot be canonicalized, do not delete it.
+    '      $fx_rp = $null',
+    '      try { $fx_rp = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $fx_g -ErrorAction Stop).ProviderPath) } catch {}',
+    '      if ($null -eq $fx_rp) { [Console]::Error.WriteLine("rm: cannot remove \'" + $fx_g + "\': cannot resolve path for the --preserve-root check"); $script:fx_exit = 1; continue }',
+    '      $fx_root = [IO.Path]::GetPathRoot($fx_rp)',
+    "      if ([string]::IsNullOrEmpty($fx_root) -or $fx_rp.TrimEnd([char[]]@('/', '\\')) -ieq ([string]$fx_root).TrimEnd([char[]]@('/', '\\'))) { " + danger('$fx_g') + ' }',
+    '    }',
+    // A directory symlink/junction is removed as a link; never traverse into
+    // its target (Windows PowerShell 5.1 Remove-Item -Recurse can follow it).
+    '    if ($fx_isdir -and ' + b(recurse) + ') {',
+    '      $fx_item = Get-Item -LiteralPath $fx_g -Force -ErrorAction SilentlyContinue',
+    '      if ($null -ne $fx_item -and ($fx_item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {',
+    '        try {',
+    '          [IO.Directory]::Delete($fx_item.FullName, $false)',
+    '          if (' + b(verbose) + ') { [Console]::Error.WriteLine("removed \'" + $fx_g + "\'") }',
+    '        } catch { [Console]::Error.WriteLine("rm: cannot remove \'" + $fx_g + "\': Permission denied"); $script:fx_exit = 1 }',
+    '        continue',
+    '      }',
+    '    }',
     '    try {',
-    '      Remove-Item -LiteralPath $fx_g -Recurse:' + (recurse ? '$true' : '$false') + ' -Force -ErrorAction Stop',
-    '      if (' + (verbose ? '$true' : '$false') + ') { [Console]::Error.WriteLine("removed \'" + $fx_g + "\'") }',
+    '      Remove-Item -LiteralPath $fx_g -Recurse:' + b(recurse) + ' -Force -ErrorAction Stop',
+    '      if (' + b(verbose) + ') { [Console]::Error.WriteLine("removed \'" + $fx_g + "\'") }',
     '    } catch { [Console]::Error.WriteLine("rm: cannot remove \'" + $fx_g + "\': Permission denied"); $script:fx_exit = 1 }',
     '  }',
     '}',
@@ -1149,6 +1201,8 @@ export const specs: CommandSpec[] = [
       opt('R', '--recursive'),
       opt('f', '--force'),
       opt('v', '--verbose'),
+      opt(undefined, '--preserve-root'),
+      opt(undefined, '--no-preserve-root'),
       opt('i', '--interactive', 'unsupported', INTERACTIVE),
     ],
     rm,
