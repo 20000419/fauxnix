@@ -246,6 +246,47 @@ const mv: Handler = (args) => {
   ].join('\n');
 };
 
+/**
+ * PS helper: map a caught ErrorRecord/exception to the GNU strerror text that
+ * coreutils would print. The whole InnerException chain is inspected (an
+ * outer generic IOException may wrap the specific cause); only Win32-facility
+ * HResults (0x8007xxxx) are decoded. Unknown failures return the caller's
+ * deterministic fallback, never the localized .NET message.
+ */
+export const PS_IOERR_FN = [
+  'function fx-ioerr1($x) {',
+  "  if ($x -is [UnauthorizedAccessException] -or $x -is [Security.SecurityException]) { return 'Permission denied' }",
+  "  if ($x -is [IO.PathTooLongException]) { return 'File name too long' }",
+  "  if ($x -is [IO.DirectoryNotFoundException] -or $x -is [IO.FileNotFoundException] -or $x -is [IO.DriveNotFoundException] -or $x -is [System.Management.Automation.ItemNotFoundException] -or $x -is [System.Management.Automation.DriveNotFoundException]) { return 'No such file or directory' }",
+  '  if ((($x.HResult -shr 16) -band 0xFFFF) -ne 0x8007) { return $null }',
+  '  switch ($x.HResult -band 0xFFFF) {',
+  "    { $_ -in 2, 3 } { return 'No such file or directory' }",
+  "    5 { return 'Permission denied' }",
+  "    19 { return 'Read-only file system' }",
+  "    { $_ -in 32, 33 } { return 'Device or resource busy' }",
+  "    { $_ -in 80, 183 } { return 'File exists' }",
+  "    112 { return 'No space left on device' }",
+  "    123 { return 'Invalid argument' }",
+  "    145 { return 'Directory not empty' }",
+  "    206 { return 'File name too long' }",
+  "    267 { return 'Not a directory' }",
+  '  }',
+  '  return $null',
+  '}',
+  'function fx-ioerr($e, [string]$fallback) {',
+  '  $x = $e',
+  '  if ($x -is [System.Management.Automation.ErrorRecord]) { $x = $x.Exception }',
+  '  $fx_depth = 0',
+  '  while ($null -ne $x -and $fx_depth -lt 16) {',
+  '    $fx_r = fx-ioerr1 $x',
+  '    if ($null -ne $fx_r) { return $fx_r }',
+  '    $x = $x.InnerException',
+  '    $fx_depth++',
+  '  }',
+  '  return $fallback',
+  '}',
+].join('\n');
+
 const rm: Handler = (args) => {
   const { flags, longs, operandWords } = parseWords(args);
   const recurse = flags.has('r') || flags.has('R') || longs.has('--recursive');
@@ -253,6 +294,7 @@ const rm: Handler = (args) => {
   const verbose = flags.has('v') || longs.has('--verbose');
   return [
     PS_GLOB_FN,
+    PS_IOERR_FN,
     '$fx_files = ' + psArray(operandWords),
     'if ($fx_files.Count -eq 0 -and ' + (force ? '$false' : '$true') + ') { [Console]::Error.WriteLine(\'rm: missing operand\'); $script:fx_exit = 1 }',
     'foreach ($fx_f in $fx_files) {',
@@ -266,7 +308,7 @@ const rm: Handler = (args) => {
     '    try {',
     '      Remove-Item -LiteralPath $fx_g -Recurse:' + (recurse ? '$true' : '$false') + ' -Force -ErrorAction Stop',
     '      if (' + (verbose ? '$true' : '$false') + ') { [Console]::Error.WriteLine("removed \'" + $fx_g + "\'") }',
-    '    } catch { [Console]::Error.WriteLine("rm: cannot remove \'" + $fx_g + "\': Permission denied"); $script:fx_exit = 1 }',
+    '    } catch { [Console]::Error.WriteLine("rm: cannot remove \'" + $fx_g + "\': " + (fx-ioerr $_ \'Permission denied\')); $script:fx_exit = 1 }',
     '  }',
     '}',
   ].join('\n');
@@ -313,15 +355,16 @@ const touch: Handler = (args) => {
   const { flags, longs, operandWords } = parseWords(args);
   const noCreate = flags.has('c') || longs.has('--no-create');
   return [
+    PS_IOERR_FN,
     '$fx_files = ' + psArray(operandWords),
     "if ($fx_files.Count -eq 0) { [Console]::Error.WriteLine('touch: missing file operand'); $script:fx_exit = 1 }",
     'foreach ($fx_f in $fx_files) {',
     '  if (Test-Path -LiteralPath $fx_f) {',
-    '    try { (Get-Item -LiteralPath $fx_f).LastWriteTime = Get-Date } catch { [Console]::Error.WriteLine("touch: cannot touch \'" + $fx_f + "\': Permission denied"); $script:fx_exit = 1 }',
+    '    try { (Get-Item -LiteralPath $fx_f -Force -ErrorAction Stop).LastWriteTime = Get-Date } catch { [Console]::Error.WriteLine("touch: cannot touch \'" + $fx_f + "\': " + (fx-ioerr $_ \'Permission denied\')); $script:fx_exit = 1 }',
     '  } else {',
     '    if (' + (noCreate ? '$true' : '$false') + ') { continue }',
     '    try { New-Item -ItemType File -Path $fx_f -ErrorAction Stop | Out-Null }',
-    '    catch { [Console]::Error.WriteLine("touch: cannot touch \'" + $fx_f + "\': No such file or directory"); $script:fx_exit = 1 }',
+    '    catch { [Console]::Error.WriteLine("touch: cannot touch \'" + $fx_f + "\': " + (fx-ioerr $_ \'No such file or directory\')); $script:fx_exit = 1 }',
     '  }',
     '}',
   ].join('\n');
