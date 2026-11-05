@@ -29,9 +29,10 @@ describe('archive option parsing matches the declared supported grammar', () => 
   it('keeps unzip flag-looking archive names after the option terminator', () => {
     const body = bodyOf('unzip -- -log.zip');
     expect(body).toContain("$fx_arc = '-log.zip'");
-    expect(body).toContain('Expand-Archive');
-    expect(body).toContain('-Force:$false');
-    expect(body).not.toContain('[IO.Compression.ZipFile]::OpenRead');
+    // extraction (not -l listing), without -o: existing files are not overwritten (#257)
+    expect(body).toContain('[IO.Compression.ZipFileExtensions]::ExtractToFile(');
+    expect(body).toContain('if ((Test-Path -LiteralPath $fx_t) -and $true)');
+    expect(body).not.toContain('Length      Date    Time    Name');
   });
 
   it('keeps zip flag-looking archive and input names after the option terminator', () => {
