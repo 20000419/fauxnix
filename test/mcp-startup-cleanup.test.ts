@@ -119,4 +119,26 @@ describe('MCP startup failure cleanup', () => {
     expect(session.dispose).toHaveBeenCalledOnce();
     expectListenersRemoved();
   });
+
+  it('disposes when SIGTERM arrives during the cold-start prewarm (#256)', async () => {
+    let finishPrewarm!: () => void;
+    session.prewarm.mockReturnValueOnce(new Promise<void>((resolve) => { finishPrewarm = resolve; }));
+    const { McpServer } = await import('@modelcontextprotocol/sdk/server/mcp.js');
+    const close = vi.spyOn(McpServer.prototype, 'close');
+    const tool = vi.spyOn(McpServer.prototype, 'tool');
+    const { startMcpServer } = await import('../src/mcp.js');
+
+    const started = startMcpServer();
+    await vi.waitFor(() => expect(session.prewarm).toHaveBeenCalledOnce());
+    const ours = process.listeners('SIGTERM').filter((l) => !signalListeners[1].includes(l));
+    expect(ours).toHaveLength(1);
+    ours[0]('SIGTERM');
+    finishPrewarm();
+    await started;
+    expect(session.dispose).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+    expect(tool).not.toHaveBeenCalled();
+    expect(input.listenerCount('data')).toBe(0);
+    expectListenersRemoved();
+  });
 });

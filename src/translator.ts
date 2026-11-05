@@ -2341,6 +2341,14 @@ function fx-capture-bytes($stream) {
   if ($stream -is [System.IO.MemoryStream]) { return $stream.ToArray() }
   return (New-Object byte[] 0)
 }
+# Captured at startup, from the script's own location (never from the
+# user-mutable environment).
+$fx_sd = $null
+if ($PSCommandPath) {
+  $fx_sd = [IO.Path]::GetDirectoryName($PSCommandPath)
+  if ([IO.Path]::GetFileName($fx_sd) -cnotmatch '^fauxnix-[0-9]+-[0-9a-f]{24}$') { $fx_sd = $null }
+}
+Set-Variable -Name fx_hostStateDir -Value $fx_sd -Option Constant
 while ($true) {
   $fx_line = $fx_reader.ReadLine()
   if ($null -eq $fx_line) { break }
@@ -2453,4 +2461,7 @@ while ($true) {
     $fx_proto.WriteLine($fx_json)
   }
 }
+# stdin EOF: the owner is gone or disposed us. Remove our private state
+# directory (#256) - only if it is a genuine per-session directory.
+if ($fx_hostStateDir) { Remove-Item -LiteralPath $fx_hostStateDir -Recurse -Force -ErrorAction SilentlyContinue }
 `.trim();

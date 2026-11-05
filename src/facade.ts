@@ -1,7 +1,7 @@
 import { appendFileSync, writeFileSync } from 'node:fs';
 import { parseCommand } from './parser.js';
 import { translateCommandList, EXECUTE_TRANSLATION } from './translator.js';
-import { FauxnixSession } from './executor.js';
+import { FauxnixSession, installSessionExitCleanup } from './executor.js';
 import { packageVersion } from './version.js';
 
 /**
@@ -210,6 +210,7 @@ function parseDashC(argv: string[]): { script?: string; positionals: string[] } 
 
 export async function runFacade(argv: string[]): Promise<number> {
   trace('argv', argv.join(' '));
+  installSessionExitCleanup();
   const session = new FauxnixSession();
   try {
     if (argv[0] === '--version') {
