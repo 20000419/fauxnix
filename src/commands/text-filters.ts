@@ -706,8 +706,13 @@ function sedReplToNet(repl: string, delim: string): string {
       else if (n === 'n') out += '\n';
       else if (n === 't') out += '\t';
       else if (n === '&') out += '&';
-      else if (/[1-9]/.test(n)) out += '$' + n;
-      else out += '\\' + n;
+      else if (n === '0') out += '$&';
+      else if (/[1-9]/.test(n)) {
+        // \10 is group 1 and a literal 0. $10 would be group 10.
+        const next = repl[i + 2];
+        if (next !== undefined && /[0-9]/.test(next)) out += '${' + n + '}';
+        else out += '$' + n;
+      } else out += '\\' + n;
       i += 2;
       continue;
     }
@@ -1750,7 +1755,53 @@ interface AwkFmtKind {
   conv: string;
   align: string;
   spec: string;
+  flags: string;
+  width?: string;
+  prec?: string;
 }
+
+/** d/i/o/x/X. Width counts the sign, so %05d of -42 is -0042, not .NET D5's -00042. */
+const PS_AWK_IFMT_FN = [
+  'function fx-awk-ifmt($v, $conv, $flags, $width, $prec) {',
+  '  $n = [long][math]::Truncate((fx-num $v))',
+  "  $prefix = ''",
+  "  $digits = ''",
+  "  if ($conv -ceq 'd') {",
+  '    if ($n -lt 0) {',
+  "      $prefix = '-'",
+  "      if ($n -eq [long]::MinValue) { $digits = '9223372036854775808' }",
+  '      else { $digits = [string]([math]::Abs([long]$n)) }',
+  '    } else {',
+  "      if ($flags.Contains('+')) { $prefix = '+' }",
+  "      elseif ($flags.Contains(' ')) { $prefix = ' ' }",
+  '      $digits = [string]$n',
+  '    }',
+  "  } elseif ($conv -ceq 'o') {",
+  '    $digits = [Convert]::ToString([long]$n, 8)',
+  "  } elseif ($conv -ceq 'X') {",
+  '    $digits = [Convert]::ToString([long]$n, 16).ToUpperInvariant()',
+  '  } else {',
+  '    $digits = [Convert]::ToString([long]$n, 16)',
+  '  }',
+  '  if ($null -ne $prec) {',
+  '    $p = [int]$prec',
+  "    if ($p -eq 0 -and $digits -eq '0') { $digits = '' }",
+  '    elseif ($digits.Length -lt $p) { $digits = $digits.PadLeft($p, [char]48) }',
+  '  }',
+  '  $body = $prefix + $digits',
+  '  if ($null -eq $width) { return $body }',
+  '  $w = [int]$width',
+  '  if ($body.Length -ge $w) { return $body }',
+  "  if ($flags.Contains('-')) { return $body.PadRight($w) }",
+  "  if ($flags.Contains('0') -and $null -eq $prec) {",
+  '    $digits = $digits.PadLeft($w - $prefix.Length, [char]48)',
+  '    return $prefix + $digits',
+  '  }',
+  '  return $body.PadLeft($w)',
+  '}',
+].join('\n');
+
+const AWK_INT_CONVS = new Set(['d', 'o', 'x', 'X']);
 
 function awkFmtToPs(fmt: string): { ps: string; kinds: AwkFmtKind[] } {
   const chunks: string[] = [];
@@ -1767,25 +1818,27 @@ function awkFmtToPs(fmt: string): { ps: string; kinds: AwkFmtKind[] } {
   while (i < fmt.length) {
     const c = fmt[i];
     if (c === '%') {
-      // %[-][width][.prec]conv — conv in s c d f
-      const m = fmt.slice(i).match(/^%([-+0 ]*)(\d+)?(?:\.(\d+))?([sdfc])/);
+      // %[-+0 ][width][.prec]conv — s/c/f stay on -f; d/i/o/x/X go through fx-awk-ifmt
+      const m = fmt.slice(i).match(/^%([-+0 ]*)(\d+)?(?:\.(\d+))?([sdfcioxX])/);
       if (m) {
         const flags = m[1];
         const width = m[2];
         const prec = m[3];
-        const conv = m[4];
+        let conv = m[4];
+        if (conv === 'i') conv = 'd';
         flushLit();
         const idx = kinds.length;
         let spec = '';
+        let align = '';
+        // Integer conversions are fully formatted by fx-awk-ifmt, then spliced in.
         if (conv === 'f') {
           spec = 'F' + (prec === undefined ? '6' : prec);
-        } else if (conv === 'd' && prec !== undefined) {
-          spec = 'D' + prec; // zero-pad, close to awk %.Nd
         }
-        const align =
-          width === undefined ? '' : ',' + (flags.includes('-') ? '-' : '') + width;
+        if (!AWK_INT_CONVS.has(conv) && width !== undefined) {
+          align = ',' + (flags.includes('-') ? '-' : '') + width;
+        }
         chunks.push("'{" + idx + align + (spec === '' ? '' : ':' + spec) + "}'");
-        kinds.push({ conv, align, spec });
+        kinds.push({ conv, align, spec, flags, width, prec });
         i += m[0].length;
         continue;
       }
@@ -1822,6 +1875,20 @@ function awkFmtToPs(fmt: string): { ps: string; kinds: AwkFmtKind[] } {
   flushLit();
   const ps = chunks.length === 0 ? "''" : '(' + chunks.join(' + ') + ')';
   return { ps, kinds };
+}
+
+function awkUsesIntPrintf(prog: AwkProgram): boolean {
+  const stmts = [
+    ...prog.begin,
+    ...prog.items.flatMap((item) => item.act ?? []),
+    ...prog.end,
+  ];
+  for (const st of stmts) {
+    if (st.k === 'printf' && awkFmtToPs(st.fmt).kinds.some((k) => AWK_INT_CONVS.has(k.conv))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 const awk: Handler = (args, ctx) => {
@@ -2020,7 +2087,23 @@ const awk: Handler = (args, ctx) => {
         const argExprs = f.kinds.map((kind, idx) => {
           const arg = st.args[idx];
           const raw = gen(arg ?? { k: 'num', v: 0 }).ps;
-          if (kind.conv === 'd') return '([string][math]::Truncate((fx-num ' + raw + ')))';
+          if (AWK_INT_CONVS.has(kind.conv)) {
+            const w = kind.width === undefined ? '$null' : kind.width;
+            const p = kind.prec === undefined ? '$null' : kind.prec;
+            return (
+              '(fx-awk-ifmt ' +
+              raw +
+              ' ' +
+              psStr(kind.conv) +
+              ' ' +
+              psStr(kind.flags) +
+              ' ' +
+              w +
+              ' ' +
+              p +
+              ')'
+            );
+          }
           if (kind.conv === 'f') return '(fx-num ' + raw + ')';
           if (kind.conv === 'c') {
             // awk: numeric arg → char code, string arg → first char
@@ -2138,6 +2221,8 @@ const awk: Handler = (args, ctx) => {
     "  return ''",
     '}',
   );
+
+  if (awkUsesIntPrintf(prog)) lines.push(PS_AWK_IFMT_FN);
 
   lines.push(...hoistedRegex);
 
