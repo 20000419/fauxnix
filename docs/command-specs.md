@@ -53,6 +53,8 @@ Effects: `delete`
 | `-R`, `--recursive` | flag | implemented |
 | `-f`, `--force` | flag | implemented |
 | `-v`, `--verbose` | flag | implemented |
+| `--preserve-root` | flag | implemented |
+| `--no-preserve-root` | flag | implemented |
 | `-i`, `--interactive` | flag | unsupported (interactive prompt) |
 
 ## `touch`
