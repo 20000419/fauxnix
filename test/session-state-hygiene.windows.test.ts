@@ -15,7 +15,18 @@ const runnable = process.platform === 'win32' && !selection.error &&
 
 describe.skipIf(!runnable)('session temp-state hygiene on Windows (#256)', { timeout: 60000 }, () => {
   const root = mkdtempSync(join(tmpdir(), 'fauxnix-hygiene-'));
-  afterAll(() => rmSync(root, { recursive: true, force: true }));
+  // Best-effort with retries: AV scanners on Windows intermittently hold
+  // fresh temp files (same EPERM family as #248) — never fail the suite for it.
+  afterAll(async () => {
+    for (let i = 0; i < 3; i++) {
+      try {
+        rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+        return;
+      } catch {
+        await new Promise((r) => setTimeout(r, 150));
+      }
+    }
+  });
 
   const runHostToEof = (dir: string) => {
     mkdirSync(dir);
