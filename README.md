@@ -15,10 +15,10 @@ back output that looks like GNU/Linux: `ls -l` columns, bash-style error message
 codes, UTF-8/GBK handled automatically.
 
 One-command install for **Claude Code · Codex · OpenCode · Kimi Code · Qwen Code**, plus any MCP
-client. **109 translated commands · 1,044 automated tests · 270-case Git Bash differential
+client. **109 translated commands · 1,469 automated tests · 270-case Git Bash differential
 corpus plus 41 supplementary checks · zero LLM calls at runtime.**
 
-This checkout prepares **v2.0.0**. See [migration and release notes](docs/releases/v2.0.0.md)
+This checkout is **v2.1.1**. See [migration and release notes](docs/releases/v2.0.0.md)
 for the Node.js requirement, changed file-operation contracts and verification limits.
 The npm badge and `@latest` examples show the published version until publication completes.
 

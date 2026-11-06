@@ -24,6 +24,11 @@ await build({
   target: 'node22',
   outfile: 'dist/facade-sea.cjs',
   banner: { js: banner },
+  // The banner globals above are the real version source inside the SEA
+  // bundle; define import.meta.url so the disk fallback paths never reach
+  // esbuild's `empty-import-meta` warning (a missing banner then fails
+  // loudly on readFileSync instead of an opaque URL TypeError). (#260)
+  define: { 'import.meta.url': '"file://fauxnix-sea/"' },
   sourcemap: false,
   logLevel: 'warning',
 });

@@ -47,6 +47,9 @@ describe('release-check', () => {
       ),
     );
     writeFileSync(join(fixture, 'CHANGELOG.md'), '# Changelog\n\n## v1.2.3 — 2026-09-02\n');
+    // #260: the checker validates the README version sentence (the test-count
+    // gate skips itself: fixtures carry no node_modules).
+    writeFileSync(join(fixture, 'README.md'), 'fixture\n\nThis checkout is **v1.2.3**.\n');
     git(['init', '--quiet']);
     git(['config', 'user.name', 'Release Check']);
     git(['config', 'user.email', 'release-check@example.invalid']);

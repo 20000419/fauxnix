@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -76,6 +76,47 @@ export function checkRelease(root = packageRoot, { requireTag = false } = {}) {
     }
   } catch (error) {
     problems.push(`CHANGELOG.md could not be read: ${error.message}`);
+  }
+
+  // README drift (#260): the version sentence and the advertised test count
+  // must match reality at release time.
+  try {
+    const readme = readFileSync(resolve(root, 'README.md'), 'utf8');
+    const versionSentence = readme.match(/This checkout (?:is|prepares) \*\*v([^\s*]+)\*\*/);
+    if (!versionSentence) {
+      problems.push('README.md must state "This checkout is **vX.Y.Z**" for the current release');
+    } else if (version && versionSentence[1] !== version) {
+      problems.push(
+        `README.md prepares v${versionSentence[1]}, but package.json is ${version}`,
+      );
+    }
+    // The test-count comparison needs the dev dependency; fixture trees
+    // without it only validate the version sentence.
+    if (existsSync(resolve(root, 'node_modules/vitest/vitest.mjs'))) {
+      const countSentence = readme.match(/\*\*109 translated commands[^\d]*([\d,]+) automated tests/);
+      if (!countSentence) {
+        problems.push('README.md must advertise "109 translated commands · N automated tests"');
+      } else {
+      const listed = spawnSync(
+        process.execPath,
+        ['node_modules/vitest/vitest.mjs', 'list', '--disable-console-intercept'],
+        { cwd: root, encoding: 'utf8', windowsHide: true },
+      );
+      if (listed.error || listed.status !== 0) {
+        problems.push(`could not count tests via vitest list: ${listed.error?.message ?? listed.stderr}`);
+      } else {
+        const actual = listed.stdout.trim().split(/\r?\n/).filter(Boolean).length;
+        const advertised = Number(countSentence[1].replace(/,/g, ''));
+        if (advertised !== actual) {
+          problems.push(
+            `README.md advertises ${advertised} automated tests, vitest collects ${actual}`,
+          );
+        }
+      }
+      }
+    }
+  } catch (error) {
+    problems.push(`README.md could not be read: ${error.message}`);
   }
 
   if (requireTag && typeof version === 'string' && semverPattern.test(version)) {

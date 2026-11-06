@@ -38,6 +38,10 @@ const { pipeline } = require('node:stream/promises');
   if (leased) {
     process.stdin.on('end', stopDecoder);
     process.stdin.on('error', stopDecoder);
+    // #240 hardening: 'close' fires when the stream is torn down without a
+    // clean 'end' - exactly the intermittent CI-hang shape. Listening for
+    // both costs nothing and stops the decoder either way.
+    process.stdin.on('close', stopDecoder);
     process.stdin.resume();
   }
   const parent = Number(process.argv[3]);
