@@ -470,6 +470,7 @@ const unzip: Handler = (args) => {
   const arc = operandExpr(rest[0]);
   const dirExpr = dir ? operandExpr(dir) : "'.'";
   return [
+    'Add-Type -AssemblyName System.IO.Compression',
     'Add-Type -AssemblyName System.IO.Compression.FileSystem',
     '$fx_arc = ' + arc,
     'if (-not (Test-Path -LiteralPath $fx_arc -PathType Leaf)) {',
@@ -498,10 +499,107 @@ const unzip: Handler = (args) => {
           '  } finally { $fx_z.Dispose() }',
         ].join('\n')
       : [
+          // Extract entry by entry so every target is proven to stay inside
+          // the destination (zip-slip, #257) regardless of which Archive
+          // module / .NET version the host has. Nothing is written unless
+          // every entry passes validation.
+          // Known limitations: names without the UTF-8 flag are decoded by
+          // .NET (OEM code page on Windows PowerShell 5.1, UTF-8 on pwsh 7);
+          // targets beyond MAX_PATH fail per entry on 5.1 unless long paths
+          // are enabled. Duplicate/case-colliding names: first wins without
+          // -o (warning), last wins with -o.
           '  $fx_dir = ' + dirExpr,
+          '  $fx_z = $null',
           '  try {',
-          '    Expand-Archive -LiteralPath $fx_arc -DestinationPath $fx_dir -Force:' + (over ? '$true' : '$false') + ' -ErrorAction Stop',
-          "  } catch { [Console]::Error.WriteLine('unzip: fauxnix: ' + $_.Exception.Message + ' (use -o to overwrite)'); $script:fx_exit = 1 }",
+          '    $fx_root = [IO.Path]::GetFullPath($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath([string]$fx_dir))',
+          // root with exactly one trailing separator ("C:\" stays "C:\")
+          "    $fx_rootT = $fx_root.TrimEnd([char[]]@('\\', '/')) + [IO.Path]::DirectorySeparatorChar",
+          '    $fx_z = [IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $fx_arc).ProviderPath)',
+          '    $fx_bad = @()',
+          '    $fx_plan = @()',
+          '    foreach ($fx_e in $fx_z.Entries) {',
+          '      $fx_n = [string]$fx_e.FullName',
+          '      $fx_t = $null',
+          "      $fx_why = 'outside destination'",
+          "      $fx_dev = @($fx_n -split '[\\\\/]' | Where-Object { (($_ -split '\\.')[0]).TrimEnd(' ') -match '^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$' })",
+          // rooted, drive-qualified (or NTFS stream) names are never relative
+          // Directory entries end in a separator; some writers instead set the
+          // MS-DOS directory attribute (0x10) on a zero-length entry.
+          "      $fx_isDir = $fx_n.EndsWith('/') -or $fx_n.EndsWith('\\') -or ($fx_e.Length -eq 0 -and ($fx_e.ExternalAttributes -band 0x10) -ne 0)",
+          "      if ($fx_n -match '^[\\\\/]') { $fx_why = 'absolute path' }",
+          "      elseif ($fx_n.IndexOf(':') -ge 0) { $fx_why = 'drive or stream name' }",
+          "      elseif ($fx_dev.Count -gt 0) { $fx_why = 'reserved device name' }",
+          '      else {',
+          "        try { $fx_t = [IO.Path]::GetFullPath([IO.Path]::Combine($fx_rootT, $fx_n)) } catch { $fx_why = 'invalid name' }",
+          // "./" or "a/.." resolve to the root itself: inside, not an escape
+          "        if ($null -ne $fx_t) {",
+          "          $fx_tT = $fx_t.TrimEnd([char[]]@('\\', '/')) + [IO.Path]::DirectorySeparatorChar",
+          "          if (-not $fx_tT.StartsWith($fx_rootT, [StringComparison]::OrdinalIgnoreCase)) { $fx_t = $null }",
+          // only a directory entry may name the destination itself
+          "          elseif ($fx_tT.Length -eq $fx_rootT.Length -and -not $fx_isDir) { $fx_t = $null; $fx_why = 'names the destination itself' }",
+          "        }",
+          '      }',
+          '      if ($null -eq $fx_t) { $fx_bad += ,@($fx_n, $fx_why) } else { $fx_plan += ,@($fx_e, $fx_t, $fx_isDir) }',
+          '    }',
+          '    if ($fx_bad.Count -gt 0) {',
+          "      foreach ($fx_b in $fx_bad) { [Console]::Error.WriteLine(\"unzip: fauxnix: refusing unsafe entry '\" + $fx_b[0] + \"' (\" + $fx_b[1] + \")\") }",
+          '      $script:fx_exit = 1',
+          '    } else {',
+          // targets written by this run (case-insensitive, like NTFS)
+          '      $fx_done = @{}',
+          '      foreach ($fx_p in $fx_plan) {',
+          '        $fx_e = $fx_p[0]',
+          '        $fx_t = $fx_p[1]',
+          '        try {',
+          // An existing symlink/junction below the root (or at the target)
+          // would redirect the write outside the destination.
+          '          $fx_linked = $false',
+          "          $fx_cur = $fx_t.TrimEnd([char[]]@('\\', '/'))",
+          '          while ($null -ne $fx_cur -and $fx_cur.Length -ge $fx_rootT.Length) {',
+          '            $fx_attr = $null',
+          '            try { $fx_attr = [IO.File]::GetAttributes($fx_cur) } catch {}',
+          '            if ($null -ne $fx_attr -and ($fx_attr -band [IO.FileAttributes]::ReparsePoint)) { $fx_linked = $true; break }',
+          '            $fx_cur = [IO.Path]::GetDirectoryName($fx_cur)',
+          '          }',
+          '          if ($fx_linked) {',
+          "            [Console]::Error.WriteLine(\"unzip: fauxnix: refusing entry '\" + $fx_e.FullName + \"' (path goes through a symbolic link or junction)\")",
+          '            $script:fx_exit = 1',
+          '            continue',
+          '          }',
+          '          if ($fx_p[2]) {',
+          '            [void][IO.Directory]::CreateDirectory($fx_t)',
+          '            continue',
+          '          }',
+          // Duplicate or case-colliding names inside the archive: without -o
+          // the first one wins (warning only, like declining unzip's
+          // overwrite prompt); with -o the later one replaces it.
+          (over ? "          if ($false) {" : "          if ($fx_done.ContainsKey($fx_t)) {"),
+          "            [Console]::Error.WriteLine('unzip: fauxnix: skipping ' + $fx_e.FullName + ': same name as an entry already extracted (' + $fx_done[$fx_t] + ')')",
+          '            continue',
+          '          }',
+          "          if (Test-Path -LiteralPath $fx_t -PathType Container) {",
+          "            [Console]::Error.WriteLine('unzip: fauxnix: cannot extract ' + $fx_e.FullName + ': a directory with that name exists')",
+          '            $script:fx_exit = 1',
+          '            continue',
+          '          }',
+          '          if ((Test-Path -LiteralPath $fx_t) -and ' + (over ? '$false' : '$true') + ') {',
+          "            [Console]::Error.WriteLine('unzip: fauxnix: ' + $fx_e.FullName + ' already exists (use -o to overwrite)')",
+          '            $script:fx_exit = 1',
+          '            continue',
+          '          }',
+          '          [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($fx_t))',
+          ...(over
+            ? [
+                // -o: a ReadOnly file would make ExtractToFile throw
+                "          if ([IO.File]::Exists($fx_t)) { $fx_a = [IO.File]::GetAttributes($fx_t); if ($fx_a -band [IO.FileAttributes]::ReadOnly) { [IO.File]::SetAttributes($fx_t, $fx_a -band (-bnot [IO.FileAttributes]::ReadOnly)) } }",
+              ]
+            : []),
+          '          [IO.Compression.ZipFileExtensions]::ExtractToFile($fx_e, $fx_t, $true)',
+          '          $fx_done[$fx_t] = $fx_e.FullName',
+          "        } catch { [Console]::Error.WriteLine('unzip: fauxnix: cannot extract ' + $fx_e.FullName + ': ' + $_.Exception.Message); $script:fx_exit = 1 }",
+          '      }',
+          '    }',
+          "  } catch { [Console]::Error.WriteLine('unzip: fauxnix: ' + $_.Exception.Message); $script:fx_exit = 1 } finally { if ($null -ne $fx_z) { $fx_z.Dispose() } }",
         ].join('\n'),
     '}',
   ].join('\n');

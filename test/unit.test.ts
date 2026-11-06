@@ -2035,7 +2035,7 @@ describe('CommandSpec archive leftovers (#143)', () => {
 
   it('unzip -l/-o/-d still translate; unknown flags fail', () => {
     expect(bodyOf('unzip -l a.zip')).toContain('OpenRead');
-    expect(bodyOf('unzip -o a.zip')).toContain('-Force:$true');
+    expect(bodyOf('unzip -o a.zip')).toContain('if ((Test-Path -LiteralPath $fx_t) -and $false)');
     expect(bodyOf('unzip -d out a.zip')).toContain('$fx_dir');
     expect(bodyOf('unzip -Z a.zip')).toContain("invalid option -- ''Z''");
   });
