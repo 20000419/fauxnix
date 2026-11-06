@@ -309,7 +309,11 @@ export function varExpr(
   }
   switch (name) {
     case 'HOME':
-      return '$HOME';
+      // Session-scoped like every other variable (#255): assignments write
+      // $env:HOME + SETVALS, `env -u`/unset track UNSETVARS — fx-scalar0 is
+      // the one resolver that honors all three. `$HOME` (the PowerShell
+      // automatic) would always answer with the real profile.
+      return "(fx-scalar0 'HOME')";
     case 'PWD':
       return 'fx-posix([string]$PWD.Path)';
     case 'USER':
@@ -540,6 +544,61 @@ export function operandExpr(w: Word): string {
   const lit = literalOfWord(w);
   if (lit !== null) return pathExpr(normalizeLiteralPath(lit));
   return exprOfWord(w);
+}
+
+/**
+ * Wildcard-escape characters that must reach `Get-Item -Path` literally
+ * (PowerShell's escape is a backtick before `*`, `?` or `[`).
+ */
+function wcEscapeLiteral(s: string): string {
+  return s.replace(/[*?[]/g, '`$&');
+}
+
+/**
+ * Operand expression for handlers whose runtime glob step is `fx-glob`
+ * (#255 quote-aware globbing): bash globs a word only where glob characters
+ * sat UNQUOTED — quoted parts and backslash-escaped characters are literal
+ * even when a variable expands to something containing metas, while unquoted
+ * expansions stay glob-active. `fx-glob` unescapes the pattern when no file
+ * matches, so unmatched literals keep their shell spelling.
+ */
+export function globOperandExpr(w: Word): string {
+  const lit = literalOfWord(w);
+  // Meta-free literal words keep the ordinary operand path (incl. /tmp, /d/
+  // normalization). Anything containing glob characters goes through the
+  // quoting-aware walk: only UNQUOTED metas stay glob-active.
+  if (lit !== null && !/[*?[]/.test(lit)) return pathExpr(normalizeLiteralPath(lit));
+  const chunks: string[] = [];
+  const mergeable = (s: string | undefined): s is string =>
+    typeof s === 'string' && s.startsWith("'") && s.endsWith("'") && s.length >= 2;
+  const pushChunk = (s: string) => {
+    const prev = chunks.length ? chunks[chunks.length - 1] : undefined;
+    if (mergeable(prev) && mergeable(s)) {
+      // fold adjacent string literals: ('a' + '*' + 'b') → ('a*b'); psStr has
+      // already doubled any embedded quotes, so plain concatenation is safe.
+      chunks[chunks.length - 1] = "'" + prev.slice(1, -1) + s.slice(1, -1) + "'";
+      return;
+    }
+    chunks.push(s);
+  };
+  const walk = (parts: WordPart[], quoted: boolean): void => {
+    for (const p of parts) {
+      if (p.kind === 'DoubleQuoted') {
+        walk(p.parts, true);
+        continue;
+      }
+      if (p.kind === 'Text' || p.kind === 'SingleQuoted') {
+        const literal = quoted || p.kind === 'SingleQuoted' || (p.kind === 'Text' && p.escaped === true);
+        pushChunk(psStr(literal ? wcEscapeLiteral(p.text) : p.text));
+        continue;
+      }
+      const expr = exprOfWord([p]);
+      chunks.push(quoted ? '[WildcardPattern]::Escape([string](' + expr + '))' : '([string](' + expr + '))');
+    }
+  };
+  walk(w, false);
+  if (chunks.length === 1) return chunks[0];
+  return '(' + chunks.join(' + ') + ')';
 }
 
 /** Flatten quotes but remember whether a part sat inside `"..."`. */
@@ -1804,7 +1863,9 @@ export function wrapScript(body: string, opts: WrapScriptOptions = {}): string {
       '    if ($fx_eq -lt 1) { continue }',
       '    if ($fx_pair.Substring(0, $fx_eq) -ceq $n) { return (fx-svdec $fx_pair.Substring($fx_eq + 1)) }',
       '  }',
-      "  if ($n -ceq 'HOME') { return [string]$HOME }",
+      // Inherited HOME (Git Bash hosts) first; bare-Windows fallback is the
+      // profile, like a bash login shell seeding HOME from passwd (#255).
+      "  if ($n -ceq 'HOME') { return $(if ($env:HOME) { [string]$env:HOME } else { [string]$HOME }) }",
       "  if ($n -ceq 'PWD') { return fx-posix([string]$PWD.Path) }",
       "  if ($n -ceq 'USER' -or $n -ceq 'LOGNAME') { return [string]$env:USERNAME }",
       "  if ($n -ceq 'PATH') { return [string]$env:PATH }",

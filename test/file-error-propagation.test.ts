@@ -28,15 +28,21 @@ describe('file and archive cmdlet failures enter their declared catch blocks', (
     ['cp source destination', 'Copy-Item'],
     ['mv source destination', 'Move-Item'],
     ['rm file', 'Remove-Item'],
-    ['mkdir directory', 'New-Item'],
+    ['mkdir directory', 'CreateDirectory'],
     ['rmdir directory', 'Remove-Item'],
-    ['touch file', 'New-Item'],
+    ['touch file', 'File]::Create'],
     ['mktemp -d', 'New-Item'],
     ['ln target link', 'New-Item'],
     ['gzip file', 'Remove-Item'],
     ['gunzip file.gz', 'Remove-Item'],
     ['zip archive file', 'Move-Item'],
   ])('%s makes %s errors terminating before reporting success', (command, cmdlet) => {
+    // .NET creation calls (#255 literal paths) throw natively — terminating
+    // by construction; cmdlets need -ErrorAction Stop.
+    if (cmdlet === 'CreateDirectory' || cmdlet === 'File]::Create') {
+      expect(bodyOf(command)).toContain(cmdlet);
+      return;
+    }
     const operations = bodyOf(command).split('\n').filter((line) => line.includes(`${cmdlet} -`));
     expect(operations.length).toBeGreaterThan(0);
     for (const operation of operations) expect(operation).toContain('-ErrorAction Stop');

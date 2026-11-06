@@ -7,6 +7,7 @@ import { PS_WRITE_FN, fxTermLine } from './text-output.js';
 import {
   argListExpr,
   exprOfWord,
+  globOperandExpr,
   literalOfWord,
   operandExpr,
   PURE_SED_FILE_MESSAGE,
@@ -20,9 +21,12 @@ const PS_GLOB_FN = [
   'function fx-glob($p) {',
   "  if ($p -notlike '*[*?]*') { return @($p) }",
   '  $m = @(Get-Item -Path $p -ErrorAction SilentlyContinue)',
-  '  if ($m.Count -eq 0) { return @($p) }',
+  '  if ($m.Count -eq 0) { return @(fx-wclit $p) }',
   '  return @($m | ForEach-Object { $_.FullName })',
   '}',
+  // Unescape wildcard-escaped literals (#255): quoted glob characters that
+  // matched nothing keep their shell spelling as the literal operand.
+  "function fx-wclit($p) { return ($p -replace '`(?=[*?[])', '') }",
 ].join('\n');
 
 const PS_READTEXT_FN = [
@@ -475,7 +479,7 @@ const grep: Handler = (args) => {
       lines.push('  }');
       lines.push('}');
     }
-    lines.push('foreach ($fx_o in ' + psArray(fileWords) + ') {');
+    lines.push('foreach ($fx_o in ' + psArray(fileWords, globOperandExpr) + ') {');
     lines.push('  foreach ($fx_g in (fx-glob $fx_o)) {');
     lines.push(
       "    if (-not (Test-Path -LiteralPath $fx_g)) { [Console]::Error.WriteLine('grep: ' + $fx_g + ': No such file or directory'); $fx_err = $true; continue }",
@@ -1233,7 +1237,7 @@ const sed: Handler = (args, ctx) => {
   if (operandWords.length > 0) {
     lines.push(
       ...psCollectSources(
-        psArray(operandWords),
+        psArray(operandWords, globOperandExpr),
         (v) =>
           "[Console]::Error.WriteLine('sed: can''t read ' + " + v + " + ': No such file or directory')",
         true,
@@ -2241,7 +2245,7 @@ const awk: Handler = (args, ctx) => {
   if (fileWords.length > 0) {
     lines.push(
       ...psCollectSources(
-        psArray(fileWords),
+        psArray(fileWords, globOperandExpr),
         (v) =>
           "[Console]::Error.WriteLine('awk: fatal: cannot open file ' + [string][char]96 + " +
           v +
@@ -2371,7 +2375,7 @@ const sort: Handler = (args) => {
   const lines: string[] = [PS_READTEXT_FN, PS_SPLITLINES_FN, PS_GLOB_FN];
   lines.push(
     ...psCollectSources(
-      psArray(operandWords),
+      psArray(operandWords, globOperandExpr),
       (v) =>
         "[Console]::Error.WriteLine('sort: cannot read: ' + " + v + " + ': No such file or directory')",
       false,
@@ -2574,7 +2578,7 @@ const uniq: Handler = (args) => {
     lines.push(PS_GLOB_FN);
     lines.push(
       ...psCollectSources(
-        '@(' + operandExpr(inFile) + ')',
+        '@(' + globOperandExpr(inFile) + ')',
         (v) => "[Console]::Error.WriteLine('uniq: ' + " + v + " + ': No such file or directory')",
         false,
       ),
@@ -2699,7 +2703,7 @@ const cut: Handler = (args) => {
   const lines: string[] = [PS_READTEXT_FN, PS_SPLITLINES_FN, PS_GLOB_FN];
   lines.push(
     ...psCollectSources(
-      psArray(operandWords),
+      psArray(operandWords, globOperandExpr),
       (v) => "[Console]::Error.WriteLine('cut: ' + " + v + " + ': No such file or directory')",
       false,
     ),

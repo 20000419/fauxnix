@@ -7,7 +7,7 @@ import {
   parseWords,
   psStr,
 } from '../registry.js';
-import { argListExpr, exprOfWord, operandExpr } from '../translator.js';
+import { argListExpr, exprOfWord, globOperandExpr, operandExpr } from '../translator.js';
 import { PS_WRITE_FN, fxTermLine } from './text-output.js';
 import { PS_MOVE_REPLACE_FN } from './move-native.js';
 
@@ -24,9 +24,12 @@ const PS_GLOB_FN = [
   'function fx-glob($p) {',
   "  if ($p -notlike '*[*?]*') { return @($p) }",
   '  $m = @(Get-Item -Path $p -ErrorAction SilentlyContinue)',
-  '  if ($m.Count -eq 0) { return @($p) }',
+  '  if ($m.Count -eq 0) { return @(fx-wclit $p) }',
   '  return @($m | ForEach-Object { $_.FullName })',
   '}',
+  // Unescape wildcard-escaped literals (#255): quoted glob characters that
+  // matched nothing keep their shell spelling as the literal operand.
+  "function fx-wclit($p) { return ($p -replace '`(?=[*?[])', '') }",
 ].join('\n');
 
 /** PS helper: read a file as text, UTF-8 first then GBK fallback. */
@@ -84,7 +87,7 @@ const ls: Handler = (args) => {
   const sortByTime = flags.has('t');
   const sortBySize = flags.has('S');
   const reverse = flags.has('r');
-  const targets = operandWords.length ? argListExpr(operandWords) : "@('.')";
+  const targets = operandWords.length ? argListExpr(operandWords, globOperandExpr) : "@('.')";
 
   return [
     PS_GLOB_FN,
@@ -170,7 +173,7 @@ const cp: Handler = (args) => {
   const noclobber = flags.has('n') || longs.has('--no-clobber');
   return [
     PS_GLOB_FN,
-    '$fx_all = ' + argListExpr(operandWords),
+    '$fx_all = ' + argListExpr(operandWords, globOperandExpr),
     "if ($fx_all.Count -lt 2) { $fx_srcs = @(); $fx_dst = '' } else { $fx_dst = [string]$fx_all[$fx_all.Count - 1]; $fx_srcs = @($fx_all[0..($fx_all.Count - 2)]) }",
     '$fx_srcs = @($fx_srcs | ForEach-Object { fx-glob $_ })',
     "if ($fx_srcs.Count -eq 0) { [Console]::Error.WriteLine('cp: missing file operand'); $script:fx_exit = 1 }",
@@ -200,7 +203,7 @@ const mv: Handler = (args) => {
   return [
     PS_GLOB_FN,
     PS_MOVE_REPLACE_FN,
-    '$fx_all = ' + argListExpr(operandWords),
+    '$fx_all = ' + argListExpr(operandWords, globOperandExpr),
     "if ($fx_all.Count -lt 2) { $fx_srcs = @(); $fx_dst = '' } else { $fx_dst = [string]$fx_all[$fx_all.Count - 1]; $fx_srcs = @($fx_all[0..($fx_all.Count - 2)]) }",
     '$fx_srcs = @($fx_srcs | ForEach-Object { fx-glob $_ })',
     "if ($fx_srcs.Count -eq 0) { [Console]::Error.WriteLine('mv: missing file operand'); $script:fx_exit = 1 }",
@@ -317,7 +320,7 @@ const rm: Handler = (args) => {
   return [
     PS_GLOB_FN,
     PS_IOERR_FN,
-    '$fx_files = ' + psArray(operandWords),
+    '$fx_files = ' + psArray(operandWords, globOperandExpr),
     'if ($fx_files.Count -eq 0 -and ' + b(!force) + ") { [Console]::Error.WriteLine('rm: missing operand'); $script:fx_exit = 1 }",
     '$fx_guardroot = ' + b(guardRoot),
     'foreach ($fx_f in $fx_files) {',
@@ -375,6 +378,7 @@ const mkdir: Handler = (args) => {
   const parents = flags.has('p') || longs.has('--parents');
   const verbose = flags.has('v') || longs.has('--verbose');
   return [
+    PS_IOERR_FN,
     '$fx_dirs = ' + psArray(operandWords),
     "if ($fx_dirs.Count -eq 0) { [Console]::Error.WriteLine('mkdir: missing operand'); $script:fx_exit = 1 }",
     'foreach ($fx_d in $fx_dirs) {',
@@ -383,9 +387,18 @@ const mkdir: Handler = (args) => {
     '    continue',
     '  }',
     '  try {',
-    '    New-Item -ItemType Directory -Path $fx_d -Force:' + (parents ? '$true' : '$false') + ' -ErrorAction Stop | Out-Null',
+    // Literal creation (#255): [IO.Directory] never interprets wildcard
+    // characters or PS provider prefixes (Env:, Function:) the way
+    // New-Item -Path does.
+    ...(parents
+      ? ['    [void][IO.Directory]::CreateDirectory($fx_d)']
+      : [
+          '    $fx_par = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($fx_d))',
+          '    if ($null -ne $fx_par -and -not (Test-Path -LiteralPath $fx_par -PathType Container)) { throw [IO.DirectoryNotFoundException]::new() }',
+          '    [void][IO.Directory]::CreateDirectory($fx_d)',
+        ]),
     '    if (' + (verbose ? '$true' : '$false') + ') { [Console]::Error.WriteLine("mkdir: created directory \'" + $fx_d + "\'") }',
-    '  } catch { [Console]::Error.WriteLine("mkdir: cannot create directory \'" + $fx_d + "\': " + $_.Exception.Message); $script:fx_exit = 1 }',
+    '  } catch { [Console]::Error.WriteLine("mkdir: cannot create directory \'" + $fx_d + "\': " + (fx-ioerr $_ \'No such file or directory\')); $script:fx_exit = 1 }',
     '}',
   ].join('\n');
 };
@@ -415,7 +428,9 @@ const touch: Handler = (args) => {
     '    try { (Get-Item -LiteralPath $fx_f -Force -ErrorAction Stop).LastWriteTime = Get-Date } catch { [Console]::Error.WriteLine("touch: cannot touch \'" + $fx_f + "\': " + (fx-ioerr $_ \'Permission denied\')); $script:fx_exit = 1 }',
     '  } else {',
     '    if (' + (noCreate ? '$true' : '$false') + ') { continue }',
-    '    try { New-Item -ItemType File -Path $fx_f -ErrorAction Stop | Out-Null }',
+    // Literal creation (#255): .NET File.Create never reads wildcard
+    // characters or PS provider prefixes into the name.
+    '    try { $fx_nfs = [IO.File]::Create($fx_f); $fx_nfs.Close() }',
     '    catch { [Console]::Error.WriteLine("touch: cannot touch \'" + $fx_f + "\': " + (fx-ioerr $_ \'No such file or directory\')); $script:fx_exit = 1 }',
     '  }',
     '}',
@@ -597,7 +612,7 @@ const stat: Handler = (args, ctx) => {
     PS_FTIME_FN,
     PS_GLOB_FN,
     ...(printfMode ? [PS_WRITE_FN, fxTermLine(ctx.position), '$fx_stat_out = New-Object System.Text.StringBuilder'] : []),
-    '$fx_files = ' + psArray(operandWords),
+    '$fx_files = ' + psArray(operandWords, globOperandExpr),
     "if ($fx_files.Count -eq 0) { [Console]::Error.WriteLine('stat: missing operand'); $script:fx_exit = 1 }",
     'foreach ($fx_f in $fx_files) {',
     '  foreach ($fx_g in (fx-glob $fx_f)) {',
@@ -632,7 +647,7 @@ const file: Handler = (args) => {
   return [
     PS_GLOB_FN,
     PS_READTEXT_FN,
-    '$fx_files = ' + psArray(operandWords),
+    '$fx_files = ' + psArray(operandWords, globOperandExpr),
     "if ($fx_files.Count -eq 0) { [Console]::Error.WriteLine('file: missing operand'); $script:fx_exit = 1 }",
     'foreach ($fx_f in $fx_files) {',
     '  foreach ($fx_g in (fx-glob $fx_f)) {',
