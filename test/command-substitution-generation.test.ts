@@ -27,7 +27,7 @@ describe('command substitution expression boundaries', () => {
     const inner = "printf '%s' \\)";
     const word = argument(`echo "[$USER:$(${inner}):$HOME]"`);
     expect(exprOfWord(word)).toBe(
-      '("[$($env:USERNAME):" + ' + substitution(inner, true) + ' + ":$($HOME)]")',
+      '("[$($env:USERNAME):" + ' + substitution(inner, true) + ' + ":$((fx-scalar0 \'HOME\'))]")',
     );
   });
 
@@ -72,7 +72,7 @@ describe('command substitution expression boundaries', () => {
   });
 
   it('preserves existing expression shapes when no command substitution is present', () => {
-    expect(exprOfWord(argument('echo "[$USER:$HOME]"'))).toBe('"[$($env:USERNAME):$($HOME)]"');
+    expect(exprOfWord(argument('echo "[$USER:$HOME]"'))).toBe('"[$($env:USERNAME):$((fx-scalar0 \'HOME\'))]"');
     expect(exprOfWord(argument('echo ""'))).toBe('""');
     const source: Word = [{ kind: 'Text', text: '2*3' }];
     const arithmetic: Word = [{ kind: 'Arith', parts: source }];

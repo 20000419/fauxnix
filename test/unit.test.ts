@@ -769,7 +769,7 @@ describe('parser', () => {
 
 describe('translator', () => {
   it('maps shell variables', () => {
-    expect(varExpr('HOME')).toBe('$HOME');
+    expect(varExpr('HOME')).toBe("(fx-scalar0 'HOME')")
     expect(varExpr('PWD')).toBe('fx-posix([string]$PWD.Path)');
     expect(varExpr('USER')).toBe('$env:USERNAME');
     expect(varExpr('?')).toBe('[string]$fx_prev');
@@ -1476,7 +1476,7 @@ describe('CommandSpec (#130)', () => {
     expect(bodyOf('touch -c missing')).toContain('if ($true) { continue }');
     expect(bodyOf('touch --no-create missing')).toContain('if ($true) { continue }');
     expect(bodyOf('touch missing')).toContain('if ($false) { continue }');
-    expect(bodyOf('touch missing')).toContain('New-Item -ItemType File');
+    expect(bodyOf('touch missing')).toContain('[IO.File]::Create($fx_f)');
   });
 
   it('tee --append and -a append; bare tee truncates', () => {

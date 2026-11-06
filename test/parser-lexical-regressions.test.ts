@@ -22,8 +22,8 @@ describe('supported shell quoting and continuation', () => {
 
   it('still expands an unescaped tilde while preserving quoted tilde', () => {
     const args = simpleCommand(`echo ~ ~/docs '~' "~"`).args;
-    expect(exprOfWord(args[0])).toBe('$HOME');
-    expect(exprOfWord(args[1])).toBe('"$($HOME)/docs"');
+    expect(exprOfWord(args[0])).toBe("(fx-scalar0 'HOME')")
+    expect(exprOfWord(args[1])).toBe("\"$((fx-scalar0 'HOME'))/docs\"");
     expect(exprOfWord(args[2])).toBe("'~'");
     expect(exprOfWord(args[3])).toBe('"~"');
   });

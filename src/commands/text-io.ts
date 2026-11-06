@@ -1,6 +1,6 @@
 import { Word, wordToString } from '../ast.js';
 import { CommandSpec, Handler, lookup, parseWords, psStr } from '../registry.js';
-import { argListExpr, exprOfWord, operandExpr } from '../translator.js';
+import { argListExpr, exprOfWord, globOperandExpr, operandExpr } from '../translator.js';
 import { PS_WRITE_FN, fxTermLine } from './text-output.js';
 
 /* ------------------------------------------------------------------ */
@@ -11,9 +11,12 @@ const PS_GLOB_FN = [
   'function fx-glob($p) {',
   "  if ($p -notlike '*[*?]*') { return @($p) }",
   '  $m = @(Get-Item -Path $p -ErrorAction SilentlyContinue)',
-  '  if ($m.Count -eq 0) { return @($p) }',
+  '  if ($m.Count -eq 0) { return @(fx-wclit $p) }',
   '  return @($m | ForEach-Object { $_.FullName })',
   '}',
+  // Unescape wildcard-escaped literals (#255): quoted glob characters that
+  // matched nothing keep their shell spelling as the literal operand.
+  "function fx-wclit($p) { return ($p -replace '`(?=[*?[])', '') }",
 ].join('\n');
 
 const PS_READTEXT_FN = [
@@ -130,7 +133,9 @@ function psCollectFiles(
     const lit = w.every((p) => p.kind === 'Text' || p.kind === 'SingleQuoted')
       ? w.map((p) => (p as { text: string }).text).join('')
       : null;
-    out.push('foreach ($fx_d in ' + argListExpr([w], lit !== null ? operandExpr : exprOfWord) + ') {');
+    // glob-aware operand expression (#255): quoted metas stay literal through
+    // fx-glob; unmatched literals keep their shell spelling via fx-wclit.
+    out.push('foreach ($fx_d in ' + argListExpr([w], globOperandExpr) + ') {');
     out.push('foreach ($fx_g in (fx-glob $fx_d)) {');
     if (dirErr) {
       const dis = lit !== null && /[*?]/.test(lit) ? '$fx_g' : '$fx_d';
@@ -142,7 +147,9 @@ function psCollectFiles(
     }
     out.push(
       '  if (-not (Test-Path -LiteralPath $fx_g -PathType Leaf)) { ' +
-        psErrExpr(missErr('$fx_d')) +
+        // $fx_g: unmatched literals come back unescaped by fx-wclit, keeping
+        // the shell spelling in the message (matched globs resolve anyway).
+        psErrExpr(missErr('$fx_g')) +
         '; continue }',
     );
     out.push('  $fx_srcs += $fx_g');
