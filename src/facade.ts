@@ -213,7 +213,10 @@ export async function runFacade(argv: string[]): Promise<number> {
   installSessionExitCleanup();
   const session = new FauxnixSession();
   try {
-    if (argv[0] === '--version') {
+    // GNU bash answers --version wherever it appears among the options
+    // (`bash -l --version`), not only as argv[0] (#259). Exact element match:
+    // a script operand containing the text is data, not an option.
+    if (argv.some((a) => a === '--version')) {
       process.stdout.write(VERSION_LINE);
       return 0;
     }
