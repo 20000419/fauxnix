@@ -41,8 +41,23 @@ Notes:
   FAUXNIX_PS=pwsh selects the opt-in PowerShell 7 host (5.1 is the default).
   Unknown commands (git, node, npm, python, cargo, ...) pass through and run natively.`;
 
-export async function runCli(argv: string[]): Promise<void> {
-  if (argv.length === 0) {
+/**
+ * POSIX word quoting (#259): a single token is a whole command line (the
+ * common `-c "echo hi"` shape) and passes through verbatim; multiple tokens
+ * are separate shell words, so any token carrying whitespace/quotes/metachars
+ * is single-quoted — `fauxnix translate echo "a  b"` keeps the double space.
+ */
+function shellQuoteWord(s: string): string {
+  if (/^[A-Za-z0-9_@%+=:,./-]*$/.test(s)) return s;
+  return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
+function joinArgv(tokens: string[]): string {
+  if (tokens.length <= 1) return tokens[0] ?? '';
+  return tokens.map(shellQuoteWord).join(' ');
+}
+
+export async function runCli(argv: string[]): Promise<void> {  if (argv.length === 0) {
     console.log(USAGE);
     return;
   }
@@ -51,6 +66,12 @@ export async function runCli(argv: string[]): Promise<void> {
 
   if (verb === '--version' || verb === '-v') {
     console.log(`fauxnix ${packageVersion}`);
+    return;
+  }
+
+  // Help must never spawn PowerShell (#259): it answers on any OS.
+  if (verb === '--help' || verb === '-h' || verb === 'help') {
+    console.log(USAGE);
     return;
   }
 
@@ -109,14 +130,14 @@ export async function runCli(argv: string[]): Promise<void> {
   }
 
   if (verb === 'translate') {
-    const cmd = rest.join(' ');
+    const cmd = joinArgv(rest);
     const list = parseCommand(cmd);
     const plans = translateCommandList(list, PURE_TRANSLATION);
     console.log(plans.map((p) => p.script).join('\n# ---- next segment ----\n'));
     return;
   }
 
-  const cmd = verb === '-c' || verb === '-e' ? rest.join(' ') : argv.join(' ');
+  const cmd = verb === '-c' || verb === '-e' ? joinArgv(rest) : joinArgv(argv);
   if (!cmd.trim()) {
     console.log(USAGE);
     return;

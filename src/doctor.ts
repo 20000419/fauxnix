@@ -2,7 +2,9 @@ import { existsSync, readFileSync } from 'node:fs';
 import { nodeEngineRange, supportsNode } from './runtime-support.js';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { resolveMcpLaunchTuple, sameMcpLaunchTuple } from './mcp-launch.js';
 import { resolveQwenLaunchTuple, sameQwenLaunchTuple } from './qwen-launch.js';
+import { kimiConfigPath } from './install.js';
 import { launcherStatus } from './facade-launch.js';
 
 export type DoctorOptions = {
@@ -34,6 +36,7 @@ export async function collectDoctorReport(opts: DoctorOptions = {}): Promise<Doc
   lines.push(field('codex', detectCodex(home, env)));
   lines.push(field('opencode', detectOpenCode(home, env)));
   lines.push(field('qwen', detectQwen(home)));
+  lines.push(field('kimi', detectKimi(home, env)));
   lines.push(field('facade', detectFacade(env)));
   lines.push('');
 
@@ -189,6 +192,36 @@ function detectOpenCode(home: string, env: NodeJS.ProcessEnv): string {
   }
   if (hasOpenCodeFauxnix(data)) return `fauxnix MCP configured (${path})`;
   return `found ${path}, fauxnix MCP not listed — add mcp.fauxnix (see README)`;
+}
+
+/** Kimi Code (`install --kimi`) — mcp.json under KIMI_CODE_HOME or ~/.kimi-code (#259). */
+function detectKimi(home: string, env: NodeJS.ProcessEnv): string {
+  const path = kimiConfigPath(home, env);
+  if (!existsSync(path)) return 'not detected — see README';
+  const text = readText(path);
+  if (text === undefined) return `found ${path} (unreadable) — see README`;
+  let data: unknown;
+  try {
+    data = JSON.parse(stripBom(text));
+  } catch {
+    return `found ${path} (unreadable JSON) — see README`;
+  }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return `found ${path} (not a JSON object) — see README`;
+  }
+  const servers = (data as Record<string, unknown>).mcpServers;
+  if (!isServerMap(servers)) {
+    return `found ${path}, fauxnix MCP not listed — run: fauxnix install --kimi`;
+  }
+  const config = (servers as Record<string, unknown>).fauxnix;
+  const expected = resolveMcpLaunchTuple();
+  if (expected.ok && sameMcpLaunchTuple(config, expected.value)) {
+    return `fauxnix MCP configured with an absolute launcher (${path})`;
+  }
+  if (config != null || serverMapHasFauxnix(servers)) {
+    return `found ${path}, fauxnix MCP launcher does not match this installation — run: fauxnix install --kimi`;
+  }
+  return `found ${path}, fauxnix MCP not listed — run: fauxnix install --kimi`;
 }
 
 function detectQwen(home: string): string {
