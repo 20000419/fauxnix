@@ -80,7 +80,10 @@ describe('rm "." / ".." refusal (#255)', () => {
     expect(bodyOf('rm -- --no-preserve-root')).toContain("@('--no-preserve-root')");
   });
 
-  it('keeps the existing error text (accurate reasons are a separate change)', () => {
-    expect(bodyOf('rm -rf dir')).toContain("': Permission denied\"");
+  it('routes removal failures through fx-ioerr with a Permission denied fallback (#262)', () => {
+    const body = bodyOf('rm -rf dir');
+    expect(body).toContain("(fx-ioerr $_ 'Permission denied')");
+    // #261's junction-link deletion catch maps real causes too.
+    expect(body.match(/\[IO\.Directory\]::Delete[\s\S]*?fx-ioerr \$_ 'Permission denied'/)).not.toBeNull();
   });
 });
