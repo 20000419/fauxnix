@@ -1,5 +1,54 @@
 # Changelog
 
+## v2.2.0 — 2026-11-06
+
+Safety and parity release, driven by the six-issue external audit (#255–#260) with five
+contributor PRs (#261–#265, by vulragrag-star) and three maintainer PRs (#266–#268). Every
+fix was verified on a real Windows host against the Git Bash GNU oracle before merging.
+
+- **`rm` cannot nuke a drive or traverse links anymore** (#255, #261): GNU `--preserve-root`
+  is enforced by default (`rm -rf /` refuses with the exact GNU message pair), `.`/`..`
+  operands are refused, canonicalization failures fail closed, and directory
+  symlinks/junctions are removed as links — never recursing into their targets (Windows
+  PowerShell 5.1's `Remove-Item -Recurse` follows them).
+- **Quoted globs are literal, like bash** (#255, #266): `rm 'a*b'` deletes nothing and
+  reports the literal name (it previously deleted every match — live-verified
+  over-deletion); only unquoted glob characters expand, quoted variable expansions are
+  escaped at runtime (`"$d"/*`), and unmatched literals keep their shell spelling in
+  error messages. Applies to ls/cp/mv/rm/stat/file and the cat/grep/sed/awk/uniq family.
+- **`$HOME` is session-scoped** (#255, #266): assignments, `env -u` and `unset` are
+  honored; tilde follows the session value. `HOME=/x; rm -rf "$HOME"` now targets the
+  override, not the real profile.
+- **File creation is literal** (#255, #266): mkdir/touch use .NET literal paths —
+  `touch 'Env:\X'` errors exactly like GNU instead of silently creating a PowerShell
+  provider object (an environment variable).
+- **GNU-accurate IO errors** (#255, #262): rm/touch failures map through the exception
+  chain to coreutils' strerror text (sharing violation → "Device or resource busy",
+  path-too-long, not-a-directory, …); the localized .NET message never leaks.
+- **unzip is zip-slip-proof** (#257, #264): every entry is validated before anything is
+  written (rooted, `..`, drive-qualified, NTFS streams, reserved device names, and
+  symlink/junction redirection below the destination are all refused with named errors;
+  exit 1, zero bytes written).
+- **Session state left anywhere is history** (#256, #263): one private per-session temp
+  directory (96-bit CSPRNG name + owner PID) replaces scattered `%TEMP%` files holding
+  full environment snapshots; CLI/facade clean up on exit and signals, the PowerShell
+  host removes its own directory at stdin EOF, and later processes sweep stale
+  directories of dead owners.
+- **sed/awk printf at full GNU parity** (#258, #265): `sed 's/a/[\0]/'` produces the whole
+  match, `\1` followed by a digit is a group reference plus literal digit; awk `%05d`,
+  `%.3d`, `%x`, `%X`, `%o`, `%i` (flags, precision, sign-in-width) are byte-identical to
+  gawk via a dedicated runtime formatter.
+- **Front door fixed** (#259, #267): `fauxnix --help/-h/help` works on any OS without
+  spawning PowerShell; multi-token argv quoting survives reassembly
+  (`fauxnix translate echo "a  b"`); the facade answers `--version` after leading flags;
+  `doctor` reports Kimi and flags bare-shim launchers.
+- **Release hygiene under a gate** (#260, #268): `release:check` fails on README drift
+  (version sentence vs package.json, advertised test count vs `vitest list`); the SEA
+  build is warning-free; the gzip lease decoder also stops on stdin `close` (#240
+  hardening).
+
+1469 tests. npm: `npm i -g fauxnix-cli`
+
 ## v2.1.1 — 2026-10-22
 
 Correctness patch.
