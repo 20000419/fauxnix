@@ -135,8 +135,8 @@ describe.skipIf(!hasPs)(`integration (real ${selectedPowerShell.executable})`, {
 
   it('avoids unchanged checkpoint writes while preserving changed and unset state', async () => {
     const extra = new FauxnixSession();
-    const checkpoint = join(tmpdir(), 'fauxnix-' + extra.id + '-env.json');
-    const cwdCheckpoint = join(tmpdir(), 'fauxnix-' + extra.id + '-cwd.txt');
+    const checkpoint = extra.statePaths.env;
+    const cwdCheckpoint = extra.statePaths.cwd;
     try {
       await extra.run(translateCommandList(parseCommand('printf first')), { cwd: dir });
       const firstEnvTime = statSync(checkpoint).mtimeMs;

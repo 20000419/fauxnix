@@ -290,8 +290,16 @@ export async function startMcpServer(): Promise<void> {
     void shutdown().catch(() => undefined);
   };
 
+  // Register before the cold-start prewarm: a signal during prewarm must
+  // still dispose the host and its private state directory (#256).
+  process.on('SIGINT', onShutdown);
+  process.on('SIGTERM', onShutdown);
   try {
     await session.prewarm();
+    if (shutdownPromise) {
+      await shutdownPromise;
+      return;
+    }
 
     server.tool(
       TOOL_NAME,
@@ -452,8 +460,6 @@ export async function startMcpServer(): Promise<void> {
     const transport = new StdioServerTransport();
     input.on('end', onShutdown);
     input.on('close', onShutdown);
-    process.on('SIGINT', onShutdown);
-    process.on('SIGTERM', onShutdown);
     transport.onclose = onShutdown;
     await server.connect(transport);
   } catch (error) {

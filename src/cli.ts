@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { FauxnixSession } from './executor.js';
+import { FauxnixSession, installSessionExitCleanup } from './executor.js';
 import { parseCommand } from './parser.js';
 import {
   EXECUTE_TRANSLATION,
@@ -124,6 +124,7 @@ export async function runCli(argv: string[]): Promise<void> {
 
   const list = parseCommand(cmd);
   const plans = translateCommandList(list, EXECUTE_TRANSLATION);
+  installSessionExitCleanup();
   const session = new FauxnixSession();
   try {
     const result = await session.run(plans);

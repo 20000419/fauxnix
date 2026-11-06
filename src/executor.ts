@@ -1,8 +1,11 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import {
   promises as fs,
   readFileSync,
   existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
   openSync,
   closeSync,
   readSync,
@@ -287,15 +290,106 @@ function planRedirects(redirects: Redirect[]): SegmentRedirects {
 }
 
 /** Session persists cwd and env across segments, like a real shell. */
+/** `fauxnix-<owner pid>-<24 hex>`: the per-session private state directory. */
+const STATE_DIR_RE = /^fauxnix-(\d+)-[0-9a-f]{24}$/;
+const STALE_MIN_AGE_MS = 60_000;
+
+/**
+ * Sessions whose private state directory currently exists. That directory
+ * holds the cwd and the full environment snapshot (often API tokens), so it
+ * is removed on dispose and, best effort, when the process exits (#256).
+ */
+const liveSessions = new Set<FauxnixSession>();
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM: exists but belongs to someone else — treat as alive.
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
+let staleSweepDone = false;
+
+/**
+ * Remove state directories left behind by fauxnix processes that died without
+ * cleaning up (SIGKILL, TerminateProcess, power loss). Only directories whose
+ * name matches the exact pattern, whose owner PID is gone, and which are older
+ * than a minute are touched; symlinks are never followed. Best effort, once
+ * per process.
+ */
+export function sweepStaleStateDirs(root = os.tmpdir(), now = Date.now()): string[] {
+  const removed: string[] = [];
+  let names: string[];
+  try {
+    names = readdirSync(root);
+  } catch {
+    return removed;
+  }
+  for (const name of names) {
+    const m = STATE_DIR_RE.exec(name);
+    if (!m) continue;
+    const pid = Number(m[1]);
+    if (pid === process.pid || isProcessAlive(pid)) continue;
+    const dir = path.join(root, name);
+    try {
+      const st = lstatSync(dir);
+      if (!st.isDirectory() || now - st.mtimeMs < STALE_MIN_AGE_MS) continue;
+      rmSync(dir, { recursive: true, force: true });
+      removed.push(dir);
+    } catch {
+      // not ours, already gone, or still locked: leave it
+    }
+  }
+  return removed;
+}
+
+/**
+ * Synchronously terminate every live session's host and remove its state
+ * directory. For process-exit paths, where async dispose cannot run.
+ */
+export function cleanupSessionStateSync(): void {
+  for (const session of [...liveSessions]) session.releaseStateSync();
+}
+
+let exitCleanupInstalled = false;
+
+/**
+ * For short-lived entrypoints (CLI, bash facade): remove session state on
+ * normal exit and on SIGINT/SIGTERM/SIGHUP. After cleaning up, the process
+ * exits with the conventional 128+signal status unless some other listener
+ * is also registered for that signal (then that listener decides). Idempotent.
+ */
+export function installSessionExitCleanup(): void {
+  if (exitCleanupInstalled) return;
+  exitCleanupInstalled = true;
+  process.once('exit', cleanupSessionStateSync);
+  const signals: [NodeJS.Signals, number][] = [
+    ['SIGINT', 130],
+    ['SIGTERM', 143],
+    ['SIGHUP', 129],
+  ];
+  for (const [signal, code] of signals) {
+    process.once(signal, () => {
+      cleanupSessionStateSync();
+      if (process.listenerCount(signal) === 0) process.exit(code);
+    });
+  }
+}
+
 export class FauxnixSession {
   id: string;
   cwd: string | null = null;
   env: Record<string, string> = {};
   /** Exit code of the previous segment — powers bash's `$?`. */
   prevExit: number | null = null;
+  /** Per-session private directory holding every state/spool file (#256). */
+  private stateDir!: string;
+  private stateDirCreated = false;
   private cwdFile!: string;
   private envFile!: string;
-  private scriptFile!: string;
   private hostFile!: string;
   private host: PowerShellHost | null = null;
   private lifecycleLock: Promise<unknown> = Promise.resolve();
@@ -311,10 +405,57 @@ export class FauxnixSession {
 
   private bindFiles(id: string): void {
     this.id = id;
-    this.cwdFile = path.join(os.tmpdir(), 'fauxnix-' + id + '-cwd.txt');
-    this.envFile = path.join(os.tmpdir(), 'fauxnix-' + id + '-env.json');
-    this.scriptFile = path.join(os.tmpdir(), 'fauxnix-' + id + '-script.ps1');
-    this.hostFile = path.join(os.tmpdir(), 'fauxnix-' + id + '-host.ps1');
+    // `id` is a short display handle; the directory name carries 96 bits of
+    // CSPRNG randomness and is created exclusively (mkdir fails if it exists).
+    // The owner PID lets a later process sweep directories orphaned by a crash.
+    this.stateDir = path.join(
+      os.tmpdir(),
+      'fauxnix-' + process.pid + '-' + randomBytes(12).toString('hex'),
+    );
+    this.stateDirCreated = false;
+    this.cwdFile = path.join(this.stateDir, 'cwd.txt');
+    this.envFile = path.join(this.stateDir, 'env.json');
+    this.hostFile = path.join(this.stateDir, 'host.ps1');
+  }
+
+  /** Paths of this session's private state (diagnostics and tests). */
+  get statePaths(): { dir: string; cwd: string; env: string; host: string } {
+    return { dir: this.stateDir, cwd: this.cwdFile, env: this.envFile, host: this.hostFile };
+  }
+
+  /** Lazily create the private state directory (owner-only where POSIX modes apply). */
+  private ensureStateDir(): void {
+    if (this.stateDirCreated) return;
+    if (!staleSweepDone) {
+      staleSweepDone = true;
+      sweepStaleStateDirs();
+    }
+    mkdirSync(this.stateDir, { mode: 0o700 });
+    this.stateDirCreated = true;
+    liveSessions.add(this);
+  }
+
+  /**
+   * Synchronous, best-effort release for process-exit paths: terminate the
+   * host first (on Windows its open spool/checkpoint handles would make the
+   * delete fail), then remove the directory with retries. The session stays
+   * usable: the next run recreates a directory and a host.
+   */
+  releaseStateSync(): void {
+    if (this.host) {
+      this.host.killSync();
+      this.host = null;
+    }
+    if (this.stateDirCreated) {
+      try {
+        rmSync(this.stateDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+      } catch {
+        // still locked (e.g. by an orphaned native grandchild); the host's own
+        // EOF cleanup or the next process's stale sweep will retry
+      }
+      this.stateDirCreated = false;
+    }
+    liveSessions.delete(this);
   }
 
   private withLock<T>(fn: () => Promise<T>): Promise<T> {
@@ -350,6 +491,7 @@ export class FauxnixSession {
 
   private ensureHost(): PowerShellHost {
     if (!this.host) {
+      this.ensureStateDir();
       this.host = new PowerShellHost(this.hostFile, () => this.childEnv(), this.powerShell);
     }
     return this.host;
@@ -383,12 +525,13 @@ export class FauxnixSession {
     this.env = {};
     this.hasEnvSnapshot = false;
     this.prevExit = null;
-    await Promise.allSettled([
-      fs.rm(this.cwdFile, { force: true }),
-      fs.rm(this.envFile, { force: true }),
-      fs.rm(this.scriptFile, { force: true }),
-      fs.rm(this.hostFile, { force: true }),
-    ]);
+    if (this.stateDirCreated) {
+      await fs
+        .rm(this.stateDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+        .catch(() => undefined);
+      this.stateDirCreated = false;
+    }
+    liveSessions.delete(this);
     this.bindFiles(randomUUID().slice(0, 8));
   }
 

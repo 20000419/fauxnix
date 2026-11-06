@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { spawn, ChildProcess } from 'node:child_process';
 import {
   closeSync,
@@ -232,6 +233,29 @@ export class PowerShellHost {
     return b;
   }
 
+  /**
+   * Synchronous best-effort termination for process-exit paths, where the
+   * async stop() cannot be awaited. Fails pending waiters like stop().
+   */
+  killSync(): void {
+    this.cancelNativeCapture();
+    const proc = this.proc;
+    this.proc = null;
+    this.closed = true;
+    this.failWaiters(new Error('fauxnix: PowerShell host stopped'));
+    if (!proc) return;
+    try {
+      proc.stdin?.destroy();
+    } catch {
+      /* ignore */
+    }
+    try {
+      proc.kill();
+    } catch {
+      /* ignore */
+    }
+  }
+
   async stop(): Promise<void> {
     this.cancelNativeCapture();
     const proc = this.proc;
@@ -312,7 +336,7 @@ export class PowerShellHost {
     }
     if (started) return { ...started, cancelled: false, truncated: false };
 
-    const id = 'f' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    const id = 'f' + Date.now().toString(36) + randomBytes(6).toString('hex');
     const resolvedLimits: HostOutputLimits = { ...limits };
     if (resolvedLimits.stdoutMode === 'spool') {
       resolvedLimits.stdoutSpoolPath = this.hostFile + '.' + id + '.stdout';

@@ -13,6 +13,8 @@ const session = vi.hoisted(() => ({
 
 vi.mock('../src/executor.js', () => ({
   FauxnixSession: vi.fn(function () { return session; }),
+  installSessionExitCleanup: vi.fn(),
+  cleanupSessionStateSync: vi.fn(),
 }));
 
 import { runCli } from '../src/cli.js';

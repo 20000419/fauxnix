@@ -47,7 +47,7 @@ executable search.
 The host is started as:
 
 ```
-<fixed/absolute-selected powershell.exe|pwsh.exe> -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <temp>/fauxnix-<id>-host.ps1
+<fixed/absolute-selected powershell.exe|pwsh.exe> -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <temp>/fauxnix-<pid>-<24 hex>/host.ps1
 ```
 
 Frames are UTF-8 JSON lines on the process stdin/stdout pipes (raw
@@ -75,8 +75,21 @@ stderr on the OS pipe is delimited with `FAUXNIX_ERR_END:<id>`.
 
 `capabilities.cancel` is **false**: the host cannot stop an in-flight
 `& $fx_sb` without killing the process. `fauxnix translate` never starts
-a host. Session sidecars live under `%TEMP%`
-(`fauxnix-<id>-host.ps1`, `-cwd.txt`, `-env.json`, `-script.ps1`).
+a host. Session sidecars (`host.ps1`, `cwd.txt`, `env.json` — a full copy
+of the child environment, including any tokens — and request spools) live in
+one private directory per session, `%TEMP%/fauxnix-<owner pid>-<24 hex>`,
+named with 96 bits of CSPRNG randomness, created exclusively and only when a
+host starts, with mode 0700 on POSIX. On Windows the mode is ignored and the
+directory inherits the ACL of `%TEMP%`: the default per-user
+`%LOCALAPPDATA%\Temp` is private, but if `TEMP`/`TMP` point at a shared
+folder, the sidecars are as readable as that folder.
+
+The directory is removed by `dispose()`/reset; by the CLI and bash facade on
+exit and on SIGINT/SIGTERM/SIGHUP (the host is terminated first so Windows
+handles are released); by the host itself when its stdin reaches EOF (the
+owner died); and, failing all of those (SIGKILL, power loss), by the next
+fauxnix process, which sweeps `fauxnix-<pid>-*` directories older than a
+minute whose owner PID no longer exists.
 
 ## Kill semantics
 
@@ -88,8 +101,8 @@ per-frame runspace `Stop()` (roadmap B3) is not implemented.
 |---|---|
 | MCP `extra.signal` abort | `ChildProcess.kill()` on the selected PowerShell host. Result: `cancelled: true`, exit **130**. Later list segments do not run. |
 | `timeout_ms` / `ExecOptions.timeoutMs` (default 120s) | Same kill. Result: `timedOut: true`, exit **124**. |
-| `fauxnix_session reset` / `dispose()` | Kill host, unlink temp files. Reset re-prewarms the same session object. |
-| Stdio EOF / SIGINT / SIGTERM | Idempotent dispose. |
+| `fauxnix_session reset` / `dispose()` | Kill host, remove the session's private temp directory. Reset re-prewarms the same session object. |
+| Stdio EOF / SIGINT / SIGTERM | Idempotent dispose (MCP: also during the cold-start prewarm). |
 | Host dies mid-frame | That frame fails; the script is **not** retried. Next `run()` cold-starts. |
 
 `ChildProcess.kill()` does **not** assign a Windows Job Object.
